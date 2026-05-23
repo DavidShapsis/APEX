@@ -1,0 +1,41 @@
+# ROBODOG PI 5 SETUP GUIDE
+
+## 1. System Package Requirements (Linux Terminal)
+Run the following commands on your Raspberry Pi 5 to ensure all drivers and libraries are available:
+
+# Update system
+sudo apt-get update
+sudo apt-get install -y python3-pip python3-serial python3-opencv
+
+# Install Python libraries for hardware communication
+pip install smbus2 adafruit-blinka adafruit-circuitpython-bno08x adafruit-circuitpython-typing pygame flask opencv-python
+
+# Set user permissions for hardware access
+sudo usermod -aG i2c,dialout $USER
+# (Note: Reboot required after changing permissions)
+
+## 2. /boot/firmware/config.txt Configuration
+Add these lines to the bottom of your /boot/firmware/config.txt file to enable the non-overlapping hardware buses:
+
+# --- UART Configurations for Picos & GPS ---
+dtoverlay=uart2
+dtoverlay=uart3
+dtoverlay=uart4
+dtoverlay=uart5
+
+# --- I2C Configurations ---
+# IMU is on I2C0 (Pins 27/28) - Enabled by default on Pi 5 via Blinka
+# Compass is on I2C1 (Pins 3/5) - Enabled via raspi-config
+
+# Power Monitor on I2C3 (Pins 15/16)
+dtoverlay=i2c3,pins_22_23
+
+## 3. Hardware Mapping Reference
+- Pico 1: /dev/ttyS0    (Pins 8, 10)
+- Pico 2: /dev/ttyAMA2  (Pins 7, 29)
+- Pico 3: /dev/ttyAMA3  (Pins 24, 21)
+- Pico 4: /dev/ttyAMA4  (Pins 19, 23)
+- GPS:    /dev/ttyAMA5  (Pins 32, 33)
+- IMU:    Bus 0         (Pins 27, 28)
+- Compass: Bus 1        (Pins 3, 5)
+- Power:   Bus 3        (Pins 15, 16)

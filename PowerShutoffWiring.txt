@@ -1,0 +1,107 @@
+===================================================================
+      ROBOT SAFETY CIRCUIT: SOLENOID & E-STOP WIRING LAYOUT
+====================================================================
+
+[SYSTEM OVERVIEW]
+This layout separates low-current control logic (E-Stop and Coil) 
+from the high-current power distribution (Robot Load). The fuses 
+safeguard both lines, the diode dampens coil collapse spikes, 
+and the resistor acts as a snubber across the heavy power contacts.
+
+--------------------------------------------------------------------
+1. LOW-CURRENT CONTROL CIRCUIT (E-STOP LOOP)
+--------------------------------------------------------------------
+  [BATTERY POSITIVE (+)]
+         │
+         ▼
+  ┌──────────────┐
+  │ CONTROL FUSE │ (Small: 1A - 5A inline fuse)
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐
+  │ E-STOP INPUT │ (Normally Closed / NC terminal)
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐
+  │E-STOP OUTPUT │
+  └──────┬───────┘
+         │
+         ▼
+  ┌────────────────────────────────────────────────────────┐
+  │ SOLENOID SMALL PIN 1                                   │
+  │ *MUST CONNECT TO THE DIODE'S STRIPED SIDE (CATHODE)* │
+  └──────┬─────────────────────────────────────────────────┘
+         │ 
+         ▼ [Current passes through internal magnetic coil]
+         │ 
+  ┌────────────────────────────────────────────────────────┐
+  │ SOLENOID SMALL PIN 2                                   │
+  │ *MUST CONNECT TO THE DIODE'S NON-STRIPED SIDE (ANODE)* │
+  └──────┬─────────────────────────────────────────────────┘
+         │
+         ▼
+  [BATTERY NEGATIVE (-)]
+
+
+--------------------------------------------------------------------
+2. HIGH-CURRENT POWER CIRCUIT (ROBOT LOAD LOOP)
+--------------------------------------------------------------------
+  [BATTERY POSITIVE (+)]
+         │
+         ▼
+  ┌──────────────┐
+  │  POWER FUSE  │ (Large: Sized to match maximum robot load draw)
+  └──────┬───────┘
+         │
+         ▼
+  ┌────────────────────────────────────────────────────────┐
+  │ SOLENOID CHUNKY STUD A                                 │
+  │ *ALSO BOLTED TO SIDE A OF THE SNUBBER RESISTOR* │
+  └──────┬─────────────────────────────────────────────────┘
+         │
+         ▼ [Internal heavy-duty copper contact switch]
+         │
+  ┌────────────────────────────────────────────────────────┐
+  │ SOLENOID CHUNKY STUD B                                 │
+  │ *ALSO BOLTED TO SIDE B OF THE SNUBBER RESISTOR* │
+  └──────┬─────────────────────────────────────────────────┘
+         │
+         ▼
+  ┌──────────────────────┐
+  │ ROBOT LOAD POSITIVE  │ (e.g., Motor controllers / Speed controllers)
+  └──────────────────────┘
+
+  
+--------------------------------------------------------------------
+3. GROUND RETURN BYPASS
+--------------------------------------------------------------------
+  ┌──────────────────────┐
+  │ ROBOT LOAD NEGATIVE  │ 
+  └──────┬───────────────┘
+         │
+         ▼
+  [BATTERY NEGATIVE (-)]   (Bypasses the solenoid completely, shares
+                            the main negative terminal with Small Pin 2)
+
+
+====================================================================
+                      CRITICAL SAFETY CHECKLIST
+====================================================================
+[ ] DIODE ORIENTATION: 
+    The stripe (cathode) faces the incoming positive wire from the 
+    E-Stop. The non-stripe side (anode) faces the ground line. 
+    If flipped backward, flipping the circuit on will instantly blow 
+    your control fuse.
+
+[ ] E-STOP TERMINALS: 
+    Ensure you use the NC (Normally Closed) blocks on your E-Stop. 
+    Hitting the physical button breaks this connection mechanically, 
+    guaranteeing power drop even if electronic logic fails.
+
+[ ] FUSE PROXIMITY: 
+    Install both the Control Fuse and Power Fuse as physically close 
+    to the battery positive terminal as possible to minimize unfused, 
+    vulnerable wiring.
+====================================================================
