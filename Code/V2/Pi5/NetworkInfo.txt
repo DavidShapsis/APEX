@@ -1,0 +1,21 @@
+==================================================
+ROBODOG MISSION CONTROL - NETWORK CONFIGURATION
+==================================================
+
+[HOTSPOT WI-FI CREDENTIALS]
+SSID (Wi-Fi Name): APEXWifi
+Password:          APEXAccessPoint
+
+[RASPBERRY PI SYSTEM CREDENTIALS]
+Username:          pi
+Hostname:          robodog
+
+[LOCAL NETWORK ADDRESSES]
+Hotspot Gateway IP: 10.42.0.1
+Flask App URL:      http://10.42.0.1:5000
+
+--------------------------------------------------
+SYSTEM NOTE:
+The BrosTrend USB antenna is tied to this network configuration 
+via interface 'wlan1' under connection profile 'Hotspot-1'.
+==================================================

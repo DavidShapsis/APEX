@@ -1,0 +1,57 @@
+===================================================================
+                  ROBODOG DEVELOPMENT CHEAT SHEET
+===================================================================
+
+1. THE QUICK DEVELOPER WORKFLOW
+-------------------------------------------------------------------
+When you want to edit your robot's logic:
+  Step 1: SSH into the Pi
+          ssh root@robodog
+
+  Step 2: Navigate to the active package folder
+          cd /root/colcon_ws/src/APEX_ROS/APEX_ROS
+
+  Step 3: Modify your files (using nano, vim, etc.)
+          nano Pi5_main.py
+
+
+2. THE RECOMPILE REVOLUTION (--symlink-install)
+-------------------------------------------------------------------
+Because the workspace was built using symlinks, the files in your 
+install space point directly to your source files.
+
+  DO NOT REBUILD IF:
+  ✔ You modified code logic inside an existing file (e.g., Pi5_main.py, IMU.py).
+  ✔ You added simple print statements or adjusted tuning variables.
+  * Just save the file and run it. Your changes are live immediately.
+
+  YOU MUST REBUILD ONLY IF:
+  ⚠ You created a brand-new .py file that needs a new console script mapping.
+  ⚠ You changed setup.py, setup.cfg, or package.xml.
+
+
+3. RUNNING AND LOGGING MANUAL TESTS
+-------------------------------------------------------------------
+Since systemd is not running inside this container environment, use 
+these native commands from your workspace:
+
+  # Force close any accidental lingering background runs
+  pkill -f Pi5_main.py
+
+  # Run directly in your terminal to watch stdout:
+  /bin/bash /root/start_robodog.sh
+
+  # Run as a background daemon and save output to a file:
+  nohup /bin/bash /root/start_robodog.sh > /root/robodog_output.log 2>&1 &
+
+  # Follow the log stream live (Your replacement for journalctl -f):
+  tail -f /root/robodog_output.log
+
+
+4. HARDWARE LANDING EXPECTATIONS
+-------------------------------------------------------------------
+When the physical hardware is plugged into I2C Bus 13, the current 
+"OSError: [Errno 121] Remote I/O error" will disappear, and the 
+BNO085 IMU initialization script will hand off telemetry smoothly 
+to your ROS 2 publisher layers.
+===================================================================
