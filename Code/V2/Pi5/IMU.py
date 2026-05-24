@@ -14,6 +14,11 @@ class IMU:
         # Route through Blinka Linux I2C bus if a specialized overlay id is assigned
         if bus_id is not None:
             self.i2c = BlinkaI2C(bus_id)
+            
+            # --- FIX: Inject the missing CircuitPython locking API methods ---
+            self.i2c.try_lock = lambda: True
+            self.i2c.unlock = lambda: None
+            # -----------------------------------------------------------------
         else:
             self.i2c = busio.I2C(scl_pin, sda_pin, frequency=400000)
             
