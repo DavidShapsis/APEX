@@ -15,8 +15,6 @@ class JointController:
         self.en = Pin(en_pin, Pin.OUT)
         self.reverse = reverse
 
-        # 20kHz is correct. It keeps the motors silent (above human hearing) 
-        # and provides smoother torque than lower frequencies.
         self.forward_pwm = PWM(Pin(rpwm_pin))
         self.backward_pwm = PWM(Pin(lpwm_pin))
         self.forward_pwm.freq(1000)   # Dropped to 1000Hz for optocoupler stability
