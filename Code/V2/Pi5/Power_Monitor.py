@@ -7,8 +7,8 @@ class INA219:
             self.addr = addr
             # Configuration: 32V range, +/-320mV shunt range, 12-bit ADC
             self._write_reg(0x00, 0x399F) 
-            # Calibration for 0.1 Ohm shunt
-            self._write_reg(0x05, 4096)
+
+            self._write_reg(0x05, 2048)
             self.available = True
         except Exception as e:
             print(f"INA219 initialization failed: {e}")
@@ -33,7 +33,7 @@ class INA219:
         if not self.available: return 0.0
         raw = self._read_reg(0x04)
         if raw > 32767: raw -= 65536
-        return raw * 0.1 
+        return raw * 0.2
 
     def get_power(self):
         if not self.available: return 0.0

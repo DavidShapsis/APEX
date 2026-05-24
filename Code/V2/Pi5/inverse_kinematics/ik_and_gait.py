@@ -64,8 +64,10 @@ class InverseKinematics:
         r_xz = math.sqrt(max(0, z_rel**2 + a**2))
         
         # Reconstruct coordinates to match standard frame orientation
-        x = r_xz * math.cos(roll_rad)
-        z = r_xz * math.sin(roll_rad)
+        phi2_fk = math.acos(self._clip(a / r_xz))
+        phi1_fk = roll_rad - phi2_fk
+        x = r_xz * math.sin(phi1_fk)
+        z = r_xz * math.cos(phi1_fk)
         
         return round(x, 2), round(y, 2), round(z, 2)
 
@@ -113,7 +115,7 @@ class GaitPath:
             local_z = (p['h1'] if math.sin(theta) <= 0 else p['h2']) * math.sin(theta)
             final_y = p['cy'] + local_y
             final_z = p['cz'] + local_z
-            is_swing = math.sin(theta) <= 0  # foot lifting off ground
+            is_swing = math.sin(theta) < -0.1
             self.gait_xy_path.append([round(float(final_y), 2), round(float(final_z), 2), is_swing])
         return self.gait_xy_path
 

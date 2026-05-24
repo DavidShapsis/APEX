@@ -18,7 +18,7 @@ class GPSReader:
                 line = self.ser.readline().decode('ascii', errors='replace')
                 if 'GGA' in line:
                     parts = line.split(',')
-                    if len(parts) > 5 and parts[2] and parts[4]:
+                    if len(parts) > 7 and parts[2] and parts[4]:
                         # Latitude is part 2, Direction is part 3
                         self.lat = self.convert_to_decimal(parts[2], parts[3])
                         
@@ -32,7 +32,8 @@ class GPSReader:
                         self.satellites = int(parts[7])
                         
                         return True
-            except: pass
+            except: 
+                pass
         return False
 
     def convert_to_decimal(self, raw_value, direction):
@@ -80,7 +81,8 @@ class CompassReader:
             x = self._convert(data[0], data[1])
             y = self._convert(data[2], data[3])
             return (math.degrees(math.atan2(y, x)) + 360) % 360
-        except: return 0.0
+        except: 
+            return 0.0
 
     def _convert(self, lsb, msb):
         val = lsb | (msb << 8)
@@ -92,7 +94,8 @@ class Navigator:
         self.wp_idx = 0
 
     def calculate_nav(self, curr_lat, curr_lon, curr_head):
-        if self.wp_idx >= len(self.waypoints): return None
+        if self.wp_idx >= len(self.waypoints): 
+            return None
         target_lat, target_lon = self.waypoints[self.wp_idx]
         
         rad_lat1, rad_lat2 = math.radians(curr_lat), math.radians(target_lat)
@@ -102,10 +105,13 @@ class Navigator:
         target_bearing = (math.degrees(math.atan2(y, x)) + 360) % 360
 
         turn_error = target_bearing - curr_head
-        if turn_error > 180: turn_error -= 360
-        if turn_error < -180: turn_error += 360
+        if turn_error > 180: 
+            turn_error -= 360
+        if turn_error < -180: 
+            turn_error += 360
 
         acos_arg = (math.sin(rad_lat1)*math.sin(rad_lat2) + math.cos(rad_lat1)*math.cos(rad_lat2) * math.cos(d_lon))
         dist = math.acos(max(-1.0, min(1.0, acos_arg))) * 6371000
-        if dist < 1.5: self.wp_idx += 1 
-        return {"turn": turn_error, "dist": dist}
+        if dist < 4.0: 
+            self.wp_idx += 1
+            return {"turn": turn_error, "dist": dist}
