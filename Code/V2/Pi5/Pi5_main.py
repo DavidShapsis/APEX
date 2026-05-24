@@ -252,7 +252,7 @@ def main():
     power_monitor = INA219(bus_id=3)
     audio_engine = QuadrupedAudio("30:8D:EB:5D:AC:11")
     LOW_VOLT_THRESHOLD = 4.75
-    MAX_CURRENT_MA = 6000.0 
+    MAX_CURRENT_MA = 5000.0 
     AUDIO_COOLDOWN = 10.0
     last_power_check = time.time()
     last_audio_warning = 0
