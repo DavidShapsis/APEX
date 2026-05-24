@@ -1,4 +1,5 @@
 import threading
+import math
 import time
 import serial
 import struct
@@ -35,7 +36,7 @@ class PiQuadrupedController(Node):
         self.pico_ports = ['/dev/ttyAMA0', '/dev/ttyAMA2', '/dev/ttyAMA3', '/dev/ttyAMA4']
         self.ser_list = []
         self.init_serial_ports()
-        self.end_marker = b'\xFF' * 12
+        self.end_marker = b'\xFF' * 16
 
         # --- Sub-Engine Initializations (Standardized to Centimeters) ---
         self.ik_engine = InverseKinematics({'a': 9.65, 'b': 26.84, 'c': 24.37})
@@ -143,10 +144,10 @@ class PiQuadrupedController(Node):
                         trigger_serial.reset_output_buffer()
                         trigger_serial.write(b'\xAA\xAA')
                         for step in recovery_gait:
-                            packed_data = struct.pack('fff', float(step[0]), float(step[1]), float(step[2]))
+                            packed_data = struct.pack('ffff', float(step[0]), float(step[1]), float(step[2]), float(step[3]))
                             trigger_serial.write(packed_data)
                             time.sleep(0.01)  # Safe pacing delay
-                        trigger_serial.write(b'\xFF' * 12)
+                        trigger_serial.write(b'\xFF' * 16)
                     except Exception as e:
                         print(f"Serial transmission crash during recovery: {e}")
                     
@@ -186,13 +187,13 @@ class PiQuadrupedController(Node):
                 for leg_idx, s in enumerate(self.ser_list):
                     step_idx = (i + offsets[leg_idx]) % num_steps
                     step = local_gait[step_idx]
-                    packed_data = struct.pack('fff', float(step[0]), float(step[1]), float(step[2]))
+                    packed_data = struct.pack('ffff', float(step[0]), float(step[1]), float(step[2]), float(step[3]))
                     try:
                         s.write(packed_data)
                     except Exception as e:
                         print(f"Serial write error on leg {leg_idx}: {e}")
                 
-                time.sleep(0.02) # Lock is completely open during this window for the main loop
+                time.sleep(0.001) # just a brief yield so the lock stays open for the main thread
     
             if aborted:
                 local_gait = None 
@@ -216,42 +217,41 @@ class PiQuadrupedController(Node):
 
 rclpy.init(args=None)
 
-# IMU Configuration
-imu = IMU(sda_pin="D0", scl_pin="D1", bus_id=13, window_size=12)
-print("IMU setup successful")
-
-# Navigation Configuration
-MISSION_WAYPOINTS = [(41.056, -74.145), (41.057, -74.146)] 
-gps = GPSReader(uart_path='/dev/ttyUSB0', baudrate=9600)
-compass = CompassReader(sda_pin=2, scl_pin=3)
-nav_engine = Navigator(MISSION_WAYPOINTS)
-
-# Vision
-cam = USBWebcam(device_index="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_Camera_SN0001-video-index0")
-streamer = RobodogStreamer()
-
-def camera_loop():
-    while rclpy.ok():
-        frame = cam.get_frame()
-        if frame is not None:
-            streamer.update_frame(frame)
-        time.sleep(0.03)
-
-streamer.run()
-threading.Thread(target=camera_loop, daemon=True).start()
-print("Vision and Stream components online")
-
-# Telemetry & Audio System
-power_monitor = INA219(bus_id=3)
-audio_engine = QuadrupedAudio("30:8D:EB:5D:AC:11")
-LOW_VOLT_THRESHOLD = 4.75
-MAX_CURRENT_MA = 6000.0 
-AUDIO_COOLDOWN = 10.0
-last_power_check = time.time()
-last_audio_warning = 0
-
 def main():
-    global last_audio_warning, last_power_check
+    # IMU Configuration
+    imu = IMU(sda_pin="D0", scl_pin="D1", bus_id=13, window_size=12)
+    print("IMU setup successful")
+
+    # Navigation Configuration
+    MISSION_WAYPOINTS = [(41.056, -74.145), (41.057, -74.146)] 
+    gps = GPSReader(uart_path='/dev/ttyUSB0', baudrate=9600)
+    compass = CompassReader(sda_pin=2, scl_pin=3)
+    nav_engine = Navigator(MISSION_WAYPOINTS)
+
+    # Vision
+    cam = USBWebcam(device_index="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_Camera_SN0001-video-index0")
+    streamer = RobodogStreamer()
+
+    def camera_loop():
+        while rclpy.ok():
+            frame = cam.get_frame()
+            if frame is not None:
+                streamer.update_frame(frame)
+            time.sleep(0.03)
+
+    streamer.run()
+    threading.Thread(target=camera_loop, daemon=True).start()
+    print("Vision and Stream components online")
+
+    # Telemetry & Audio System
+    power_monitor = INA219(bus_id=3)
+    audio_engine = QuadrupedAudio("30:8D:EB:5D:AC:11")
+    LOW_VOLT_THRESHOLD = 4.75
+    MAX_CURRENT_MA = 6000.0 
+    AUDIO_COOLDOWN = 10.0
+    last_power_check = time.time()
+    last_audio_warning = 0
+
     controller = PiQuadrupedController()
 
     executor = MultiThreadedExecutor()
@@ -323,19 +323,23 @@ def main():
                     if int(current_time) % 2 == 0: 
                         print(f"[IMU Reflex] Stabilizing active stance matrix. Shifts -> X: {clipped_roll_x:.2f}, Y: {clipped_pitch_y:.2f}")
 
+                    direction_rad = math.radians(chosen_direction)
+                    longitudinal_stride = 10.0 * math.cos(direction_rad)  # scales forward stride
+                    lateral_stride = 5.0 * math.sin(direction_rad)         # drives lateral_roll_offset
+
                     controller.path_gen.update_params(
-                        center_stride_y=0.0 + clipped_pitch_y,
-                        center_height_z=36.0, 
-                        length=10.0, 
-                        height1=5.0, 
-                        height2=2.5, 
-                        direction_angle=chosen_direction
+                        center_stride_y=clipped_pitch_y,
+                        center_height_z=36.0,
+                        length=longitudinal_stride,
+                        height1=5.0,
+                        height2=2.5,
+                        direction_angle=0  # angle no longer used in GaitPath
                     )
-                    
+
                     controller.gait_processor = GaitIK(
-                        controller.ik_engine, 
+                        controller.ik_engine,
                         controller.path_gen.gait_xy_path,
-                        lateral_roll_offset=clipped_roll_x
+                        lateral_roll_offset=clipped_roll_x + lateral_stride  # IMU roll + steering
                     )
                     new_angles = controller.gait_processor.get_gait_ik()
                     controller.send_entire_gait(new_angles)

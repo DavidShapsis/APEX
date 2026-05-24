@@ -27,11 +27,11 @@ gait_buffer = []
 is_receiving = False
 has_aborted = False 
 current_step_index = 0
-STEP_TICK_MS = 50
+STEP_TICK_MS = 20
 last_step_time = time.ticks_ms() 
 
 current_targets = [0.0, 0.0, 0.0]
-PAYLOAD_SIZE = 12 
+PAYLOAD_SIZE = 16
 
 while True:
     # 1. READ UART (Binary Protocol Parser)
@@ -46,37 +46,34 @@ while True:
         if uart.any() >= PAYLOAD_SIZE:
             full_payload = uart.read(PAYLOAD_SIZE)
             
-            if full_payload == b'\xFF' * 12:
+            if full_payload == b'\xFF' * 16:
                 is_receiving = False
                 current_step_index = 0
                 last_step_time = time.ticks_ms()
             else:
                 try:
-                    parts = list(struct.unpack('fff', full_payload))
+                    parts = list(struct.unpack('ffff', full_payload))
                     gait_buffer.append(parts)
                 except Exception:
                     pass
 
     # 2. GROUND CHECK (The Abort Logic)
     any_touchdown = any(f.state for f in fsrs)
-    
-    if any_touchdown and not has_aborted and gait_buffer and not is_receiving:
-        msg = f"ABORTED,{roll_j.current_angle},{pitch_j.current_angle},{knee_j.current_angle}\n"
-        uart.write(msg)
-        has_aborted = True 
-        gait_buffer = []
-        
-        roll_j.integral = 0
-        pitch_j.integral = 0
-        knee_j.knee_j.integral = 0
 
-    # 3. CHOOSE TARGETS (Every 50ms)
+    # 3. CHOOSE TARGETS (Every 20ms)
     # Target updates only advance through the buffer steps once receiving is complete
     if gait_buffer and not is_receiving and not has_aborted:
-        if time.ticks_diff(time.ticks_ms(), last_step_time) > STEP_TICK_MS:
-            current_step_index = (current_step_index + 1) % len(gait_buffer)
-            last_step_time = time.ticks_ms()
-            current_targets = gait_buffer[current_step_index]
+        current_step_swing = gait_buffer[current_step_index][3] > 0.5
+        if any_touchdown and current_step_swing:
+            msg = f"ABORTED,{roll_j.current_angle},{pitch_j.current_angle},{knee_j.current_angle}\n"
+            uart.write(msg)
+            has_aborted = True
+            gait_buffer = []
+        else:
+            if time.ticks_diff(time.ticks_ms(), last_step_time) > STEP_TICK_MS:
+                current_step_index = (current_step_index + 1) % len(gait_buffer)
+                last_step_time = time.ticks_ms()
+                current_targets = gait_buffer[current_step_index]
 
     # 4. EXECUTE CLOSED LOOP PID UPDATES
     # FIX: Run loop if we aren't aborted, regardless of incoming background updates.
