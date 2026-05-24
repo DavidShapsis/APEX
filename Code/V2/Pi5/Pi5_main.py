@@ -7,6 +7,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import Float32MultiArray, Int32, Bool
+import os
+
+WAV_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Core hardware and engine imports
 from Power_Monitor import INA219
@@ -127,41 +130,44 @@ class PiQuadrupedController(Node):
             self.get_logger().error(f"Error in recovery parsing: {e}")
 
     def _gait_serial_worker(self):
-        """The single source of truth for serial writes. Manages regular gaits and recovery sequences."""
         local_gait = None
-        
+
         while self.is_running:
-            # SCOPE 1: Securely grab state and updates, then release the lock immediately
+            recovery_job = None  # (trigger_serial, recovery_gait) if needed
+
             with self.serial_lock:
                 state_check = self.current_state
-                
-                # Check for high-priority emergency recovery execution blocks
-                if state_check == RobotState.RECOVERY and self.emergency_queue is not None:
-                    trigger_serial, recovery_gait = self.emergency_queue
-                    self.emergency_queue = None
-                    
-                    try:
-                        trigger_serial.reset_output_buffer()
-                        trigger_serial.write(b'\xAA\xAA')
-                        for step in recovery_gait:
-                            packed_data = struct.pack('ffff', float(step[0]), float(step[1]), float(step[2]), float(step[3]))
-                            trigger_serial.write(packed_data)
-                            time.sleep(0.01)  # Safe pacing delay
-                        trigger_serial.write(b'\xFF' * 16)
-                    except Exception as e:
-                        print(f"Serial transmission crash during recovery: {e}")
-                    
-                    self.current_state = RobotState.MANUAL 
-                    local_gait = None
-                    continue
 
-                # Stage standard gait paths
-                if self.gait_update_queue is not None:
+                if state_check == RobotState.RECOVERY and self.emergency_queue is not None:
+                    recovery_job = self.emergency_queue  # grab it
+                    self.emergency_queue = None           # clear it
+
+                elif self.gait_update_queue is not None:
                     local_gait = self.gait_update_queue
-                    self.gait_update_queue = None 
+                    self.gait_update_queue = None
+
+            # --- Lock is now RELEASED ---
+
+            if recovery_job is not None:
+                trigger_serial, recovery_gait = recovery_job
+                try:
+                    trigger_serial.reset_output_buffer()
+                    trigger_serial.write(b'\xAA\xAA')
+                    for step in recovery_gait:
+                        packed_data = struct.pack('ffff', float(step[0]), float(step[1]), float(step[2]), float(step[3]))
+                        trigger_serial.write(packed_data)
+                        time.sleep(0.01)  # fine here — lock is not held
+                    trigger_serial.write(b'\xFF' * 16)
+                except Exception as e:
+                    print(f"Serial transmission crash during recovery: {e}")
+
+                with self.serial_lock:
+                    self.current_state = RobotState.MANUAL
+                local_gait = None
+                continue
 
             if local_gait is None:
-                time.sleep(0.005) 
+                time.sleep(0.005)
                 continue
                 
             num_steps = len(local_gait)
@@ -214,10 +220,9 @@ class PiQuadrupedController(Node):
             if s.is_open:
                 s.close()
 
-
-rclpy.init(args=None)
-
 def main():
+    rclpy.init(args=None)
+
     # IMU Configuration
     imu = IMU(sda_pin="D0", scl_pin="D1", bus_id=13, window_size=12)
     print("IMU setup successful")
@@ -353,7 +358,7 @@ def main():
                     v = power_monitor.get_voltage()
                     c = power_monitor.get_current()
                     if (v < LOW_VOLT_THRESHOLD or c > MAX_CURRENT_MA) and (current_time - last_audio_warning > AUDIO_COOLDOWN):
-                        audio_engine.play("low_battery.wav")
+                        audio_engine.play(os.path.join(WAV_DIR, "low_battery.wav"))
                         last_audio_warning = current_time
                     last_power_check = current_time
 
@@ -363,7 +368,7 @@ def main():
                             line = s.readline().decode('utf-8', errors='ignore').strip()
                             if line.startswith("ABORTED"):
                                 print(f"Hardware Stall Warning on UART: {s.port}")
-                                audio_engine.play("abort_sound.wav")
+                                audio_engine.play(os.path.join(WAV_DIR, "abort_sound.wav"))
                                 controller.handle_recovery(line, s)
                         except Exception as ser_err:
                             print(f"Serial read error: {ser_err}")
