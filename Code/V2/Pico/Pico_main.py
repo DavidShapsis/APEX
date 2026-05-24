@@ -1,8 +1,9 @@
 import time
-import struct # Added for fast unpacking
+import struct 
 from machine import UART, Pin
 from FSR import FSR
 from Motor_Control import JointController
+
 print("Imports successful")
 
 # --- Setup Joints ---
@@ -30,12 +31,11 @@ STEP_TICK_MS = 50
 last_step_time = time.ticks_ms() 
 
 current_targets = [0.0, 0.0, 0.0]
-PAYLOAD_SIZE = 12 # 3 joints * 4 bytes per float
+PAYLOAD_SIZE = 12 
 
-while True:  # Fixed the 'wwhile' typo
+while True:
     # 1. READ UART (Binary Protocol Parser)
     if not is_receiving:
-        # Check for the 2-byte magic header safely
         if uart.any() >= 2:
             magic = uart.read(2)
             if magic == b'\xAA\xAA':
@@ -43,11 +43,9 @@ while True:  # Fixed the 'wwhile' typo
                 is_receiving = True
                 has_aborted = False
     else:
-        # Check if a complete 12-byte payload chunk has arrived
         if uart.any() >= PAYLOAD_SIZE:
             full_payload = uart.read(PAYLOAD_SIZE)
             
-            # Check against the bulletproof 12-byte NaN marker
             if full_payload == b'\xFF' * 12:
                 is_receiving = False
                 current_step_index = 0
@@ -56,14 +54,13 @@ while True:  # Fixed the 'wwhile' typo
                 try:
                     parts = list(struct.unpack('fff', full_payload))
                     gait_buffer.append(parts)
-                except:
+                except Exception:
                     pass
 
     # 2. GROUND CHECK (The Abort Logic)
     any_touchdown = any(f.state for f in fsrs)
     
     if any_touchdown and not has_aborted and gait_buffer and not is_receiving:
-        # Keep text here so your Pi 5 terminal can catch human-readable error descriptions
         msg = f"ABORTED,{roll_j.current_angle},{pitch_j.current_angle},{knee_j.current_angle}\n"
         uart.write(msg)
         has_aborted = True 
@@ -71,9 +68,10 @@ while True:  # Fixed the 'wwhile' typo
         
         roll_j.integral = 0
         pitch_j.integral = 0
-        knee_j.integral = 0
+        knee_j.knee_j.integral = 0
 
     # 3. CHOOSE TARGETS (Every 50ms)
+    # Target updates only advance through the buffer steps once receiving is complete
     if gait_buffer and not is_receiving and not has_aborted:
         if time.ticks_diff(time.ticks_ms(), last_step_time) > STEP_TICK_MS:
             current_step_index = (current_step_index + 1) % len(gait_buffer)
@@ -81,12 +79,13 @@ while True:  # Fixed the 'wwhile' typo
             current_targets = gait_buffer[current_step_index]
 
     # 4. EXECUTE CLOSED LOOP PID UPDATES
-    if gait_buffer and not is_receiving and not has_aborted:
+    # FIX: Run loop if we aren't aborted, regardless of incoming background updates.
+    if not has_aborted:
         roll_j.move_to(current_targets[0])
         pitch_j.move_to(current_targets[1])
         knee_j.move_to(current_targets[2])
     else:
-        # Safety fallback
+        # Safety fallback strictly on physical crash/abort conditions
         roll_j.forward_pwm.duty_u16(0)
         roll_j.backward_pwm.duty_u16(0)
         pitch_j.forward_pwm.duty_u16(0)

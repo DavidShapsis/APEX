@@ -1,3 +1,4 @@
+import threading
 import pygame
 import subprocess
 import os
@@ -31,17 +32,20 @@ class QuadrupedAudio:
         except Exception:
             return False
 
-    def play(self, file_path): # Changed from play_woof to play
+    def play(self, file_path): 
         if not self.connected:
             print("Audio ignored: Speaker not connected.")
             return
 
         if os.path.exists(file_path):
-            try:
-                sound = pygame.mixer.Sound(file_path)
-                sound.play()
-                # Keep the script alive long enough to hear the sound
-                while pygame.mixer.get_busy():
-                    time.sleep(0.1)
-            except Exception as e:
-                print(f"Playback failed: {e}")
+            def _play_thread():
+                try:
+                    sound = pygame.mixer.Sound(file_path)
+                    sound.play()
+                    while pygame.mixer.get_busy():
+                        time.sleep(0.1)
+                except Exception as e:
+                    print(f"Playback failed: {e}")
+            
+            # Fire and forget audio playback asynchronously
+            threading.Thread(target=_play_thread, daemon=True).start()

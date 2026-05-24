@@ -58,12 +58,15 @@ class GPSReader:
         return round(decimal_degrees, 8)
 
 class CompassReader:
-    def __init__(self, sda_pin, scl_pin):
+    def __init__(self, sda_pin, scl_pin, explicit_bus_id=None):
         """
-        Determines Bus ID based on pins for CPython/Linux.
+        Determines Bus ID with explicit override support for custom Linux I2C buses.
         """
-        # Logic: If pins are 2/3, use Bus 1. If 0/1, use Bus 0.
-        self.bus_id = 1 if sda_pin == 2 else 0
+        if explicit_bus_id is not None:
+            self.bus_id = explicit_bus_id
+        else:
+            self.bus_id = 1 if sda_pin == 2 else 0
+            
         self.bus = SMBus(self.bus_id)
         self.addr = 0x0D
         try:
