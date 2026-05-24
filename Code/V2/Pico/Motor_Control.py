@@ -23,23 +23,23 @@ class JointController:
         self.en.value(1) # Turn on the H-Bridge
         
         # --- Dynamic Math using your Specs ---
-        # gear_ratio (99.5) * ppr (28) = 2786.2 pulses per output revolution
         ticks_per_joint_rev = ppr * gear_ratio * EXTERNAL_GEAR_REDUCTION
         self.ticks_per_degree = ticks_per_joint_rev / 360.0
 
         # --- Encoder Setup ---
         self.enc_a = Pin(enc_a_pin, Pin.IN)
         self.enc_b = Pin(enc_b_pin, Pin.IN)
-        self._steps = int(initial_angle * self.ticks_per_degree)
+        
+        # FIX 1: If hardware is reversed, our initial starting position pulses must be inverted
+        raw_initial_steps = int(initial_angle * self.ticks_per_degree)
+        self._steps = -raw_initial_steps if self.reverse else raw_initial_steps
+        
         self.enc_a.irq(trigger=Pin.IRQ_RISING, handler=self._encoder_isr)
 
-
         # --- PID Tuning for goBILDA ---
-        # These motors have huge torque (133 kg.cm). 
-        # You might need to LOWER Kp because they are so strong they can oscillate.
-        self.kp = 0.8  # Start slightly lower than before
+        self.kp = 0.8  
         self.ki = 0.02
-        self.kd = 0.05 # Increased slightly to dampen that high torque
+        self.kd = 0.05 
         
         self.prev_error = None
         self.integral = 0
@@ -54,23 +54,26 @@ class JointController:
 
     @property
     def current_angle(self):
-        """Returns the actual angle of the leg joint in degrees."""
-        return self._steps / self.ticks_per_degree
+        """Returns the actual angle of the leg joint in degrees, accounting for reversal."""
+        raw_angle = self._steps / self.ticks_per_degree
+        
+        # FIX 2: If reversed, flip the visual angle representation back 
+        # so your central logic always views it in standardized terms
+        if self.reverse:
+            return -raw_angle
+        return raw_angle
 
     def move_to(self, target_angle):
         """
         Calculates PID and drives the motor. 
         """
         now = time.ticks_ms()
-        # dt in seconds
         dt = (time.ticks_diff(now, self.last_time)) / 1000.0
         if dt <= 0: return
 
-        actual_target = -target_angle if self.reverse else target_angle
-
-        # 1. Calculate Error
+        # 1. Calculate Error (using the standardized target and standardized current_angle)
         current = self.current_angle
-        error = actual_target - current
+        error = target_angle - current
         
         # 2. PID Terms
         self.integral = max(-100, min(100, self.integral + (error * dt))) # Anti-windup
@@ -90,10 +93,17 @@ class JointController:
         elif abs(output) < MIN_STALL_POWER:
             output = MIN_STALL_POWER if output > 0 else -MIN_STALL_POWER
 
-        # 5. Drive H-Bridge (MicroPython uses 0-65535 for duty cycle)
+        # 5. Clamp power output
         pwr = max(-1.0, min(1.0, output))
+        
+        # FIX 3: If hardware is reversed, invert the physical driving power polarity
+        if self.reverse:
+            pwr = -pwr
+
+        # Convert to 16-bit integer for MicroPython PWM duty cycle (0-65535)
         duty = int(abs(pwr) * 65535)
         
+        # 6. Drive H-Bridge 
         if pwr > 0:
             self.backward_pwm.duty_u16(0)
             self.forward_pwm.duty_u16(duty)

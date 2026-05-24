@@ -81,8 +81,12 @@ class GaitIK:
         gait_angles_list = []
         last_roll = 0.0
         for i in self.gait_path:
-            ik = self.ik_computer.calculate(x=self.lateral_roll_offset, y=i[0], z=i[1])
-            is_swing = i[2] if len(i) > 2 else False
+            # i[0] is now final_x, i[1] is final_y, i[2] is final_z, i[3] is is_swing
+            # We combine the base lateral offset (like chassis width) with the step deflection
+            target_x = self.lateral_roll_offset + i[0]
+            
+            ik = self.ik_computer.calculate(x=target_x, y=i[1], z=i[2])
+            is_swing = i[3] if len(i) > 3 else False
             
             current_roll = ik.roll
             if abs(current_roll - last_roll) > 90:
@@ -111,14 +115,33 @@ class GaitPath:
         num_steps = 20
         for i in range(num_steps):
             theta = (i / num_steps) * 2 * math.pi
-            local_y = half_len * math.cos(theta)
-            local_z = (p['h1'] if math.sin(theta) <= 0 else p['h2']) * math.sin(theta)
+            
+            # --- THE FLIP: Positive half_len * cos(theta) ---
+            # This matches +Y (Forward) during the swing phase (when sin(theta) > 0)
+            stride_magnitude = half_len * math.cos(theta)
+            
+            # Use direction_angle to project the stride onto X and Y axes
+            local_x = stride_magnitude * math.sin(p['angle'])  
+            local_y = stride_magnitude * math.cos(p['angle'])  
+            
+            # Vertical trajectory component (Positive sin(theta) means lifting UP)
+            local_z_raw = (p['h1'] if math.sin(theta) >= 0 else p['h2']) * math.sin(theta)
+            
+            # Add base offsets 
+            final_x = local_x  
             final_y = p['cy'] + local_y
-            final_z = p['cz'] + local_z
-            is_swing = math.sin(theta) < -0.1
-            self.gait_xy_path.append([round(float(final_y), 2), round(float(final_z), 2), is_swing])
+            final_z = p['cz'] - local_z_raw  # Subtracting lifts the leg up
+            
+            # Swing flag tracks when the leg is lifting forward through the air
+            is_swing = math.sin(theta) > 0.0
+            
+            self.gait_xy_path.append([
+                round(float(final_x), 2), 
+                round(float(final_y), 2), 
+                round(float(final_z), 2), 
+                is_swing
+            ])
         return self.gait_xy_path
-
 
 class RecoveryPath:
     def __init__(self, ik_computer):

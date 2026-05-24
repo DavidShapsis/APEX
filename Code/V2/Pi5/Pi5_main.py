@@ -13,7 +13,7 @@ WAV_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Core hardware and engine imports
 from power_monitor import INA219
-from InverseKinematics.ik_and_gait import InverseKinematics, GaitPath, GaitIK, RecoveryPath
+from inverse_kinematics.ik_and_gait import InverseKinematics, GaitPath, GaitIK, RecoveryPath
 from audio import QuadrupedAudio
 from webcam import USBWebcam
 from stream_server import RobodogStreamer
@@ -48,6 +48,8 @@ class PiQuadrupedController(Node):
         
         self.recovery_engine = RecoveryPath(self.ik_engine)
         self.gait_processor = GaitIK(self.ik_engine, self.path_gen.gait_xy_path)
+        
+        # Default starting straight gait (Legacy Single Stream Format [Steps][Angles])
         self.all_angles = self.gait_processor.get_gait_ik()
         
         # System State Tracking Management
@@ -97,8 +99,20 @@ class PiQuadrupedController(Node):
         """Flattens gait matrix and publishes to the ROS world for visualization/logging."""
         msg = Float32MultiArray()
         flat_angles = []
-        for step in angles_matrix:
-            flat_angles.extend([step[0], step[1], step[2]])
+        
+        if len(angles_matrix) == 0:
+            return
+            
+        # Detect if it's an interleaved multi-leg matrix shape: [Steps][Leg_Idx][Angles]
+        if isinstance(angles_matrix[0][0], (list, tuple)):
+            for multi_leg_step in angles_matrix:
+                for leg in multi_leg_step:
+                    flat_angles.extend([leg[0], leg[1], leg[2]])
+        else:
+            # Fallback for standard single-stream leg gait layouts [Steps][Angles]
+            for step in angles_matrix:
+                flat_angles.extend([step[0], step[1], step[2]])
+                
         msg.data = flat_angles
         self.joint_pub.publish(msg)
 
@@ -133,14 +147,14 @@ class PiQuadrupedController(Node):
         local_gait = None
 
         while self.is_running:
-            recovery_job = None  # (trigger_serial, recovery_gait) if needed
+            recovery_job = None  
 
             with self.serial_lock:
                 state_check = self.current_state
 
                 if state_check == RobotState.RECOVERY and self.emergency_queue is not None:
-                    recovery_job = self.emergency_queue  # grab it
-                    self.emergency_queue = None           # clear it
+                    recovery_job = self.emergency_queue  
+                    self.emergency_queue = None           
 
                 elif self.gait_update_queue is not None:
                     local_gait = self.gait_update_queue
@@ -156,7 +170,7 @@ class PiQuadrupedController(Node):
                     for step in recovery_gait:
                         packed_data = struct.pack('ffff', float(step[0]), float(step[1]), float(step[2]), float(step[3]))
                         trigger_serial.write(packed_data)
-                        time.sleep(0.01)  # fine here — lock is not held
+                        time.sleep(0.01)  
                     trigger_serial.write(b'\xFF' * 16)
                 except Exception as e:
                     print(f"Serial transmission crash during recovery: {e}")
@@ -181,10 +195,10 @@ class PiQuadrupedController(Node):
                     pass
                 
             aborted = False
+            is_multi_leg_format = isinstance(local_gait[0][0], (list, tuple))
             
-            # SCOPE 2: Run the physical loop WITHOUT holding the lock globally
+            # --- PROTECTED HYBRID SERIAL ENGINE LOOP ---
             for i in range(num_steps):
-                # Briefly check if an emergency abort was triggered by the main thread
                 with self.serial_lock:
                     if self.current_state == RobotState.RECOVERY:
                         aborted = True
@@ -192,14 +206,21 @@ class PiQuadrupedController(Node):
                 
                 for leg_idx, s in enumerate(self.ser_list):
                     step_idx = (i + offsets[leg_idx]) % num_steps
-                    step = local_gait[step_idx]
+                    
+                    if is_multi_leg_format:
+                        # Extract the path mapped for this specific leg profile
+                        step = local_gait[step_idx][leg_idx]
+                    else:
+                        # Fallback parsing for legacy standard single-stream arrays
+                        step = local_gait[step_idx]
+                    
                     packed_data = struct.pack('ffff', float(step[0]), float(step[1]), float(step[2]), float(step[3]))
                     try:
                         s.write(packed_data)
                     except Exception as e:
                         print(f"Serial write error on leg {leg_idx}: {e}")
                 
-                time.sleep(0.001) # just a brief yield so the lock stays open for the main thread
+                time.sleep(0.001) 
     
             if aborted:
                 local_gait = None 
@@ -267,6 +288,7 @@ def main():
     executor_thread.start()
     print("ROS 2 Unified Multi-Node Infrastructure Started")
 
+    # Boot initialization safely handled using verified single-stream array
     controller.send_entire_gait(controller.all_angles)
 
     try:
@@ -312,7 +334,6 @@ def main():
 
                 chosen_direction = snap_target_dir 
                 if snap_state == RobotState.AUTONOMOUS:
-                    # Safely forward coordinates to the real method name
                     nav_data = nav_engine.calculate_nav(gps.lat, gps.lon, controller.filtered_heading)
                     if nav_data is not None:
                         chosen_direction = nav_data["turn"]
@@ -328,25 +349,48 @@ def main():
                     if int(current_time) % 2 == 0: 
                         print(f"[IMU Reflex] Stabilizing active stance matrix. Shifts -> X: {clipped_roll_x:.2f}, Y: {clipped_pitch_y:.2f}")
 
-                    direction_rad = math.radians(chosen_direction)
-                    longitudinal_stride = 10.0 * math.cos(direction_rad)  # scales forward stride
-                    lateral_stride = 5.0 * math.sin(direction_rad)         # drives lateral_roll_offset
+                    # --- TRUE BODY STEERING (DIFFERENTIAL) ARCHITECTURE ---
+                    steering_factor = chosen_direction / 45.0  
+                    steering_factor = max(-1.0, min(1.0, steering_factor)) 
+                    
+                    base_stride = 10.0 
+                    
+                    # Inside vs Outside stride length scaling calculations
+                    left_side_stride = base_stride * (1.0 + (0.5 * steering_factor))
+                    right_side_stride = base_stride * (1.0 - (0.5 * steering_factor))
 
+                    # 1. Generate Left Leg Gait Path Points
                     controller.path_gen.update_params(
-                        center_stride_y=clipped_pitch_y,
-                        center_height_z=36.0,
-                        length=longitudinal_stride,
-                        height1=5.0,
-                        height2=2.5,
-                        direction_angle=0  # angle no longer used in GaitPath
+                        center_stride_y=clipped_pitch_y, center_height_z=36.0,
+                        length=left_side_stride, height1=5.0, height2=2.5, direction_angle=0
                     )
+                    left_gait_processor = GaitIK(controller.ik_engine, controller.path_gen.gait_xy_path, lateral_roll_offset=clipped_roll_x)
+                    left_angles = left_gait_processor.get_gait_ik()
 
-                    controller.gait_processor = GaitIK(
-                        controller.ik_engine,
-                        controller.path_gen.gait_xy_path,
-                        lateral_roll_offset=clipped_roll_x + lateral_stride  # IMU roll + steering
+                    # 2. Generate Right Leg Gait Path Points
+                    controller.path_gen.update_params(
+                        center_stride_y=clipped_pitch_y, center_height_z=36.0,
+                        length=right_side_stride, height1=5.0, height2=2.5, direction_angle=0
                     )
-                    new_angles = controller.gait_processor.get_gait_ik()
+                    right_gait_processor = GaitIK(controller.ik_engine, controller.path_gen.gait_xy_path, lateral_roll_offset=clipped_roll_x)
+                    right_angles = right_gait_processor.get_gait_ik()
+
+                    # 3. Interleave steps into a structural multi-channel matrix layout
+                    num_steps = len(left_angles)
+                    new_angles = []
+                    
+                    for step_idx in range(num_steps):
+                        # Layout maps directly to Pico ports:
+                        # Leg 0: Left (/dev/ttyAMA0) | Leg 1: Right (/dev/ttyAMA2)
+                        # Leg 2: Right (/dev/ttyAMA3) | Leg 3: Left (/dev/ttyAMA4)
+                        frame_legs_data = [
+                            left_angles[step_idx],   
+                            right_angles[step_idx],  
+                            right_angles[step_idx],  
+                            left_angles[step_idx]    
+                        ]
+                        new_angles.append(frame_legs_data)
+
                     controller.send_entire_gait(new_angles)
 
                     with controller.serial_lock:
