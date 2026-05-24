@@ -32,31 +32,32 @@ last_step_time = time.ticks_ms()
 current_targets = [0.0, 0.0, 0.0]
 PAYLOAD_SIZE = 12 # 3 joints * 4 bytes per float
 
-wwhile True:
+while True:  # Fixed the 'wwhile' typo
     # 1. READ UART (Binary Protocol Parser)
-    if uart.any() >= 2:
-        if not is_receiving:
+    if not is_receiving:
+        # Check for the 2-byte magic header safely
+        if uart.any() >= 2:
             magic = uart.read(2)
             if magic == b'\xAA\xAA':
                 gait_buffer = []
                 is_receiving = True
                 has_aborted = False
-        else:
-            # We check if a complete 12-byte payload chunk has arrived
-            if uart.any() >= PAYLOAD_SIZE:
-                full_payload = uart.read(PAYLOAD_SIZE)
-                
-                # Check against the bulletproof 12-byte NaN marker
-                if full_payload == b'\xFF' * 12:
-                    is_receiving = False
-                    current_step_index = 0
-                    last_step_time = time.ticks_ms()
-                else:
-                    try:
-                        parts = list(struct.unpack('fff', full_payload))
-                        gait_buffer.append(parts)
-                    except:
-                        pass
+    else:
+        # Check if a complete 12-byte payload chunk has arrived
+        if uart.any() >= PAYLOAD_SIZE:
+            full_payload = uart.read(PAYLOAD_SIZE)
+            
+            # Check against the bulletproof 12-byte NaN marker
+            if full_payload == b'\xFF' * 12:
+                is_receiving = False
+                current_step_index = 0
+                last_step_time = time.ticks_ms()
+            else:
+                try:
+                    parts = list(struct.unpack('fff', full_payload))
+                    gait_buffer.append(parts)
+                except:
+                    pass
 
     # 2. GROUND CHECK (The Abort Logic)
     any_touchdown = any(f.state for f in fsrs)

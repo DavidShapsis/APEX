@@ -190,7 +190,7 @@ compass = CompassReader(bus_id=1)
 nav_engine = Navigator(MISSION_WAYPOINTS)
 
 # Vision (Instantiated ONCE globally so the thread targets the correct object)
-cam = USBWebcam(device_index=0)
+cam = USBWebcam(device_index="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_Camera_SN0001-video-index0")
 streamer = RobodogStreamer()
 
 def camera_loop():
@@ -217,6 +217,7 @@ last_audio_warning = 0
 
 # --- Execution Runtime Entrypoint ---
 def main():
+    global last_audio_warning, last_power_check
     controller = PiQuadrupedController()
 
     # Create a MultiThreadedExecutor to manage both nodes cleanly under one system context
@@ -234,84 +235,86 @@ def main():
 
     try:
         while rclpy.ok():
-            current_time = time.time()
-            gps.update()
-            
-            # 1. Read & Filter Compass Orientation Data
-            raw_head = compass.get_heading()
-            controller.filtered_heading = (0.1 * raw_head) + (0.9 * controller.filtered_heading)
-
-            # 2. Extract IMU Readings for Closed-Loop Stability Correction
-            roll_tilt = imu.get_roll()    # Left-to-right lean
-            pitch_tilt = imu.get_pitch()  # Front-to-back lean
-            
-            if abs(roll_tilt) > 8.0 or abs(pitch_tilt) > 8.0:
-                print(f"[IMU Warning] Tilt detected! Roll: {roll_tilt:.2f}, Pitch: {pitch_tilt:.2f}")
-
-            # 3 & 4. Evaluate States and Extract Navigation Directives
-            chosen_direction = controller.last_sent_direction
-            
-            if controller.current_state == RobotState.MANUAL:
-                chosen_direction = controller.target_direction
+            try:  # <--- Add an inner try block
+                current_time = time.time()
+                gps.update()
                 
-            elif controller.current_state == RobotState.AUTONOMOUS:
-                if gps.has_fix:
-                    nav_data = nav_engine.calculate_nav(gps.lat, gps.lon, controller.filtered_heading)
-                    if nav_data:
-                        chosen_direction = nav_data['turn']
-                        streamer.current_direction = chosen_direction
-                        if int(current_time) % 2 == 0: 
-                            print(f"[AUTO] Target Turn: {chosen_direction:.1f}° | Dist: {nav_data['dist']:.1f}m")
+                # 1. Read & Filter Compass Orientation Data
+                raw_head = compass.get_heading()
+                controller.filtered_heading = (0.1 * raw_head) + (0.9 * controller.filtered_heading)
+
+                # 2. Extract IMU Readings for Closed-Loop Stability Correction
+                roll_tilt = imu.get_roll()    # Left-to-right lean
+                pitch_tilt = imu.get_pitch()  # Front-to-back lean
+                
+                if abs(roll_tilt) > 8.0 or abs(pitch_tilt) > 8.0:
+                    print(f"[IMU Warning] Tilt detected! Roll: {roll_tilt:.2f}, Pitch: {pitch_tilt:.2f}")
+
+                # 3 & 4. Evaluate States and Extract Navigation Directives
+                chosen_direction = controller.last_sent_direction
+                
+                if controller.current_state == RobotState.MANUAL:
+                    chosen_direction = controller.target_direction
+                    
+                elif controller.current_state == RobotState.AUTONOMOUS:
+                    if gps.has_fix:
+                        nav_data = nav_engine.calculate_nav(gps.lat, gps.lon, controller.filtered_heading)
+                        if nav_data:
+                            chosen_direction = nav_data['turn']
+                            streamer.current_direction = chosen_direction
+                            if int(current_time) % 2 == 0: 
+                                print(f"[AUTO] Target Turn: {chosen_direction:.1f}° | Dist: {nav_data['dist']:.1f}m")
+                        else:
+                            print("Destination Reached! Returning to Manual Hold.")
+                            # Publish a direct message to alter the global state cleanly
+                            msg = Bool()
+                            msg.data = False
+                            controller.nav_mode_pub.publish(msg) # Let the subscription callbacks sync the state uniformly!
                     else:
-                        print("Destination Reached! Returning to Manual Hold.")
-                        # Publish a direct message to alter the global state cleanly
-                        msg = Bool()
-                        msg.data = False
-                        controller.nav_mode_pub.publish(msg) # Let the subscription callbacks sync the state uniformly!
-                else:
-                    if int(current_time) % 5 == 0:
-                        print("[AUTO Warning] Waiting for valid GPS Fix...")
+                        if int(current_time) % 5 == 0:
+                            print("[AUTO Warning] Waiting for valid GPS Fix...")
 
-            elif controller.current_state == RobotState.RECOVERY:
-                # Stall logic handles writing movements directly; bypass routine kinematic loop changes
-                time.sleep(0.01)
-                continue
+                elif controller.current_state == RobotState.RECOVERY:
+                    pass
 
-            # Check if steering direction has updated significantly
-            if abs(chosen_direction - controller.last_sent_direction) > 5:
-                print(f"Recalculating Kinematics Path for Direction: {chosen_direction}°")
-                controller.path_gen.update_params(
-                    center_x=5, center_y=36, length=10, height1=5, height2=2.5, direction_angle=chosen_direction
-                )
-                controller.gait_processor = GaitIK(controller.ik_engine, controller.path_gen.gait_xy_path)
-                new_angles = controller.gait_processor.get_gait_ik()
+                # Check if steering direction has updated significantly
+                if abs(chosen_direction - controller.last_sent_direction) > 5:
+                    print(f"Recalculating Kinematics Path for Direction: {chosen_direction}°")
+                    controller.path_gen.update_params(
+                        center_x=5, center_y=36, length=10, height1=5, height2=2.5, direction_angle=chosen_direction
+                    )
+                    controller.gait_processor = GaitIK(controller.ik_engine, controller.path_gen.gait_xy_path)
+                    new_angles = controller.gait_processor.get_gait_ik()
+                    
+                    controller.send_entire_gait(new_angles)
+                    controller.last_sent_direction = chosen_direction
+
+                # 5. Diagnostic Power Threshold Checks
+                if current_time - last_power_check > 1.0:
+                    v = power_monitor.get_voltage()
+                    c = power_monitor.get_current()
+                    if (v < LOW_VOLT_THRESHOLD or c > MAX_CURRENT_MA) and (current_time - last_audio_warning > AUDIO_COOLDOWN):
+                        audio_engine.play("low_battery.wav")
+                        # Fixed local variable assignment scope issue inside main()
+                        last_audio_warning = current_time
+                    last_power_check = current_time
+
+                # 6. Physical Microcontroller Stall Monitoring
+                for s in controller.ser_list:
+                    if s.in_waiting > 0:
+                        try:
+                            line = s.readline().decode('utf-8', errors='ignore').strip()
+                            if line.startswith("ABORTED"):
+                                print(f"Hardware Stall Warning on UART: {s.port}")
+                                audio_engine.play("abort_sound.wav")
+                                controller.handle_recovery(line, s)
+                        except Exception as ser_err:
+                            print(f"Serial read error: {ser_err}")
                 
-                controller.send_entire_gait(new_angles)
-                controller.last_sent_direction = chosen_direction
-
-            # 5. Diagnostic Power Threshold Checks
-            if current_time - last_power_check > 1.0:
-                v = power_monitor.get_voltage()
-                c = power_monitor.get_current()
-                if (v < LOW_VOLT_THRESHOLD or c > MAX_CURRENT_MA) and (current_time - last_audio_warning > AUDIO_COOLDOWN):
-                    audio_engine.play("low_battery.wav")
-                    # Fixed local variable assignment scope issue inside main()
-                    last_audio_warning = current_time
-                last_power_check = current_time
-
-            # 6. Physical Microcontroller Stall Monitoring
-            for s in controller.ser_list:
-                if s.in_waiting > 0:
-                    try:
-                        line = s.readline().decode('utf-8', errors='ignore').strip()
-                        if line.startswith("ABORTED"):
-                            print(f"Hardware Stall Warning on UART: {s.port}")
-                            audio_engine.play("abort_sound.wav")
-                            controller.handle_recovery(line, s)
-                    except Exception as ser_err:
-                        print(f"Serial read error: {ser_err}")
-            
-            time.sleep(0.01)
+                time.sleep(0.01)
+            except Exception as loop_err:  # <--- Catch minor runtime hiccups safely
+                print(f"[RUNTIME WARNING] Iteration skipped due to error: {loop_err}")
+                time.sleep(0.01)
 
     except KeyboardInterrupt:
         print("\nShutting down controller hardware nodes safely...")

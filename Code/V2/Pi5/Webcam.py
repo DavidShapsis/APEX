@@ -3,10 +3,13 @@ import cv2
 class USBWebcam:
     def __init__(self, device_index=0, width=640, height=480):
         """
-        Initialize the webcam.
-        device_index: Usually 0 for the first USB cam.
+        Initialize the webcam with explicit V4L2 and MJPEG formats for Pi 5.
         """
-        self.cap = cv2.VideoCapture(device_index)
+        # Force the V4L2 backend driver directly
+        self.cap = cv2.VideoCapture(device_index, cv2.CAP_V4L2)
+        
+        # Force the MJPEG pixel format codec 
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         
         # Set resolution
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -16,6 +19,7 @@ class USBWebcam:
             print(f"Error: Could not open webcam at index {device_index}")
             self.running = False
         else:
+            print(f"Webcam successfully initialized at index {device_index}!")
             self.running = True
 
     def get_frame(self):
