@@ -1,8 +1,8 @@
 import time
 import struct 
 from machine import UART, Pin
-from FSR import FSR
-from Motor_Control import JointController
+from fsr import FSR
+from motor_control import JointController
 
 print("Imports successful")
 

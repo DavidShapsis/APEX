@@ -12,13 +12,13 @@ import os
 WAV_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Core hardware and engine imports
-from Power_Monitor import INA219
-from InverseKinematics.IK_and_Gait import InverseKinematics, GaitPath, GaitIK, RecoveryPath
-from Audio import QuadrupedAudio
-from Webcam import USBWebcam
-from Stream_Server import RobodogStreamer
-from Navigation import GPSReader, CompassReader, Navigator
-from IMU import IMU
+from power_monitor import INA219
+from InverseKinematics.ik_and_gait import InverseKinematics, GaitPath, GaitIK, RecoveryPath
+from audio import QuadrupedAudio
+from webcam import USBWebcam
+from stream_server import RobodogStreamer
+from navigation import GPSReader, CompassReader, Navigator
+from imu import IMU
 
 class RobotState:
     MANUAL = 0
