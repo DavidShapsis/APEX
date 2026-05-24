@@ -105,7 +105,7 @@ class Navigator:
         if turn_error > 180: turn_error -= 360
         if turn_error < -180: turn_error += 360
 
-        dist = math.acos(math.sin(rad_lat1)*math.sin(rad_lat2) + 
-                         math.cos(rad_lat1)*math.cos(rad_lat2) * math.cos(d_lon)) * 6371000
+        acos_arg = (math.sin(rad_lat1)*math.sin(rad_lat2) + math.cos(rad_lat1)*math.cos(rad_lat2) * math.cos(d_lon))
+        dist = math.acos(max(-1.0, min(1.0, acos_arg))) * 6371000
         if dist < 1.5: self.wp_idx += 1 
         return {"turn": turn_error, "dist": dist}

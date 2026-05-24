@@ -80,12 +80,13 @@ class GaitIK:
         last_roll = 0.0
         for i in self.gait_path:
             ik = self.ik_computer.calculate(x=self.lateral_roll_offset, y=i[0], z=i[1])
+            is_swing = i[2] if len(i) > 2 else False
             
             current_roll = ik.roll
             if abs(current_roll - last_roll) > 90:
                 current_roll = last_roll
             
-            gait_angles_list.append([current_roll, ik.pitch, ik.knee])
+            gait_angles_list.append([current_roll, ik.pitch, ik.knee, 1.0 if is_swing else 0.0])
             last_roll = current_roll
         return gait_angles_list
 
@@ -103,25 +104,17 @@ class GaitPath:
 
     def generate_path(self):
         p = self.params
-        half_len = p['len'] / 2    
-        angle = p['angle']
-        
+        half_len = p['len'] / 2
         self.gait_xy_path = []
         num_steps = 20
-        for i in range(num_steps): 
+        for i in range(num_steps):
             theta = (i / num_steps) * 2 * math.pi
-            
-            local_y = half_len * math.cos(theta) 
+            local_y = half_len * math.cos(theta)
             local_z = (p['h1'] if math.sin(theta) <= 0 else p['h2']) * math.sin(theta)
-
-            # Transform heading alignment matrices on the active tracking plane
-            rot_y = local_y * math.cos(angle) - local_z * math.sin(angle)
-            rot_z = local_y * math.sin(angle) + local_z * math.cos(angle)
-            
-            final_y = p['cy'] + rot_y  # True Forward-Backward Longitudinal Offset
-            final_z = p['cz'] + rot_z  # True Ground Clearance Height Stance
-            
-            self.gait_xy_path.append([round(float(final_y), 2), round(float(final_z), 2)])
+            final_y = p['cy'] + local_y
+            final_z = p['cz'] + local_z
+            is_swing = math.sin(theta) <= 0  # foot lifting off ground
+            self.gait_xy_path.append([round(float(final_y), 2), round(float(final_z), 2), is_swing])
         return self.gait_xy_path
 
 
@@ -142,6 +135,6 @@ class RecoveryPath:
             target_z = current_z + (self.home_z - current_z) * t
             
             ik = self.ik_computer.calculate(x=target_x, y=target_y, z=target_z)
-            recovery_angles.append([ik.roll, ik.pitch, ik.knee])
+            recovery_angles.append([ik.roll, ik.pitch, ik.knee, 0.0])
             
         return recovery_angles

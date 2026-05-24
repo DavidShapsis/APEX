@@ -1,3 +1,4 @@
+from time import time
 import cv2
 import threading
 from flask import Flask, Response, request, jsonify
@@ -107,12 +108,14 @@ class RobodogStreamer(Node):
     def generate(self):
         while True:
             with self.lock:
-                if self.output_frame is None: 
-                    continue
+                if self.output_frame is None:
+                    pass
+                else:
+                    (flag, encodedImage) = cv2.imencode(".jpg", self.output_frame)
+                    if flag:
+                        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
                 (flag, encodedImage) = cv2.imencode(".jpg", self.output_frame)
-                if not flag: 
-                    continue
-            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
+            time.sleep(0.03)
 
     def video_feed(self):
         return Response(self.generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
