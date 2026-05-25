@@ -5,7 +5,7 @@ from mpl_toolkits.mplot3d import Axes3D
 
 # --- IMPORT PRODUCTION CLASSES FROM YOUR CENTRAL FILE ---
 try:
-    from ik_and_gait import InverseKinematics, GaitPath, GaitIK
+    from Code.Pi5.inverse_kinematics.ik_and_gait import InverseKinematics, GaitPath, GaitIK
 except ImportError:
     print("\n[ERROR] Could not find 'ik_and_gait.py' in this directory.")
     print("Ensure this script is saved in the same folder as your main codebase.\n")
