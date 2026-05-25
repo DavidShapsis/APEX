@@ -112,6 +112,6 @@ class Navigator:
 
         acos_arg = (math.sin(rad_lat1)*math.sin(rad_lat2) + math.cos(rad_lat1)*math.cos(rad_lat2) * math.cos(d_lon))
         dist = math.acos(max(-1.0, min(1.0, acos_arg))) * 6371000
-        if dist < 4.0: 
+        if dist < 4.0:
             self.wp_idx += 1
-            return {"turn": turn_error, "dist": dist}
+        return {"turn": turn_error, "dist": dist}
