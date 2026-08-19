@@ -43,9 +43,11 @@ class TestPi5QuadrupedSoftware(unittest.TestCase):
         # Instantiate node
         controller = PiQuadrupedController()
         
-        # --- FIXED FOR PRODUCTION: The end_marker is a 16-byte protocol definition block (4 floats) ---
+        # Two 16-byte terminators: 0xFF tells the Pico to cycle the buffer,
+        # 0xFE tells it to hold on the final step (used for recovery paths).
         self.assertTrue(hasattr(controller, 'end_marker'), "Missing 'end_marker' attribute in controller setup!")
-        self.assertEqual(controller.end_marker, b'\xFF' * 16, "The end_marker is not configured to the 16-byte NaN block.")
+        self.assertEqual(controller.end_marker, b'\xFF' * 16, "The cycling end_marker is not the 16-byte 0xFF block.")
+        self.assertEqual(controller.oneshot_end_marker, b'\xFE' * 16, "The one-shot end marker is not the 16-byte 0xFE block.")
         
         # Verify initial state engine allocation
         self.assertEqual(controller.current_state, RobotState.MANUAL)
@@ -91,10 +93,10 @@ class TestPi5QuadrupedSoftware(unittest.TestCase):
         # Ensure recovery reverted back to previous state tracking automatically
         self.assertEqual(controller.current_state, RobotState.MANUAL, "The recovery routine failed to release the state machine back to MANUAL mode.")
         
-        # Verify the binary stream protocol formatting matches exactly what we fixed
-        # Expected: START marker, 16-byte float pack, then 16-byte NaN termination block
+        # Expected: START marker, 16-byte float packs, then the one-shot
+        # terminator -- a recovery path must not be cycled by the Pico.
         mock_port.write.assert_any_call(b'\xAA\xAA')
-        mock_port.write.assert_any_call(b'\xFF' * 16)
+        mock_port.write.assert_any_call(b'\xFE' * 16)
         
         controller.close_hardware()
 

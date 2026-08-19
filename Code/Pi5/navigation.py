@@ -11,30 +11,44 @@ class GPSReader:
         self.lat, self.lon = 0.0, 0.0
         self.has_fix = False
         self.satellites = 0
+        self._rx = b''
 
     def update(self):
-        if self.ser.in_waiting > 0:
+        """Drains the GPS UART without blocking. True if a fresh position parsed.
+
+        readline() is unusable here: in_waiting > 0 does not mean a whole NMEA
+        sentence has arrived, so a partial one blocks for the full timeout inside
+        the 100Hz control loop.
+        """
+        updated = False
+        try:
+            pending = self.ser.in_waiting
+            if pending:
+                self._rx += self.ser.read(pending)
+        except Exception:
+            return False
+
+        while b'\n' in self._rx:
+            raw, self._rx = self._rx.split(b'\n', 1)
+            line = raw.decode('ascii', errors='replace')
+            if 'GGA' not in line:
+                continue
             try:
-                line = self.ser.readline().decode('ascii', errors='replace')
-                if 'GGA' in line:
-                    parts = line.split(',')
-                    if len(parts) > 7 and parts[2] and parts[4]:
-                        # Latitude is part 2, Direction is part 3
+                parts = line.split(',')
+                if len(parts) > 7:
+                    # Fix quality (part 6) is read even when lat/lon are blank,
+                    # so a lost fix clears the flag instead of leaving it stale.
+                    self.has_fix = bool(parts[6]) and int(parts[6]) > 0
+                    self.satellites = int(parts[7]) if parts[7] else 0
+
+                    # Latitude is part 2 / direction 3, longitude 4 / direction 5
+                    if self.has_fix and parts[2] and parts[4]:
                         self.lat = self.convert_to_decimal(parts[2], parts[3])
-                        
-                        # Longitude is part 4, Direction is part 5
                         self.lon = self.convert_to_decimal(parts[4], parts[5])
-                        
-                        # Quality/Fix status (1 or 2 means we have a fix)
-                        self.has_fix = int(parts[6]) > 0
-                        
-                        # Satellites is part 7
-                        self.satellites = int(parts[7])
-                        
-                        return True
-            except: 
+                        updated = True
+            except Exception:
                 pass
-        return False
+        return updated
 
     def convert_to_decimal(self, raw_value, direction):
         if not raw_value or not direction:
