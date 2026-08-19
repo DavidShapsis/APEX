@@ -27,6 +27,8 @@ class IMU:
         self.bno.enable_feature(BNO08X.REPORT_LINEAR_ACCELERATION)
         self.bno.enable_feature(BNO08X.REPORT_ROTATION_VECTOR)
 
+        # Roll/pitch are held as (sin, cos) pairs so the moving average survives
+        # the +/-180 wrap; averaging the degree values directly does not.
         self.history_roll = deque(maxlen=window_size)
         self.history_pitch = deque(maxlen=window_size)
         self.history_accel_x = deque(maxlen=window_size)
@@ -35,6 +37,13 @@ class IMU:
         
         self.current_roll = 0.0
         self.current_pitch = 0.0
+
+    @staticmethod
+    def _circular_mean(history):
+        """Mean of angles stored as (sin, cos) pairs, returned in degrees."""
+        sin_sum = sum(v[0] for v in history)
+        cos_sum = sum(v[1] for v in history)
+        return math.degrees(math.atan2(sin_sum, cos_sum))
 
     def _quat_to_pitch_roll(self, i, j, k, real):
         """Calculates precise pitch and roll conversions from input quaternion structures."""
@@ -57,14 +66,15 @@ class IMU:
             r, p = self._quat_to_pitch_roll(quat[0], quat[1], quat[2], quat[3])
             ax, ay, az = accel
 
-            self.history_roll.append(r)
-            self.history_pitch.append(p)
+            r_rad, p_rad = math.radians(r), math.radians(p)
+            self.history_roll.append((math.sin(r_rad), math.cos(r_rad)))
+            self.history_pitch.append((math.sin(p_rad), math.cos(p_rad)))
             self.history_accel_x.append(ax)
             self.history_accel_y.append(ay)
             self.history_accel_z.append(az)
 
-            self.current_roll = sum(self.history_roll) / len(self.history_roll)
-            self.current_pitch = sum(self.history_pitch) / len(self.history_pitch)
+            self.current_roll = self._circular_mean(self.history_roll)
+            self.current_pitch = self._circular_mean(self.history_pitch)
 
             return {
                 "roll": self.current_roll,

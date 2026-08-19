@@ -33,7 +33,10 @@ IK_SEGMENTS = {'a': 9.65, 'b': 26.84, 'c': 24.37}
 DEFAULT_HEIGHT_Z   = 36.0
 DEFAULT_STRIDE_LEN = 10.0
 DEFAULT_HEIGHT1    = 5.0
-DEFAULT_HEIGHT2    = 2.5
+# 0, not 2.5: on the full robot three feet are planted at different points in the
+# stance phase, so a downward push commands them to different depths and they
+# cannot all reach flat ground. Kept consistent here so the rig matches.
+DEFAULT_HEIGHT2    = 0.0
 # ─────────────────────────────────────────────
  
  
@@ -57,7 +60,8 @@ class SingleLegController:
         self.gait_processor = GaitIK(self.ik_engine, self.path_gen.gait_xy_path)
         self.all_angles     = self.gait_processor.get_gait_ik()
  
-        self.end_marker   = b'\xFF' * 16
+        self.end_marker         = b'\xFF' * 16   # gait: Pico loops the buffer
+        self.oneshot_end_marker = b'\xFE' * 16   # recovery: Pico holds the final step
         self.serial_lock  = threading.Lock()
         self.gait_queue   = None        # pending gait array for the worker
         self.recovery_job = None        # (recovery_gait,) pending recovery
@@ -162,7 +166,7 @@ class SingleLegController:
                                                          float(step[2]), float(step[3]))
                             self.ser.write(packed)
                             time.sleep(0.01)
-                        self.ser.write(self.end_marker)
+                        self.ser.write(self.oneshot_end_marker)
                         print("[RECOVERY] Transmission complete")
                     except Exception as e:
                         print(f"[RECOVERY] Serial error: {e}")
@@ -210,6 +214,11 @@ class SingleLegController:
                 self.ser.write(self.end_marker)
             except Exception as e:
                 print(f"[SERIAL] End marker error: {e}")
+
+            # The Pico cycles the buffer itself, so one clean frame is enough.
+            # Re-broadcasting would flush this frame mid-flight on the next pass
+            # (~20ms loop vs ~29.3ms wire time) and it would never arrive whole.
+            local_gait = None
  
     # ── Inbound serial reader (runs in its own thread) ─────────────────────────
  

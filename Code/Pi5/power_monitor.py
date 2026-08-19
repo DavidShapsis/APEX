@@ -36,6 +36,8 @@ class INA219:
         return raw * 0.2
 
     def get_power(self):
+        """Returns Power in Milliwatts (mW)"""
         if not self.available: return 0.0
         raw = self._read_reg(0x03)
-        return raw * 2.0
+        # Power LSB is 20x the current LSB: 20 * 0.2mA * 1V = 4.0 mW
+        return raw * 4.0

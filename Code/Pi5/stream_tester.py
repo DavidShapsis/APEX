@@ -13,8 +13,8 @@ if parent_dir not in sys.path:
 
 try:
     import rclpy
-    from Webcam import USBWebcam
-    from Stream_Server import RobodogStreamer
+    from webcam import USBWebcam
+    from stream_server import RobodogStreamer
     print("[INIT] Dependencies imported successfully.")
 except ImportError as e:
     print(f"[ERROR] Import Error: {e}")
