@@ -1,11 +1,11 @@
- **⚠️ This is an ongoing project. The code, CAD, and documentation are all actively being developed and are not final. Expect frequent changes.**
+ **⚠️ This is an ongoing project. The code, CAD, and documentation are all actively being developed and are not final.**
  
 ---
  
 # APEX — Autonomous Precision Exploration
  
-A fully custom-built quadruped robot dog designed and coded from scratch by a 9th grader. No kit. No tutorial. Just CAD, math, and a lot of broken parts.
- 
+A fully custom-built quadruped robot dog designed and coded from scratch.
+
 APEX is designed to walk across varied outdoor terrain using real-time inverse kinematics, stay balanced using an IMU, navigate to GPS waypoints autonomously, and stream live camera footage back to any device over WiFi. The long-term goal is onboard ML-based obstacle avoidance for fully autonomous terrain exploration.
  
 ![Status](https://img.shields.io/badge/status-in%20progress-yellow)
@@ -19,14 +19,16 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
  
 - **Inverse Kinematics** — custom 3-link IK engine with forward kinematics for recovery, computing joint angles in real time for all four legs
 - **Differential Gait Control** — tank-style differential steering with independent left/right stride lengths for smooth turning
-- **IMU Stabilization** — BNO085 quaternion-based roll and pitch correction applied continuously to the gait path
+- **IMU Stabilization** — BNO085 quaternion-based roll/pitch feeds a per-leg differential foot-height correction, so the body actually levels instead of just translating
 - **GPS Navigation** — autonomous waypoint following using bearing and distance calculations from a HGLRC M100 GPS module
 - **Live Video Streaming** — USB webcam feed served over Flask to any device on the same network
-- **FSR Foot Sensing** — force sensitive resistors on each foot trigger an automatic recovery routine on unexpected ground contact
-- **ROS 2 Integration** — inter-node communication via ROS 2 topics for direction commands and navigation mode switching
+- **Guided Startup** — web dashboard walks through homing each leg, standing, and going, before the robot is allowed to walk; a Stop control cuts motor power without losing homing
+- **Current Sensing Foot Detection** *(in progress)* — motor current sensing on unexpected ground contact triggers an automatic recovery routine, replacing the FSR-based approach
+- **ROS 2 Integration** — inter-node communication via ROS 2 topics for direction commands, navigation mode switching, and the homing/stand/go/stop dashboard controls
+
 ---
  
-## Hardware
+## BOM
  
 | Component | Qty | Notes |
 |---|---|---|
@@ -37,34 +39,34 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 | BNO085 IMU | 1 | Quaternion-based orientation |
 | HGLRC M100-5883 GPS/Compass | 1 | Outdoor autonomous nav |
 | INA219 Voltage/Current Monitor | 1 | Battery telemetry |
-| Force Sensitive Resistors | 8 | Foot contact detection |
 | Carbon Fiber Tube (16x12mm) | — | Lower leg structure |
 | Aluminum 6063 Tube (1in OD) | — | Upper leg structure |
 | 3S 11.1V LiPo 80C 5Ah | 1 | Motor power |
 | 2S 7.6V LiHV 3.5Ah | 1 | Electronics power |
 | Custom PCB | 1 | High-current motor control, in progress |
- 
+ *BOM subject to change. For the most recent BOM go to [APEX BOM on Google Sheets](https://docs.google.com/spreadsheets/d/1m-T2-i6hj74-5jb7eDYWLMdHvXfgs2ABYw7gbwLl6ZI/edit?usp=sharing)*
 ---
  
 ## Software Architecture
  
 ```
 Pi 5 (ROS 2)
-├── pi5_main.py          # Main control loop, IMU, GPS, gait generation
+├── pi5_main.py          # Main control loop, IMU, GPS, gait generation, homing/stand/go/stop state
 ├── inverse_kinematics/
-│   └── ik_and_gait.py   # IK, FK, GaitPath, GaitIK, RecoveryPath
+│   ├── ik_and_gait.py   # IK, FK, GaitPath, GaitIK, RecoveryPath, shared leg/body geometry
+│   └── quadruped_sim.py # PC-only 4-leg gait simulator (no ROS) -- --report and 3D animation modes
 ├── imu.py               # BNO085 quaternion → roll/pitch
 ├── navigation.py        # GPS parsing, compass, waypoint navigation
-├── stream_server.py     # Flask + OpenCV camera stream
+├── stream_server.py     # Flask dashboard -- camera stream, direction/nav, homing/stand/go/stop
 ├── webcam.py            # USB camera capture
 ├── power_monitor.py     # INA219 voltage/current
 ├── audio.py             # Bluetooth speaker alerts
 └── single_leg_test.py   # Standalone single-leg test harness (no ROS/IMU/GPS)
  
 Pico (MicroPython, x4)
-├── pico_main.py         # UART receiver, gait buffer, PID execution loop
+├── pico_main.py         # UART receiver, gait buffer, PID execution loop, homing/stop commands
 ├── motor_control.py     # BTS7960 PID joint controller with encoder feedback
-└── fsr.py               # Force sensitive resistor foot contact
+└── fsr.py               # Force sensitive resistor foot contact (being replaced by current sensing)
 ```
  
 ### Pi to Pico Protocol
@@ -72,9 +74,13 @@ Pico (MicroPython, x4)
 The Pi sends gait data over UART to each Pico using a binary protocol:
  
 - **Start:** `0xAA 0xAA`
-- **Payload:** 20 steps × 16 bytes each (`struct.pack('ffff', roll, pitch, knee, is_swing)`)
-- **End:** `0xFF × 16`
-Each Pico independently steps through the gait buffer at 20ms per step. The four legs are phase-offset by `[0, N/2, 3N/4, N/4]` for a trot gait pattern.
+- **Home leg:** `0xAB 0xAB` -- zero this leg's encoders to the current physical pose, no payload
+- **Stop leg:** `0xAC 0xAC` -- cut motor holding torque, keep encoder tracking, no payload
+- **Payload:** up to 20 steps (gait) or 40 (ramp) x 16 bytes each (`struct.pack('ffff', roll, pitch, knee, is_swing)`)
+- **End (cycle):** `0xFF × 16` -- Pico loops the buffer indefinitely (the walking gait)
+- **End (one-shot):** `0xFE × 16` -- Pico holds the final step (startup/recovery ramps)
+ 
+Each Pico steps through the gait buffer at 40ms per step. It's a **crawl gait, one leg airborne at a time** (25% swing / 75% stance duty factor) rather than a trot -- the four legs are phase-offset by `[0, N/2, 3N/4, N/4]`, giving lift order FL → RR → FR → RL, with three feet always planted. Each Pico also announces `LEG,<id>` over UART until it's identified, and reports `HOMED,<id>` / `ABORTED,<angles>` asynchronously.
  
 ---
  
@@ -92,11 +98,14 @@ Segment lengths (cm): `a = 9.65` (abductor), `b = 26.84` (thigh), `c = 24.37` (s
  
 ## Gait
  
-The gait path is a 20-step elliptical cycle parameterized by `theta ∈ [0, 2π]`:
+The gait path is a 20-step cycle, one leg airborne at a time (25% of the cycle) so three feet are always planted:
  
-- **Swing phase** (`sin(θ) > 0.1`): foot rises to 5cm above neutral height
-- **Stance phase** (`sin(θ) ≤ 0.1`): foot extends 2.5cm below neutral height, pushing off the ground
-Steering uses differential stride length between left and right leg pairs, similar to tank drive.
+- **Swing phase** (first 25% of the cycle): a true half-ellipse -- the foot sweeps forward and up together as matched cos/sin of the same angle, easing into liftoff and touchdown instead of slamming into them
+- **Stance phase** (remaining 75%): the foot travels backward at constant velocity (deliberately linear, not elliptical, so all three planted feet move at the same rate and don't scrub against the ground)
+- **Body shift**: the body leans toward the diagonally-opposite hip just before each lift, to keep the centre of mass off the edge of the support triangle
+- **IMU levelling**: differential per-leg foot-height correction from roll/pitch, not a common offset
+ 
+Steering uses differential stride length between left and right leg pairs, similar to tank drive. Before any of this runs, the robot must be homed, stood up, and started from the web dashboard -- see `KNOWN_ISSUES.md` for that flow.
  
 ---
  
@@ -115,7 +124,7 @@ ROS 2 (Humble or later) required for `pi5_main.py`. For testing without ROS, use
 ### Running the single-leg test
  
 ```bash
-cd Code/V2/Pi5
+cd Code/Pi5
 python3 single_leg_test.py
 ```
  
@@ -124,14 +133,14 @@ Then open `http://<pi-ip>:5000` in a browser for the control panel and live came
 ### Running full production
  
 ```bash
-cd Code/V2/Pi5
+cd Code/Pi5
 source /opt/ros/humble/setup.bash
 python3 pi5_main.py
 ```
  
 ### Pico Firmware
  
-Flash each Pico with MicroPython, then copy the contents of `Code/V2/Pico/` to the Pico filesystem. The main loop starts automatically on boot.
+Flash each Pico with MicroPython, then copy the contents of `Code/Pico/` to the Pico filesystem. The main loop starts automatically on boot. **The legs do not move on their own** -- each Pico just holds its power-on position under light PID until it's homed. From the web dashboard: home each leg individually, then **Stand**, then **Go**. A **Stop** control cuts motor power without losing homing.
  
 ---
  
@@ -147,6 +156,8 @@ Flash each Pico with MicroPython, then copy the contents of `Code/V2/Pico/` to t
 | GPS navigation | Complete |
 | Camera streaming | Complete |
 | Recovery path | Complete |
+| Homing / Stand / Go / Stop dashboard workflow | Complete |
+| Current sensing foot detection | In progress |
 | Mechanical build | In progress |
 | Custom PCB | In progress |
 | CAD files | In progress |
@@ -158,10 +169,8 @@ Flash each Pico with MicroPython, then copy the contents of `Code/V2/Pico/` to t
  
 ```
 Code/
-├── V2/                  # Current version
-│   ├── Pi5/             # Raspberry Pi 5 code
-│   └── Pico/            # RP2040 MicroPython firmware
-└── V1/                  # Archive
+├── Pi5/                 # Raspberry Pi 5 code
+└── Pico/                # RP2040 MicroPython firmware
 ```
  
 ---
