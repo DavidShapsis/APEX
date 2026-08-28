@@ -25,6 +25,16 @@ from stream_server import RobodogStreamer
 from navigation import GPSReader, CompassReader, Navigator
 from imu import IMU
 
+# Vision-based obstacle avoidance is optional and guarded: it pulls in
+# onnxruntime and a ~100MB model file, neither of which is needed to walk. A
+# missing or broken install has to degrade to "no avoidance", never to a robot
+# that will not boot.
+try:
+    from vision_obstacle import ObstacleAvoider, AvoidState
+except Exception as _vision_err:
+    ObstacleAvoider, AvoidState = None, None
+    print(f"[VISION] obstacle avoidance unavailable: {_vision_err}")
+
 class RobotState:
     MANUAL = 0
     AUTONOMOUS = 1
@@ -71,6 +81,7 @@ class PiQuadrupedController(Node):
         self.joint_pub = self.create_publisher(Float32MultiArray, '/apex/kinematics/joint_targets', 10)
         self.dir_sub = self.create_subscription(Int32, '/apex/navigation/cmd_dir', self.direction_callback, 10)
         self.nav_mode_sub = self.create_subscription(Bool, '/apex/navigation/nav_mode', self.nav_mode_callback, 10)
+        self.avoid_sub = self.create_subscription(Bool, '/apex/vision/cmd_avoid', self.avoid_callback, 10)
 
         # --- Homing / stand / go / stop / per-leg debug deactivation, driven
         # from the web dashboard ---
@@ -130,8 +141,22 @@ class PiQuadrupedController(Node):
         self.last_sent_direction = 0
         self.last_sent_pitch = 0.0
         self.last_sent_roll = 0.0
+        self.last_sent_stride_scale = 1.0
         self.target_direction = 0
         self.filtered_heading = 0.0
+
+        # --- Vision obstacle avoidance ---
+        # Kept in its own fields rather than as another RobotState value on
+        # purpose. That enum already conflates operating mode (MANUAL/
+        # AUTONOMOUS) with transient activity (RECOVERY), which KNOWN_ISSUES
+        # flags as the cause of three separate bugs -- and avoidance is
+        # orthogonal to both anyway: it modifies the steering command in either
+        # mode without changing which mode is active.
+        self.avoider = None          # set by main() once the camera exists
+        self.avoid_enabled = False
+        self.avoid_state_code = 0    # AvoidState.CODES value, for the dashboard
+        self.avoid_steer = 0.0
+        self.avoid_stride_scale = 1.0
 
         # --- Background Serial Worker Thread Management ---
         self.serial_lock = threading.Lock()
@@ -306,19 +331,56 @@ class PiQuadrupedController(Node):
         with self.serial_lock:
             self.deactivated_legs.discard(leg_id)
 
+    def settle_to_stand(self):
+        """Direct one-shot move of all four legs to the stand pose, for when the
+        robot is ALREADY up and we just want it to stop moving and hold.
+
+        No Cartesian ramp, because there is nothing to ramp from: the Pi never
+        learns a leg's actual angle unless that leg aborts, so mid-walk the
+        start pose is unknown. Same reasoning -- and the same 2-entry one-shot
+        buffer -- as the neutral move handle_recovery sends the non-aborting
+        legs. Measured worst case from any walking-gait pose (15 cm steering
+        stride, body shift on) is 16.3 deg at a joint / 9.2 cm at the foot,
+        against 105.6 deg / 68.6 cm for a HOME_POSE ramp from the same place.
+
+        Two identical entries, not one, because the Pico skips index 0 of every
+        buffer -- it advances to index 1 on the first tick (see the "stale
+        target for one tick" note in KNOWN_ISSUES).
+        """
+        hold = list(self.stand_pose) + [0.0]
+        frame = [[list(hold) for _ in LEG_ORDER] for _ in range(2)]
+        self.send_entire_gait(frame, cycle=False)
+        with self.serial_lock:
+            self.standing = True
+            self.walking_enabled = False
+        self.get_logger().info("Settling to stand pose; walking stopped.")
+        return True
+
     def request_stand(self):
-        """One-shot ramp from HOME_POSE into the static stand pose. Refuses
-        unless every leg has been homed -- otherwise this ramps from wherever
-        the leg happens to be, which is exactly what homing exists to prevent.
+        """Bring the robot to the static stand pose.
+
+        From rest this is a Cartesian ramp out of HOME_POSE. If the robot is
+        already walking it is a direct settle instead -- ramping from HOME_POSE
+        here would first command the legs to straighten (roll 90, knee 180),
+        a 105 deg / 68.6 cm lurch at full duty, which is precisely the slam the
+        whole Home -> Stand -> Go sequence exists to prevent. Nothing gated
+        that before: the dashboard leaves STAND enabled while walking.
+
+        Refuses unless every leg has been homed either way -- otherwise the ramp
+        starts from a pose the firmware only assumes, which is what homing
+        exists to establish.
         """
         if not all(self.homed.values()):
             self.get_logger().error("Refusing to stand: not every leg is homed yet.")
             return False
+        if self.walking_enabled:
+            return self.settle_to_stand()
         target = {leg_id: self.stand_pose for leg_id in LEG_ORDER}
         ramp = self.build_ramp(HOME_POSE, target)
         self.send_entire_gait(ramp, cycle=False)
-        self.standing = True
-        self.walking_enabled = False
+        with self.serial_lock:
+            self.standing = True
+            self.walking_enabled = False
         return True
 
     def engage_walking(self):
@@ -338,18 +400,33 @@ class PiQuadrupedController(Node):
         time.sleep((len(ramp) - 1) * STEP_TICK_S + 0.2)
         self.send_entire_gait(self.all_angles)
 
-        self.walking_enabled = True
+        with self.serial_lock:
+            self.walking_enabled = True
         return True
 
     def publish_homing_status(self):
-        """Wire layout: [homed x4, standing, walking, deactivated x4]."""
+        """Wire layout: [homed x4, standing, walking, deactivated x4,
+        avoid_available, avoid_enabled, avoid_state_code, avoid_steer_deg,
+        avoid_stride_pct].
+
+        The avoidance fields are APPENDED, never inserted: stream_server reads
+        the first ten by fixed index and only checks len >= 10, so an older
+        dashboard against a newer controller still works.
+        """
         with self.serial_lock:
             homed = [int(self.homed[leg_id]) for leg_id in LEG_ORDER]
             standing = int(self.standing)
             walking = int(self.walking_enabled)
             deactivated = [int(leg_id in self.deactivated_legs) for leg_id in LEG_ORDER]
+            avoid = [
+                int(self.avoider is not None and self.avoider.available),
+                int(self.avoid_enabled),
+                int(self.avoid_state_code),
+                int(round(self.avoid_steer)),
+                int(round(self.avoid_stride_scale * 100)),
+            ]
         msg = Int32MultiArray()
-        msg.data = homed + [standing, walking] + deactivated
+        msg.data = homed + [standing, walking] + deactivated + avoid
         self.homing_status_pub.publish(msg)
 
     def swing_steps(self, height_z):
@@ -430,6 +507,18 @@ class PiQuadrupedController(Node):
             else:
                 self.current_state = RobotState.MANUAL
                 self.get_logger().info("Robot State Transited to: MANUAL")
+
+    def avoid_callback(self, msg):
+        """Dashboard toggle for vision obstacle avoidance.
+
+        Only sets the flag -- the control loop notices the change and resets the
+        planner there, so the planner's state machine is only ever touched from
+        the one thread that drives it.
+        """
+        with self.serial_lock:
+            self.avoid_enabled = bool(msg.data)
+        self.get_logger().info(
+            f"Obstacle avoidance {'ENABLED' if msg.data else 'DISABLED'}")
 
     def publish_joints(self, angles_matrix):
         """Flattens gait matrix and publishes to the ROS world for visualization/logging."""
@@ -701,15 +790,35 @@ def main():
     cam = USBWebcam(device_index="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_Camera_SN0001-video-index0")
     streamer = RobodogStreamer()
 
+    # Obstacle avoidance shares this camera rather than opening its own: only
+    # one process can hold the V4L2 device, and this loop already has it. The
+    # depth model runs on the avoider's own worker thread at 1-3 fps, well off
+    # the 100 Hz control loop.
+    avoider = None
+    if ObstacleAvoider is not None:
+        try:
+            avoider = ObstacleAvoider()
+            avoider.start()
+        except Exception as e:
+            print(f"[VISION] failed to start obstacle avoidance: {e}")
+            avoider = None
+
     def camera_loop():
         while rclpy.ok():
             frame = cam.get_frame()
             if frame is not None:
+                if avoider is not None:
+                    avoider.submit_frame(frame)
+                    # Draw the costmap onto the dashboard feed whenever
+                    # avoidance is on, so the ROI and threshold can actually be
+                    # tuned by looking at the robot instead of guessing.
+                    # annotate() copies only when it has something to draw.
+                    if controller.avoid_enabled:
+                        frame = avoider.annotate(frame)
                 streamer.update_frame(frame)
             time.sleep(0.03)
 
     streamer.run()
-    threading.Thread(target=camera_loop, daemon=True).start()
     print("Vision and Stream components online")
 
     # Telemetry & Audio System
@@ -725,6 +834,11 @@ def main():
     last_status_publish = time.time()
 
     controller = PiQuadrupedController()
+    controller.avoider = avoider
+
+    # Started only now: camera_loop reads controller.avoid_enabled, so the
+    # controller has to exist first.
+    threading.Thread(target=camera_loop, daemon=True).start()
 
     executor = MultiThreadedExecutor()
     executor.add_node(controller)
@@ -750,7 +864,11 @@ def main():
         print(f"Compass tracking initialized successfully at: {initial_head:.2f}°")
     except Exception as e:
         print(f"[Hardware Warning] Failed to fetch initial compass sync: {e}")
-    
+
+    # Edge-detects the avoidance toggle so a detour in progress is cleared once,
+    # on the transition, rather than every pass.
+    avoid_was_enabled = False
+
     try:
         while rclpy.ok():
             try:
@@ -770,6 +888,8 @@ def main():
                     snap_last_dir = controller.last_sent_direction
                     snap_last_pitch = controller.last_sent_pitch
                     snap_last_roll = controller.last_sent_roll
+                    snap_last_stride = controller.last_sent_stride_scale
+                    snap_avoid_enabled = controller.avoid_enabled
                 
                 # update() reports failure by returning None rather than raising,
                 # so this must be checked -- otherwise a dead IMU silently feeds
@@ -801,14 +921,57 @@ def main():
                         if nav_data is not None:
                             chosen_direction = nav_data["turn"]
 
+                # --- VISION OBSTACLE AVOIDANCE ---------------------------------
+                # Layered on top of whichever steering source is active, in both
+                # MANUAL and AUTONOMOUS, so the toggle means the same thing
+                # either way. The planner takes the direction the robot WANTS to
+                # travel and returns the nearest one it can actually take.
+                #
+                # There is no explicit "rejoin the route" step and none is
+                # needed: Navigator.calculate_nav recomputes the bearing from
+                # the live GPS fix on every pass, so the instant avoidance stops
+                # overriding, the heading already points at the waypoint from
+                # wherever the detour ended. What the planner does add is
+                # commitment -- without it, steering away would take the
+                # obstacle out of frame, nav would aim straight back into it,
+                # and the robot would oscillate on the spot forever.
+                stride_scale = 1.0
+                if avoider is not None:
+                    if snap_avoid_enabled:
+                        decision = avoider.plan(chosen_direction)
+                        chosen_direction = decision.steer_deg
+                        stride_scale = decision.stride_scale
+                        with controller.serial_lock:
+                            controller.avoid_state_code = AvoidState.CODES.get(decision.state, 0)
+                            controller.avoid_steer = decision.steer_deg
+                            controller.avoid_stride_scale = decision.stride_scale
+                        if decision.overriding and int(current_time) % 2 == 0:
+                            print(f"[AVOID] {decision.state}: {decision.reason} "
+                                  f"-> steer {decision.steer_deg:+.0f} deg, "
+                                  f"stride x{decision.stride_scale:.2f}")
+                    elif avoid_was_enabled:
+                        # Toggled off. Clear the detour here rather than in the
+                        # ROS callback so the planner's state machine is only
+                        # ever touched from this thread.
+                        avoider.planner.reset()
+                        with controller.serial_lock:
+                            controller.avoid_state_code = 0
+                            controller.avoid_steer = 0.0
+                            controller.avoid_stride_scale = 1.0
+                avoid_was_enabled = snap_avoid_enabled
+
                 dir_delta = abs(chosen_direction - snap_last_dir) > 5
                 pitch_delta = abs(pitch_tilt - snap_last_pitch) > 1.5
                 roll_delta = abs(roll_tilt - snap_last_roll) > 1.5
+                # Without this the robot could not halt for an obstacle while
+                # already pointing the right way -- the heading would not have
+                # changed, so nothing would trigger a resend.
+                stride_delta = abs(stride_scale - snap_last_stride) > 0.05
 
                 # Gated on walking_enabled: home every leg, Stand, then Go from
                 # the web dashboard arms this. Before that the legs simply hold
                 # wherever homing/Stand left them.
-                if controller.walking_enabled and (dir_delta or pitch_delta or roll_delta):
+                if controller.walking_enabled and (dir_delta or pitch_delta or roll_delta or stride_delta):
                     if int(current_time) % 2 == 0:
                         print(f"[IMU Reflex] Levelling. Roll {roll_tilt:+.2f} deg, "
                               f"pitch {pitch_tilt:+.2f} deg")
@@ -817,7 +980,13 @@ def main():
                     steering_factor = chosen_direction / 45.0
                     steering_factor = max(-1.0, min(1.0, steering_factor))
 
-                    base_stride = 10.0
+                    # stride_scale is 1.0 unless avoidance is slowing the robot
+                    # down or halting it. At 0.0 the gait length collapses, so
+                    # the feet lift and set back down in the same spot: the
+                    # robot marches in place, still standing and still levelled.
+                    # Deliberately NOT the dashboard STOP, which cuts holding
+                    # torque and would let a standing robot sag.
+                    base_stride = 10.0 * stride_scale
 
                     # Inside vs Outside stride length scaling calculations
                     left_side_stride = base_stride * (1.0 + (0.5 * steering_factor))
@@ -833,6 +1002,7 @@ def main():
                         controller.last_sent_direction = chosen_direction
                         controller.last_sent_pitch = pitch_tilt
                         controller.last_sent_roll = roll_tilt
+                        controller.last_sent_stride_scale = stride_scale
 
                 if current_time - last_power_check > 1.0:
                     v = power_monitor.get_voltage()
@@ -872,6 +1042,8 @@ def main():
         print("\nShutting down controller hardware nodes safely...")
     finally:
         controller.close_hardware()
+        if avoider is not None:
+            avoider.stop()
         cam.release()
         controller.destroy_node()
         streamer.destroy_node()

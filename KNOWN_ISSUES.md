@@ -6,6 +6,13 @@ Ordered by how badly they bite.
 
 Fixed items are not listed here — see git history.
 
+**Verify the whole control path without hardware:**
+
+```bash
+cd Code/Pi5/inverse_kinematics && python quadruped_sim.py --report   # gait verdict
+cd Code/Pi5 && python vision_obstacle.py                             # avoidance planner
+```
+
 **Verify the gait before touching hardware:**
 
 ```bash
@@ -17,6 +24,247 @@ python quadruped_sim.py               # 3D animation, needs matplotlib
 `matplotlib` is not currently installed (`pip install matplotlib`), which also means
 `gait_testing2.py` and `gait_testing3.py` cannot run as-is. `--report` works without
 it.
+
+---
+
+## RESOLVED — STAND while walking commanded a 68.6 cm lurch
+
+Found during a full-codebase review, not previously exercised. `request_stand()`
+always ramped from `HOME_POSE`, and **nothing anywhere refused it while the robot
+was walking** — not the dashboard (`standBtn` was gated only on all-legs-homed),
+not the `/stand` route, not the controller. Pressing STAND mid-walk therefore
+commanded step 0 of a HOME_POSE ramp — roll 90°, knee 180°, legs straight out —
+while the legs were actually near the gait pose:
+
+| | roll | pitch | knee | foot |
+|---|------|-------|------|------|
+| walking gait pose | −15.55° | +44.44° | 85.11° | — |
+| what STAND commanded | +90.00° | 0.00° | 180.00° | — |
+| instantaneous error | **+105.6°** | −44.4° | +94.9° | **68.6 cm** |
+
+`kp = 0.8` saturates above 1.25° of error, so that is full duty on every joint:
+precisely the slam the whole Home → Stand → Go sequence exists to prevent.
+
+**Fixed by making STAND mean the right thing in both states.** From rest it is
+still the Cartesian ramp out of HOME_POSE. While walking it now calls the new
+`settle_to_stand()`, a direct one-shot move of all four legs to `stand_pose` —
+the same 2-entry buffer `handle_recovery` already sends the non-aborting legs,
+and accepted there for the same reason. Measured worst case from *any* walking
+gait pose (15 cm steering stride, body shift on) is **16.3° at a joint / 9.2 cm
+at the foot**, against 105.6° / 68.6 cm before.
+
+Side effect worth knowing: this is the first way to halt a robot that is on its
+feet without dropping it. STOP cuts holding torque and lets it sag; STAND now
+stops the walk and holds the stance powered. The dashboard says so.
+
+Not a full fix for the missing zero-velocity state (see "No stop command
+mid-turn" below) — there is still no "keep walking forward at 0 speed".
+
+---
+
+## RESOLVED — one InverseKinematics shared across threads returned wrong angles
+
+`calculate()` stored its answer on the engine (`self.roll/pitch/knee`) and
+returned `self`, so the caller read the angles off shared mutable state *after*
+the call returned. `pi5_main` has a single `self.ik_engine`, used from:
+
+- the main control loop — `build_gait()` → `GaitIK` → `calculate()`
+- ROS executor threads — `stand_callback`/`go_callback` → `build_ramp()` →
+  `cartesian_ramp()` → `calculate()`
+
+Those genuinely overlap (the STAND-while-walking path above is exactly such a
+case), and when they do, one thread reads the other thread's joint targets —
+which then go straight to a motor. Measured with the GIL switch interval forced
+low: **60% of solves corrupted** (24066 of 40000). At the default 5 ms switch
+interval it is rare rather than impossible, which is the worst kind of bug.
+
+**Fixed:** `calculate()` now returns an `IKSolution` — a small `__slots__`
+object carrying its own roll/pitch/knee — and every intermediate in the solve is
+a local. The engine holds only the segment lengths, which are read-only after
+construction, so it is safe to share. Attribute names are unchanged, so all four
+call sites needed no edit. Re-measured after the fix: **0 of 40000 corrupted.**
+
+Related and also fixed: `request_stand()` and `engage_walking()` were writing
+`self.standing` / `self.walking_enabled` without holding `serial_lock`, while
+`publish_homing_status()` reads them under it.
+
+---
+
+## Swing clearance is 4.76 cm, not the nominal 5.0
+
+`SWING_HEIGHT = 5.0` is the *continuous* peak of `h1·sin(πs)`, but the swing is
+sampled at only 5 points — `s = 0, 0.2, 0.4, 0.6, 0.8` — which never lands on
+the `s = 0.5` peak. The highest commanded lift is `5.0·sin(0.4π) = 4.755 cm`.
+
+This matters because it appears in a safety argument: the PID tuning section
+below reasons that 9.4° of peak tracking error is "~4 cm at the foot, against
+5 cm of commanded swing clearance". The real figure is **4.76 cm**, so the
+margin is 0.76 cm rather than 1.0 — about 25% thinner than stated. Still
+positive, still needs the bench check that section already asks for.
+
+Raising the swing sample count (a larger `num_steps`, or a finer swing fraction)
+would both recover the nominal clearance and soften the liftoff/touchdown corner
+that drives the peak joint rate — see `STEP_TICK_MS` below, which wants the same
+thing for a different reason.
+
+---
+
+## Not a defect: stance y quantisation
+
+Recorded because it looks like one. `GaitPath.generate_path` rounds each
+coordinate to 2 dp, so consecutive stance steps differ by −0.66 or −0.67 cm
+rather than a constant −0.667. The underlying formula is exactly linear
+(verified: unrounded deltas are a single value); the variation is 0.005 cm of
+rounding, 0.05 mm at the foot. The elliptical-stance scrub the design
+deliberately rejects is 0.85 cm/tick — **170× larger**. Nothing to do here.
+
+---
+
+## Obstacle avoidance — built and simulated, never run on hardware
+
+`vision_obstacle.py` plus the dashboard toggle. The planner logic is verified
+(`python vision_obstacle.py` runs a self-test; a closed-loop sim against the real
+`Navigator` showed obstacles struck by 0.95 m with avoidance off cleared by
+0.25–0.50 m with it on, no oscillation). **None of the perception side has been
+checked against a real camera on the real robot**, and several numbers are
+educated guesses until it is.
+
+### Tune these on the bench before trusting it outdoors
+
+- **`ROI_TOP` / `ROI_BOTTOM` (0.45 / 0.95).** Which band of the frame counts as
+  "the ground ahead". Depends entirely on where the camera is physically mounted
+  and at what angle — a guess until checked against a real still. Too high and it
+  reads the sky as clear; too low and it stares at the robot's own nose. Turn
+  avoidance on and look at the overlay on the dashboard feed.
+- **`OBSTACLE_MARGIN` (0.12).** How much nearer than its own row's ground a pixel
+  must read before it counts. Measured insensitive between 0.05 and 0.25 on the
+  synthetic scenes, so it is not a knife edge, but it has never met real terrain
+  texture. Raise it if grass or gravel trips it, lower it if low obstacles slip
+  through. (This replaced an absolute `NEAR_THRESH` — see below.)
+- **`FLAT_GRADIENT_MIN` (0.10).** Only fires for a column with no near/far
+  contrast at all, i.e. something filling the view. A camera angled further down
+  sees less depth range in the band, which shrinks every column's gradient and
+  makes false "blocked" more likely — check this once the mount is final.
+  Raising it halts more readily, which is the safe direction.
+- **`FOV_DEG` (60.0).** Assumed, not measured. Only scales bin index → steering
+  angle, so an error here makes turns consistently too shallow or too sharp
+  rather than breaking detection.
+- **`CLEAR_HOLD_S` (20.0).** How long to drive straight after the obstacle leaves
+  view before handing steering back to the navigator. This is the number that
+  decides clearing vs. grazing — see the comment on it for the swept data. It is
+  a time standing in for a distance because there is no odometry, so it is only
+  correct at the assumed ~10 cm/s avoidance speed. **If `STEP_TICK_MS` or the
+  base stride changes, this needs re-deriving.**
+
+### RESOLVED — an absolute depth threshold read the ground as an obstacle
+
+Found on a real capture: a person standing in the middle of an otherwise clear
+path, with both sides plainly open, reported **fully blocked**. The depth model
+was fine — the figure was cleanly segmented — the costmap was wrong.
+
+For a forward-facing camera on flat ground, the distance to the ground at image
+row `r` goes as `1/(r - horizon)`, so the inverse depth the model emits ramps
+smoothly from far at the top of the frame to near at the bottom. The bottom of
+the ROI is therefore *always* near: it is the ground half a metre in front of the
+feet. `NEAR_THRESH = 0.55` flagged that ground everywhere. Reproduced on a
+synthetic scene built from the flat-ground equation: **bare open ground scored
+0.42 in every bin** against a 0.25 block threshold.
+
+**Fixed** by making detection ground-relative: a pixel is an obstacle when it
+reads `OBSTACLE_MARGIN` nearer than that row's own `GROUND_REF_PCT` percentile.
+An upright object occupies rows that would otherwise show ground far away, so it
+stands out sharply. The reference percentile sits below the median deliberately,
+so a wide object cannot drag it up to its own depth and hide itself. A separate
+per-bin flat-gradient test catches the one thing the relative test cannot see —
+something filling a column top to bottom, leaving no contrast to find.
+
+| scene | before | after |
+|---|---|---|
+| open ground | `#########` | `.........` |
+| figure dead centre | `#########` | `....#....` |
+| figure on the right | `#########` | `.......#.` |
+| wall filling the view | `#########` | `#########` |
+
+A useful property that fell out of it: because the reference comes from the row
+itself, a **uniform slope shifts the whole row together and is not flagged**.
+Only localised protrusions are, which is what you want on terrain.
+
+These four scenes are now a regression test in `python vision_obstacle.py`, and
+the tuning notebook imports the module rather than keeping its own copy of the
+pipeline — the two had already diverged once.
+
+### Known limits of the approach itself
+
+- **Monocular depth is relative, not metric.** No true distances, and the scale
+  shifts frame to frame. Fine for "something bulky is close", weak for judging
+  gap widths.
+- **Drop-offs and holes read as *farther* than the ground, never nearer, so the
+  detector cannot flag them at all.** This is inherent to the method, not a
+  tuning problem: the test asks "is anything closer than the ground should be",
+  and a hole is the opposite. The FSR / `ABORTED` recovery path is the only
+  backstop, and it only fires on contact.
+- **Body width is handled by a fixed angle, but the correct angle depends on
+  range.** What has to fit through a gap is ~72 cm (53 cm hip spacing plus the
+  abductor sticking out ~9.65 cm each side — *not* the 53 cm `BODY_WIDTH_CM`).
+  That subtends 71.7° at 0.5 m but only 20.5° at 2 m — 10.8 bins down to 3.1 —
+  and the costmap has no depth axis to tell those apart, since the ROI band
+  flattens roughly 0.5–2 m into one row of bins. `CORRIDOR_BINS=3` plus
+  `INFLATE_BINS=1` enforces a flat 33.3°, which matches the true width only
+  beyond **~1.2 m**; nearer than that it under-provisions on paper, and relies
+  on a close obstacle filling enough bins to trip `BLOCKED` instead. Fixing this
+  properly needs a range-resolved costmap (split the ROI into near/far rows and
+  require a wider corridor in the near row), not a bigger constant — raising
+  `CORRIDOR_BINS` to 5 demands 46.7° of a 60° view and leaves almost nothing
+  passable.
+- **Thin obstacles are unreliable.** Table legs and wires are close to the
+  resolution limit at `INPUT_SIZE = 266` and may not survive the bin averaging.
+- **No pivot, so no true "back away".** Steering is differential stride and both
+  strides stay positive (see "No stop command mid-turn" below), so the robot can
+  only *arc*. `BLOCKED` therefore halts in place rather than reversing or
+  spinning, and `ESCAPE` can only arc forward hunting for a gap. A robot that
+  walks into a dead-end corridor cannot get itself out.
+- **`BLOCKED` halts by setting stride to 0**, which makes the feet lift and land
+  in the same spot — it keeps standing and stays IMU-levelled. This is
+  deliberately *not* the dashboard STOP, which cuts holding torque and would let
+  a standing robot sag. Verified: `GaitPath` with `length=0` gives all feet
+  `y = 0.0` with 4 airborne steps still in the cycle.
+- **Fails open, not closed.** A stale costmap (camera died, worker stalled,
+  older than `STALE_AFTER_S`) drops back to normal walking rather than halting.
+  That is the right call for a slow robot with a human nearby, but it does mean
+  a silently dead camera looks like "avoidance is on and the path is clear".
+  Watch the dashboard state readout.
+- **CPU contention is unmeasured.** Inference is capped at
+  `cpu_count - 2` threads to leave room for the 100 Hz control loop and the four
+  serial writers, but the effect on control-loop timing has not been measured on
+  a loaded Pi 5.
+
+### Validated against real ground-robot imagery
+
+The tuning notebook's Test 1 now runs eight photographs taken from actual ground
+robots — camera low, pointed straight ahead, ground plane filling the lower
+frame — rather than scenic stills. Two results are worth carrying forward:
+
+- **`INFLATE_BINS = 1` is load-bearing.** Dropping it to 0 makes an indoor
+  corridor with a wall down each side report CLEAR. Confirmed on real imagery,
+  not just simulation.
+- **A trail that looks walkable reports BLOCKED, correctly.** Its clear gap
+  measures 26.7°, which against the 72 cm body is 47 cm at 1 m, 71 cm at 1.5 m,
+  95 cm at 2 m — genuinely too tight near, fine further out. A good illustration
+  of the range-dependence limitation above: the costmap has no depth axis, so it
+  cannot express "tight now, fine in a metre" and halts instead.
+- **A low cardboard box on paving, several metres out, is missed.** Too few
+  pixels clear `OBSTACLE_MARGIN` for its bin to reach `BLOCK_FRAC`. It would be
+  seen on approach. Low obstacles at distance are the weak spot, with the
+  `ABORTED` foot-contact path as the only backstop.
+
+### First hardware session should be, in order
+
+1. Robot on a stand, off the ground. Toggle avoidance on, watch the overlay, and
+   tune `ROI_*` and `NEAR_THRESH` against real obstacles at real distances.
+2. Check the reported inference time on the dashboard; confirm the control loop
+   is not visibly stuttering.
+3. Only then, on the ground, in manual mode, walk it at a single obstacle.
+4. GPS/autonomous mode last.
 
 ---
 
@@ -424,6 +672,36 @@ nose-up. **If the BNO085 is mounted with either axis flipped relative to that, t
 correction will actively tip the robot the wrong way — check this on the bench
 before trusting it, ideally with the robot held up off the ground first.**
 
+### Low-voltage alarm threshold may be unreachable — check which rail the INA219 is on
+
+`pi5_main.LOW_VOLT_THRESHOLD = 4.75` V, compared against `INA219.get_voltage()`.
+That is a sensible undervoltage trip for a **5 V regulated rail**, but the BOM
+and README describe the INA219 as *battery* telemetry, and the electronics pack
+is a **2S LiHV** — roughly 8.7 V full to 6.0 V empty. If it is wired across that
+battery, 4.75 V is below fully-flat and `low_battery.wav` can never play; the
+alarm is dead code. Decide which it is and set the threshold to match (~6.4 V
+for a 2S pack, or leave 4.75 if it really is on the 5 V rail).
+
+The current side of the same alarm is already bounded correctly: the ±320 mV
+shunt range across 0.1 Ω saturates at 3.2 A and `MAX_CURRENT_MA` is 3000, so
+that half can fire. Both are on the *electronics* supply either way — nothing
+monitors the 3S motor pack, which is the one that actually gets hammered.
+
+Verified correct while checking this, so it does not need re-deriving: config
+word `0x399F` decodes to 32 V range / ±320 mV / 12-bit / continuous, calibration
+2048 gives a 0.2 mA current LSB matching `raw * 0.2`, and the power LSB is 20×
+that, matching `raw * 4.0` mW.
+
+### An out-of-range target leaves the motor at its last duty
+
+`JointController.move_to()` returns early — before touching the PWM registers —
+when `target_angle` is non-finite or outside ±360°. The guard itself is right
+(it is what stops NaN surviving the clamp as full duty), but the early return
+means the joint keeps driving at whatever duty the previous call set, rather
+than coasting. Low risk in practice: `pico_main` range-checks every payload
+before it reaches the buffer, so an out-of-range value should never get this
+far. Zeroing both PWMs before the `return` would close it.
+
 ### Compass has no declination or tilt compensation
 `get_heading()` is a raw two-axis `atan2(y, x)` — magnetic, uncalibrated for
 hard/soft iron, uncompensated for tilt. GPS bearings are *true* north; declination
@@ -469,8 +747,9 @@ Residual tracking error at 40 ms/step, `kp` 0.30 / `kd` 0 in simulation:
 
 Stance mean of 0.82° is ~0.35 cm of foot error, which is fine. The maxima are at
 liftoff and touchdown, where the target reverses direction; 9.4° is ~4 cm at the
-foot, against 5 cm of commanded swing clearance — **verify the foot actually clears
-the ground on the bench.** Easing the velocity through those corners would help more
+foot, against **4.76 cm** of commanded swing clearance (not the nominal 5.0 —
+see "Swing clearance is 4.76 cm" above) — so the margin is ~0.76 cm.
+**Verify the foot actually clears the ground on the bench.** Easing the velocity through those corners would help more
 than gain tuning.
 
 ### Minor: stale target for one tick
@@ -525,6 +804,38 @@ before Stand/Go accept it (see "Still open" in the Homing section).
 The `bus_id is None` path calls `busio.I2C(scl_pin, sda_pin, ...)` with the string
 pin names `"D1"` / `"D0"` rather than board pin objects. It would fail if used;
 currently `bus_id=13` is always passed, so the branch is dead.
+
+---
+
+## Structural notes from the full review (no defect, worth knowing)
+
+Verified correct during the review, recorded so nobody re-derives them:
+
+- **Quadrature decode table is right.** `_QUAD_TABLE` covers exactly the eight
+  valid single-step transitions with the correct signs; invalid/skipped
+  transitions map to 0 rather than corrupting the count. `ppr = 28` is already
+  the 4×-decoded count per motor revolution, which is what the both-edges
+  both-channels ISR produces — so 28 × 99.5 / 360 = 7.74 ticks/deg is consistent
+  and the resolution really is 0.129°.
+- **Quaternion axis order is right.** Adafruit's `bno.quaternion` returns
+  `(i, j, k, real)` and `_quat_to_pitch_roll(i, j, k, real)` takes them in that
+  order.
+- **The `GaitIK` roll-discontinuity guard never fires on a real gait.** Checked
+  every step of all four legs with body shift on: 0 of 80 steps differed from
+  the raw IK solution, so it is not silently freezing roll anywhere.
+- **`GaitPath` is shared mutable state, used safely — by ordering, not design.**
+  `build_gait()` calls `swing_steps()` (which mutates `self.path_gen`) and reads
+  the result out *before* the per-leg loop mutates it again. Correct today,
+  fragile if anyone reorders those lines. Same object is also reached from
+  `single_leg_test`, but that is a separate process.
+- **Deactivated legs still receive recovery and abort cleanup.** `handle_recovery`
+  and the aborted-frame close both use `active_legs()` / `ser_list` rather than
+  filtering deactivated ones. That is the safe direction — a debug flag should
+  not suppress a fault response — but it is inconsistent with the normal gait
+  path, which does skip them.
+- **`engage_walking()` sleeps ~1.8 s inside a ROS callback.** It is on an
+  executor thread and `MultiThreadedExecutor` has others, so nothing deadlocks,
+  but that thread is blocked for the duration of the ramp.
 
 ---
 
