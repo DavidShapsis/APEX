@@ -16,7 +16,8 @@ from power_monitor import INA219
 from inverse_kinematics.ik_and_gait import (
     InverseKinematics, GaitPath, GaitIK, RecoveryPath,
     LEG_FL, LEG_FR, LEG_RR, LEG_RL, LEG_ORDER, LEG_NAMES,
-    LEFT_LEGS, FRONT_LEGS, phase_offsets, HOME_POSE, cartesian_ramp,
+    HIP_POSITIONS, LEG_SIGN_X, LEG_SIGN_Y,
+    phase_offsets, HOME_POSE, cartesian_ramp, body_twist_xy_path,
     body_shift_profile, apply_body_shift, attitude_height_offsets,
 )
 from audio import QuadrupedAudio
@@ -66,12 +67,38 @@ STANCE_PUSH = 0.0
 # it the centre of mass rides the support triangle's edge with ~4 mm of margin;
 # 2 cm takes that to ~2.2 cm. Costs foot workspace, so do not inflate it.
 BODY_SHIFT_CM = 2.0
+# During a turn the feet arc off their nominal positions, which the 2 cm lean no
+# longer covers -- quadruped_sim --report shows the margin falling to +0.7 cm at
+# a full spin. Ramping the lean to 4 cm as the turn tightens restores it to
+# +2.6 cm, and the reduced forward stride keeps the joint rate in bounds (79%).
+# Straight walking (yaw 0) is untouched -- it still uses BODY_SHIFT_CM exactly.
+TURN_BODY_SHIFT_CM = 4.0
 
 # IMU levelling. gain 1.0 would fully cancel the measured tilt in one update,
 # which invites overshoot; 0.6 damps it. The limit caps how far one corner can
 # be driven from the nominal stand height.
 ATTITUDE_GAIN = 0.6
 ATTITUDE_LIMIT_CM = 4.0
+
+# --- Body-twist steering ---
+# Steering is by yawing the body (each foot arcs about the body centre), not by
+# differential stride length. See ik_and_gait.body_twist_xy_path.
+#
+# MAX_YAW_PER_CYCLE: commanded body yaw at a full turn, per gait cycle. One
+# cycle is GAIT_STEPS * STEP_TICK_S = 0.8 s. The phased crawl over-rotates a
+# little, so 10 commanded gives ~13 deg/cycle measured in quadruped_sim -->
+# ~16 deg/s, a 90 deg turn in ~5.5 s. Turning lays a lateral hip-roll sweep on
+# top of the forward gait, which costs stability margin and joint-rate
+# headroom, so this is set from quadruped_sim.py --report (spin case), not
+# guessed. Raise it only after re-running that.
+MAX_YAW_PER_CYCLE = 10.0
+# Turn command (deg) at or above which the forward stride collapses to zero
+# and the robot spins in place; below it, forward travel and yaw blend into an
+# arc. 90 means only a hard LEFT/RIGHT button or a ~180 deg heading reversal
+# spins -- moderate heading errors are corrected on the move, which is what the
+# obstacle-avoidance planner wants (it commits to gaps 20-40 deg off and needs
+# to keep progressing past them, not stop and pirouette).
+YAW_FULL_SPIN_DEG = 90.0
 
 class PiQuadrupedController(Node):
     def __init__(self):
@@ -111,10 +138,11 @@ class PiQuadrupedController(Node):
         self.path_gen = GaitPath()
         self.recovery_engine = RecoveryPath(self.ik_engine)
 
-        # Default straight-ahead gait, already in per-leg format so the rear pair
-        # is mirrored from the very first frame. Nothing is sent to hardware yet --
-        # see main(): the robot stays put until every leg is homed via the web UI.
-        self.all_angles = self.build_gait(10.0, 10.0)
+        # Default straight-ahead gait (fwd 10 cm/cycle, no yaw), already in
+        # per-leg format so the rear pair is mirrored from the very first frame.
+        # Nothing is sent to hardware yet -- see main(): the robot stays put
+        # until every leg is homed via the web UI.
+        self.all_angles = self.build_gait(10.0, 0.0)
 
         # Static, feet-under-hips pose, identical for all four legs for the same
         # reason HOME_POSE is: the per-joint reverse flags handle the mirroring.
@@ -204,13 +232,22 @@ class PiQuadrupedController(Node):
                 self.get_logger().error(f"Serial read error on {s.port}: {e}")
         return messages
 
-    def build_gait(self, left_stride, right_stride, roll_tilt=0.0, pitch_tilt=0.0,
-                   height_z=STAND_HEIGHT):
-        """Builds a [step][leg_id][roll, pitch, knee, is_swing] matrix.
+    def build_gait(self, fwd_stride, yaw_deg, roll_tilt=0.0, pitch_tilt=0.0,
+                   height_z=STAND_HEIGHT, body_shift_cm=BODY_SHIFT_CM):
+        """Builds a [step][leg_id][roll, pitch, knee, is_swing] matrix for a body
+        twist: the robot advances `fwd_stride` cm and yaws `yaw_deg` degrees
+        (CCW / turning left positive) per gait cycle.
 
-        Stride length differs left/right to steer, and the front pair mirrors
-        because it is mounted knees-back against the IK's knee-forward solution.
-        On top of that:
+        `body_shift_cm` is the lift-phase lean toward the supporting tripod;
+        the caller raises it above BODY_SHIFT_CM while turning (see
+        TURN_BODY_SHIFT_CM) because the arced feet need more margin.
+
+        Steering is by yaw, not differential stride -- each foot arcs about the
+        body centre (see ik_and_gait.body_twist_xy_path), which is what pulls the
+        hip-roll joint into the turn. `yaw_deg == 0` reproduces the old
+        straight-line gait exactly.
+
+        On top of the twist:
 
           * body sway, phased with the lift sequence, so the centre of mass stays
             inside the support triangle instead of riding its edge;
@@ -222,21 +259,21 @@ class PiQuadrupedController(Node):
         """
         offsets = phase_offsets(GAIT_STEPS)
         swing_steps = self.swing_steps(height_z)
-        shift = body_shift_profile(swing_steps, offsets, GAIT_STEPS, BODY_SHIFT_CM)
+        shift = body_shift_profile(swing_steps, offsets, GAIT_STEPS, body_shift_cm)
         dz = attitude_height_offsets(roll_tilt, pitch_tilt,
                                      gain=ATTITUDE_GAIN, limit_cm=ATTITUDE_LIMIT_CM)
+        yaw_rad = math.radians(yaw_deg)
 
         per_leg = {}
         for leg_id in LEG_ORDER:
-            stride = left_stride if leg_id in LEFT_LEGS else right_stride
-            self.path_gen.update_params(
-                center_stride_y=0.0, center_height_z=height_z + dz[leg_id],
-                length=stride, height1=SWING_HEIGHT, height2=STANCE_PUSH,
-                direction_angle=0, swing_fraction=SWING_FRACTION,
-                mirror_y=(leg_id in FRONT_LEGS)
+            xy = body_twist_xy_path(
+                HIP_POSITIONS[leg_id], LEG_SIGN_X[leg_id], LEG_SIGN_Y[leg_id],
+                num_steps=GAIT_STEPS, swing_fraction=SWING_FRACTION,
+                fwd_cm=fwd_stride, yaw_rad=yaw_rad,
+                center_height_z=height_z + dz[leg_id],
+                swing_height=SWING_HEIGHT, stance_push=STANCE_PUSH,
             )
-            path = apply_body_shift(self.path_gen.gait_xy_path, leg_id,
-                                    offsets, shift, GAIT_STEPS)
+            path = apply_body_shift(xy, leg_id, offsets, shift, GAIT_STEPS)
             per_leg[leg_id] = GaitIK(self.ik_engine, path).get_gait_ik()
 
         num_steps = len(per_leg[LEG_FL])
@@ -976,25 +1013,36 @@ def main():
                         print(f"[IMU Reflex] Levelling. Roll {roll_tilt:+.2f} deg, "
                               f"pitch {pitch_tilt:+.2f} deg")
 
-                    # --- TRUE BODY STEERING (DIFFERENTIAL) ARCHITECTURE ---
-                    steering_factor = chosen_direction / 45.0
-                    steering_factor = max(-1.0, min(1.0, steering_factor))
+                    # --- BODY-TWIST STEERING ---
+                    # chosen_direction is + for a right turn: RIGHT on the
+                    # dashboard is +90, and Navigator returns a positive heading
+                    # error when the waypoint is clockwise of the current
+                    # heading. Map it to a yaw rate plus a forward stride that
+                    # tapers to zero as the turn tightens -- a large heading
+                    # error spins in place, a small one arcs while walking.
+                    d = max(-90.0, min(90.0, float(chosen_direction)))
+                    spin_frac = min(1.0, abs(d) / YAW_FULL_SPIN_DEG)
 
                     # stride_scale is 1.0 unless avoidance is slowing the robot
-                    # down or halting it. At 0.0 the gait length collapses, so
-                    # the feet lift and set back down in the same spot: the
-                    # robot marches in place, still standing and still levelled.
-                    # Deliberately NOT the dashboard STOP, which cuts holding
-                    # torque and would let a standing robot sag.
-                    base_stride = 10.0 * stride_scale
+                    # or halting it (0.0 = march in place, still standing --
+                    # NOT the dashboard STOP). It scales forward travel only:
+                    # BLOCKED already sends chosen_direction 0 (so yaw is 0
+                    # anyway), and ESCAPE wants a real spin, not one throttled
+                    # to a third by its low stride_scale.
+                    fwd_stride = 10.0 * stride_scale * (1.0 - spin_frac)
+                    # Negate: +d (turn right / clockwise) is a negative
+                    # (clockwise) yaw in the math frame body_twist_xy_path uses.
+                    yaw_deg = -MAX_YAW_PER_CYCLE * spin_frac * math.copysign(1.0, d)
 
-                    # Inside vs Outside stride length scaling calculations
-                    left_side_stride = base_stride * (1.0 + (0.5 * steering_factor))
-                    right_side_stride = base_stride * (1.0 - (0.5 * steering_factor))
+                    # Lean harder into the support tripod as the turn tightens.
+                    turn_frac = abs(yaw_deg) / MAX_YAW_PER_CYCLE
+                    body_shift_cm = (BODY_SHIFT_CM
+                                     + (TURN_BODY_SHIFT_CM - BODY_SHIFT_CM) * turn_frac)
 
                     new_angles = controller.build_gait(
-                        left_side_stride, right_side_stride,
-                        roll_tilt=roll_tilt, pitch_tilt=pitch_tilt
+                        fwd_stride, yaw_deg,
+                        roll_tilt=roll_tilt, pitch_tilt=pitch_tilt,
+                        body_shift_cm=body_shift_cm,
                     )
                     controller.send_entire_gait(new_angles)
 

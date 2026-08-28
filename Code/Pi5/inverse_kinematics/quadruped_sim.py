@@ -47,12 +47,21 @@ SWING_HEIGHT   = 5.0    # height1: lift above neutral during swing
 STANCE_PUSH    = 0.0    # height2: 0 so all planted feet share one ground plane
 SWING_FRACTION = 0.25   # 0.25 -> one leg airborne, three planted
 
-# --- Steering: 0 straight, +90 hard right, -90 hard left ---
+# --- Steering: body-twist, matching pi5_main.py ---
+# DIRECTION_CMD is the turn command in degrees: 0 straight, +90 hard right,
+# -90 hard left. It is mapped to a yaw rate + a forward stride that tapers to
+# zero as the turn tightens (see build_gait), so |cmd| >= YAW_FULL_SPIN_DEG
+# spins in place. These two must stay equal to pi5_main.py's constants.
 DIRECTION_CMD = 0
+MAX_YAW_PER_CYCLE = 10.0
+YAW_FULL_SPIN_DEG = 90.0
 
 # --- Body sway: lean toward the supporting tripod before each lift ---
 # Set to 0.0 to see the ~4mm static margin the crawl has without it.
 BODY_SHIFT_CM = 2.0
+# Ramped up as a turn tightens -- the arced feet cost margin the 2 cm lean does
+# not cover. Must match pi5_main.py.
+TURN_BODY_SHIFT_CM = 4.0
 
 # --- Simulated IMU tilt, to exercise the levelling ---
 # Positive roll = right side down, positive pitch = nose up.
@@ -70,7 +79,6 @@ GAIT_MIRROR_MATCHES_MOUNT = True
 LEG_FL, LEG_FR, LEG_RR, LEG_RL = G.LEG_FL, G.LEG_FR, G.LEG_RR, G.LEG_RL
 LEG_ORDER = G.LEG_ORDER
 LEG_NAMES = {LEG_FL: 'FL', LEG_FR: 'FR', LEG_RR: 'RR', LEG_RL: 'RL'}
-LEFT_LEGS = G.LEFT_LEGS
 
 # Hip position in body frame: +X right, +Y forward, Z down from body origin.
 HIP_POS = dict(G.HIP_POSITIONS)
@@ -107,35 +115,50 @@ ik_engine = InverseKinematics()
 path_gen = GaitPath()
 
 
+def steering_command():
+    """DIRECTION_CMD (deg, + = right) -> (fwd_stride_cm, yaw_deg). Identical
+    policy to pi5_main.py's main loop."""
+    d = max(-90.0, min(90.0, float(DIRECTION_CMD)))
+    spin_frac = min(1.0, abs(d) / YAW_FULL_SPIN_DEG)
+    fwd_stride = STRIDE_LENGTH * (1.0 - spin_frac)
+    yaw_deg = (-MAX_YAW_PER_CYCLE * spin_frac * math.copysign(1.0, d)) if d else 0.0
+    return fwd_stride, yaw_deg
+
+
 def build_gait():
     """Per-leg joint trajectories, mirroring PiQuadrupedController.build_gait().
 
     Uses the same shared helpers from ik_and_gait, so what the sim animates is
     what the robot will be commanded.
     """
-    steering = max(-1.0, min(1.0, DIRECTION_CMD / 45.0))
-    left_stride = STRIDE_LENGTH * (1.0 + 0.5 * steering)
-    right_stride = STRIDE_LENGTH * (1.0 - 0.5 * steering)
+    fwd_stride, yaw_deg = steering_command()
+    yaw_rad = math.radians(yaw_deg)
+    turn_frac = abs(yaw_deg) / MAX_YAW_PER_CYCLE if MAX_YAW_PER_CYCLE else 0.0
+    body_shift_cm = BODY_SHIFT_CM + (TURN_BODY_SHIFT_CM - BODY_SHIFT_CM) * turn_frac
 
     n = 20
     offsets = G.phase_offsets(n)
     path_gen.update_params(0.0, STAND_HEIGHT, STRIDE_LENGTH, SWING_HEIGHT,
                            STANCE_PUSH, 0, swing_fraction=SWING_FRACTION)
     swing_steps = [i for i, s in enumerate(path_gen.gait_xy_path) if s[3]]
-    shift = G.body_shift_profile(swing_steps, offsets, n, BODY_SHIFT_CM)
+    shift = G.body_shift_profile(swing_steps, offsets, n, body_shift_cm)
     dz = G.attitude_height_offsets(SIM_ROLL_DEG, SIM_PITCH_DEG,
                                    gain=ATTITUDE_GAIN, limit_cm=ATTITUDE_LIMIT_CM)
 
     per_leg = {}
     for leg_id in LEG_ORDER:
-        stride = left_stride if leg_id in LEFT_LEGS else right_stride
-        path_gen.update_params(
-            center_stride_y=0.0, center_height_z=STAND_HEIGHT + dz[leg_id],
-            length=stride, height1=SWING_HEIGHT, height2=STANCE_PUSH,
-            direction_angle=0, swing_fraction=SWING_FRACTION,
-            mirror_y=(GAIT_MIRROR_MATCHES_MOUNT and LEG_FLIP_Y[leg_id])
+        # GAIT_MIRROR_MATCHES_MOUNT=False forces the front pair's mirror OFF,
+        # so the flipped legs visibly fight -- a check that the mount signs do
+        # real work. LEG_SIGN_Y already carries the mirror when it is True.
+        sy = G.LEG_SIGN_Y[leg_id] if GAIT_MIRROR_MATCHES_MOUNT else 1.0
+        xy = G.body_twist_xy_path(
+            G.HIP_POSITIONS[leg_id], G.LEG_SIGN_X[leg_id], sy,
+            num_steps=n, swing_fraction=SWING_FRACTION,
+            fwd_cm=fwd_stride, yaw_rad=yaw_rad,
+            center_height_z=STAND_HEIGHT + dz[leg_id],
+            swing_height=SWING_HEIGHT, stance_push=STANCE_PUSH,
         )
-        path = G.apply_body_shift(path_gen.gait_xy_path, leg_id, offsets, shift, n)
+        path = G.apply_body_shift(xy, leg_id, offsets, shift, n)
         per_leg[leg_id] = GaitIK(ik_engine, path).get_gait_ik()
     return per_leg
 
@@ -416,6 +439,39 @@ def report(frames, num_steps):
             worst = max(worst, abs(fz - STAND_HEIGHT) - (SWING_HEIGHT + STANCE_PUSH))
     print(f"  {'PASS' if worst < 0.5 else 'WARN'}  all foot targets reachable")
 
+    # --- Turning: the body-twist gait across the command range --------------
+    # The main report above runs whatever DIRECTION_CMD is set to (0 by
+    # default). Turning lays a lateral hip-roll sweep on top of the forward
+    # gait, so it gets its own pass: does the body actually yaw, and do the
+    # margin / rate / one-leg-airborne guarantees survive it?
+    turn_ok = True
+    saved_cmd = globals()['DIRECTION_CMD']
+    print("-" * 66)
+    print("  TURNING (body twist)")
+    for cmd in (30, 60, 90, -90):
+        globals()['DIRECTION_CMD'] = cmd
+        tf, _ = simulate()
+        yaw_c = math.degrees(tf[-1]['yaw'] - tf[0]['yaw']) / CYCLES_TO_SIM
+        t_marg = min(stability_margin(f) for f in tf)
+        t_air = max(len(f['airborne']) for f in tf)
+        t_rate = 0.0
+        for f in tf:
+            i = f['tick']
+            nxt = tf[i + 1] if i + 1 < len(tf) else tf[0]
+            for leg in LEG_ORDER:
+                a, b = f['legs'][leg]['angles'], nxt['legs'][leg]['angles']
+                t_rate = max(t_rate, max(abs(b[j] - a[j]) for j in range(3)))
+        t_rate *= 1000.0 / STEP_TICK_MS
+        # +cmd is a right turn = clockwise = negative yaw.
+        sign_ok = (yaw_c < 0) == (cmd > 0)
+        row_ok = (t_marg >= MIN_STABILITY_MARGIN_CM and t_air <= 1
+                  and t_rate <= MOTOR_FREE_DPS and sign_ok and abs(yaw_c) > 1.0)
+        turn_ok &= row_ok
+        print(f"  {'PASS' if row_ok else 'FAIL'}  cmd {cmd:>+4}:  "
+              f"{yaw_c:+5.1f} deg/cyc   margin {t_marg:+.2f}   "
+              f"rate {t_rate:.0f} deg/s   {t_air} leg(s) airborne")
+    globals()['DIRECTION_CMD'] = saved_cmd
+
     print("-" * 66)
     kinematic = ok_air and pct > 99.9 and fwd and good
     if not kinematic:
@@ -423,10 +479,12 @@ def report(frames, num_steps):
     elif not roomy:
         print("  VERDICT: kinematically correct, but the static margin is too thin")
         print("           to stay upright reliably -- needs a body shift.")
+    elif not turn_ok:
+        print("  VERDICT: walks straight, but a turn breaks a guarantee above")
     else:
-        print("  VERDICT: gait is viable")
+        print("  VERDICT: gait is viable (straight and turning)")
     print("=" * 66)
-    return kinematic and roomy
+    return kinematic and roomy and turn_ok
 
 
 def animate(frames, num_steps, speed=1.0):

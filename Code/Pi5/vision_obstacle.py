@@ -211,9 +211,11 @@ HALT_STRIDE_SCALE = 0.0
 # frames, which means the camera or the worker has stopped.
 STALE_AFTER_S = 3.0
 
-# Steering saturates at 45 deg in pi5_main (steering_factor = dir / 45), so
-# there is no point ever asking for more.
-MAX_STEER_DEG = 45.0
+# pi5_main clamps the steer command to +/-90 deg (beyond which nothing changes:
+# 90 already means "spin in place"). ESCAPE asks for the full 90 to rotate as
+# fast as it can; a committed detour is trimmed off the gap edge and rarely
+# reaches half this.
+MAX_STEER_DEG = 90.0
 
 
 class AvoidState:

@@ -154,6 +154,70 @@ def apply_body_shift(path, leg_id, offsets, shift_profile, num_steps):
     return out
 
 
+def body_twist_xy_path(hip_xy, sign_x, sign_y, num_steps=20, swing_fraction=0.25,
+                       fwd_cm=10.0, yaw_rad=0.0, center_height_z=36.0,
+                       swing_height=5.0, stance_push=0.0):
+    """Per-tick ``[x, y, z, is_swing]`` foot trajectory in one leg's LOCAL frame
+    for a gait that advances the body ``fwd_cm`` and yaws it ``yaw_rad``
+    (CCW / turning left is positive) per full cycle.
+
+    This is the turning mechanism. ``GaitPath.direction_angle`` rotated every
+    leg's stride by the *same* angle, which strafes the body diagonally without
+    ever yawing it (verified in simulation). Here each planted foot instead
+    arcs about the BODY CENTRE: its neutral position (the hip, ``hip_xy`` in the
+    body frame) is rotated by ``+/- yaw_rad/2`` across the stroke and shifted
+    ``+/- fwd_cm/2`` forward, so the four feet phased together drive the body
+    through both a translation and a rotation. Feet on the outside of the turn
+    sweep a longer arc; on a pure spin (``fwd_cm == 0``) the inside feet sweep
+    backward. The lateral (x) component of that arc is what recruits the
+    hip-roll joint into the turn.
+
+    ``sign_x`` / ``sign_y`` are the leg's mount reflections (``LEG_SIGN_X`` /
+    ``LEG_SIGN_Y``): body = hip + local * sign, so local = (body - hip) * sign.
+
+    At ``yaw_rad == 0`` the output is identical, term for term, to the old
+    ``GaitPath`` straight gait -- the swing half-ellipse and linear stance are
+    unchanged, only re-expressed through ``frac``.
+    """
+    hx, hy = hip_xy
+    beta = max(0.05, min(0.95, swing_fraction))
+    out = []
+    for i in range(num_steps):
+        phase = i / num_steps
+
+        if phase < beta:
+            # SWING -- eased forward sweep + half-sine lift (unchanged shape).
+            s = phase / beta
+            frac = 0.5 - 0.5 * math.cos(math.pi * s)   # 0 (rear) -> 1 (front)
+            lift = swing_height * math.sin(math.pi * s)
+        else:
+            # STANCE -- linear travel back, so every planted foot moves at one
+            # rate and they do not scrub against each other.
+            s = (phase - beta) / (1.0 - beta)
+            frac = 1.0 - s                              # 1 (front) -> 0 (rear)
+            lift = -stance_push * math.sin(math.pi * s)
+
+        # Foot position in the BODY frame: neutral hip position rotated by the
+        # body's share of the yaw and offset by its share of the forward step,
+        # both centred on neutral (+/- half each way).
+        ang = yaw_rad * (frac - 0.5)
+        fwd = fwd_cm * (frac - 0.5)
+        bx = hx * math.cos(ang) - hy * math.sin(ang)
+        by = hx * math.sin(ang) + hy * math.cos(ang) + fwd
+
+        local_x = (bx - hx) * sign_x
+        local_y = (by - hy) * sign_y
+        local_z = center_height_z - lift
+
+        out.append([
+            round(float(local_x), 2),
+            round(float(local_y), 2),
+            round(float(local_z), 2),
+            lift > 0.0,
+        ])
+    return out
+
+
 def attitude_height_offsets(roll_deg, pitch_deg, gain=0.6, limit_cm=4.0,
                             max_tilt_deg=30.0):
     """Per-leg foot-height change that levels the body. Returns {leg: dz_cm}.
