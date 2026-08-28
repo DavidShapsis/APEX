@@ -218,11 +218,11 @@ pipeline — the two had already diverged once.
   passable.
 - **Thin obstacles are unreliable.** Table legs and wires are close to the
   resolution limit at `INPUT_SIZE = 266` and may not survive the bin averaging.
-- **No pivot, so no true "back away".** Steering is differential stride and both
-  strides stay positive (see "No stop command mid-turn" below), so the robot can
-  only *arc*. `BLOCKED` therefore halts in place rather than reversing or
-  spinning, and `ESCAPE` can only arc forward hunting for a gap. A robot that
-  walks into a dead-end corridor cannot get itself out.
+- **No reverse.** Steering is a body yaw now (see the steering entry below), so
+  the robot *can* spin in place — `ESCAPE` and a hard turn command both do — but
+  it still cannot walk backward. A robot nose-first in a dead end can rotate to
+  face out, which the old differential steering could not do, but if it is
+  wedged it still needs a human.
 - **`BLOCKED` halts by setting stride to 0**, which makes the feet lift and land
   in the same spot — it keeps standing and stays IMU-levelled. This is
   deliberately *not* the dashboard STOP, which cuts holding torque and would let
@@ -615,37 +615,60 @@ the same PWM limits as any ordinary gait step. Walking-gait poses stay close to
 `stand_pose` by construction (that's the whole point of the stand height), so the
 jump should be small, but it hasn't been measured on hardware.
 
-### No stop command mid-turn, and BACK was removed rather than fixed
-```python
-steering_factor = chosen_direction / 45.0
-steering_factor = max(-1.0, min(1.0, steering_factor))
-```
-`direction = 0` means *walk forward* — there is no zero-velocity travel-direction
-command in the production UI (`single_leg_test.py` has a STOP button for this;
-production doesn't). Note this is different from the new **STOP** button (see the
-Homing section at the top), which cuts motor power entirely rather than commanding
-zero velocity — there still isn't a "keep standing, walk forward at 0 speed" state.
-The **BACK** button (which used to send 180°, saturating identically to RIGHT's 90°
-— it was a hard right turn, not reverse) has been **removed** from the dashboard
-rather than fixed, since a working reverse needs real omnidirectional steering (see
-`direction_angle` below), not a quick patch. The slider still lets you drag to 180°
-and get the same silent right-turn saturation — that underlying steering-math issue
-is unchanged, just no longer surfaced as a labeled button.
+### RESOLVED — steering is now a body twist (yaw), not differential stride
 
-Deeper cause: `chosen_direction` means "travel direction" in manual mode but
-"heading error" in autonomous mode — two different quantities sharing one variable.
-Fixing properly means separating turn-rate from travel-direction commands, and
-adding an actual zero-velocity state the gait can return to (distinct from STOP's
-full de-power).
+Was: `chosen_direction` mapped to a left/right stride-length difference, which
+turned the robot like a skid-steer — every foot moving straight fore/aft, the
+two sides covering different ground, the feet scrubbing sideways as the body
+yawed. The hip-roll joint did almost nothing during a turn. `GaitPath`'s
+`direction_angle` — nominally the omnidirectional mechanism — was hardcoded to
+`0` everywhere and, tested, only strafed the body (translated it diagonally)
+without ever yawing it.
 
-Related: `GaitPath`'s `direction_angle` parameter — the omnidirectional steering
-mechanism — is hardcoded to `0` at every call site in `pi5_main.py`, so differential
-stride is the only steering actually wired up.
+Now: `ik_and_gait.body_twist_xy_path()` takes a forward stride **and** a yaw per
+cycle. Each planted foot arcs about the body centre — its neutral (hip) position
+rotated `± yaw/2` across the stroke — so the four feet phased together drive the
+body through a real rotation, with the hip-roll joint carrying the lateral part
+of each arc (this is how CHAMP / MIT-Cheetah-lineage controllers turn).
+`pi5_main`'s loop maps `chosen_direction` (+ = turn right) to a yaw rate plus a
+forward stride that tapers to zero by `YAW_FULL_SPIN_DEG` (90°), so a hard
+LEFT/RIGHT spins in place and a moderate heading error arcs while still
+advancing.
+
+Verified in `quadruped_sim.py --report` across the full command range:
+`yaw_deg == 0` reproduces the old straight gait **term for term** (margin
++2.38 cm, 266 deg/s, 55.8 cm/4 cyc — unchanged); every turn keeps one leg
+airborne, the FL→RR→FR→RL crawl order, joint rate ≤ 283 deg/s (79%), and all
+foot targets reachable. Full spin is ~13 deg/cycle → ~16 deg/s → a 90° turn in
+~5.5 s.
+
+**Still open / notes:**
+- *There is still no zero-velocity "keep standing, hold heading" travel state.*
+  `chosen_direction = 0` means walk forward. STOP de-powers; a large obstacle
+  makes the avoidance planner march in place (stride 0). None of those is
+  "stand and hold". "Mission end doesn't stop" below is still blocked on this.
+- *A "spin in place" drifts.* The phased crawl means only 3 feet are planted at
+  any instant, so each single-leg lift during a spin leaves a few mm of
+  un-cancelled translation — measured 3–8 cm of drift over a 53° spin, and
+  slightly asymmetric left vs right (the front-leg mirror). Nav recomputes the
+  bearing from GPS every cycle so it self-corrects; a true zero-drift spin would
+  need the arc centred on the support-triangle centroid, not the body centre.
+- *`direction_angle` in `GaitPath` is now dead* for production (still used by
+  `gait_testing3.py`). Left in place; `build_gait` no longer calls `GaitPath`
+  for the gait itself, only `swing_steps()` uses it (for the lift schedule).
+- The `TURN_BODY_SHIFT_CM` ramp (2 → 4 cm of tripod lean as the turn tightens)
+  is what keeps the margin up during a turn — see its comment. Straight walking
+  is untouched.
+- `chosen_direction` still means "travel direction" in MANUAL and "heading
+  error" in AUTONOMOUS — one variable, two meanings. Harmless with the yaw
+  mapping (both want "yaw toward this"), but the `current_state` conflation
+  above is the related cleanup.
 
 ### Mission end doesn't stop
 `Navigator.calculate_nav` returns `None` once waypoints are exhausted, so
 `chosen_direction` falls through to the last manual direction and the robot walks
-forever. Blocked on having a stop command.
+forever. Blocked on having a zero-velocity travel state (see the steering entry
+above).
 
 ### RESOLVED — IMU stabilization is now differential, not a common offset
 It used to feed pitch into `center_stride_y` and roll into `lateral_roll_offset`,

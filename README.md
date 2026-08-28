@@ -18,7 +18,7 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 ## Features
  
 - **Inverse Kinematics** — custom 3-link IK engine with forward kinematics for recovery, computing joint angles in real time for all four legs
-- **Differential Gait Control** — tank-style differential steering with independent left/right stride lengths for smooth turning
+- **Body-Twist Steering** — each foot arcs about the body centre so the robot yaws in place or blends yaw with forward travel into an arc, recruiting the hip-roll joint into the turn (not tank-style stride differencing)
 - **IMU Stabilization** — BNO085 quaternion-based roll/pitch feeds a per-leg differential foot-height correction, so the body actually levels instead of just translating
 - **GPS Navigation** — autonomous waypoint following using bearing and distance calculations from a HGLRC M100 GPS module
 - **Live Video Streaming** — USB webcam feed served over Flask to any device on the same network
@@ -58,7 +58,8 @@ Pi 5 (ROS 2)
 │   └── quadruped_sim.py # PC-only 4-leg gait simulator (no ROS) -- --report and 3D animation modes
 ├── imu.py               # BNO085 quaternion → roll/pitch
 ├── navigation.py        # GPS parsing, compass, waypoint navigation
-├── stream_server.py     # Flask dashboard -- camera stream, direction/nav, homing/stand/go/stop
+├── stream_server.py     # Flask dashboard node -- ROS wiring, routes, /status plumbing
+├── dashboard_page.py    # The dashboard HTML/CSS/JS (shared, no deps)
 ├── webcam.py            # USB camera capture
 ├── vision_obstacle.py   # Depth model, obstacle costmap, committed avoidance planner
 ├── vision_test/         # Standalone notebook for tuning the vision pipeline
@@ -105,10 +106,16 @@ The gait path is a 20-step cycle, one leg airborne at a time (25% of the cycle) 
  
 - **Swing phase** (first 25% of the cycle): a true half-ellipse -- the foot sweeps forward and up together as matched cos/sin of the same angle, easing into liftoff and touchdown instead of slamming into them
 - **Stance phase** (remaining 75%): the foot travels backward at constant velocity (deliberately linear, not elliptical, so all three planted feet move at the same rate and don't scrub against the ground)
-- **Body shift**: the body leans toward the diagonally-opposite hip just before each lift, to keep the centre of mass off the edge of the support triangle
+- **Body shift**: the body leans toward the diagonally-opposite hip just before each lift, to keep the centre of mass off the edge of the support triangle (ramped from 2 cm to 4 cm as a turn tightens)
 - **IMU levelling**: differential per-leg foot-height correction from roll/pitch, not a common offset
  
-Steering uses differential stride length between left and right leg pairs, similar to tank drive. Before any of this runs, the robot must be homed, stood up, and started from the web dashboard -- see `KNOWN_ISSUES.md` for that flow.
+### Steering
+ 
+A **body twist**, not stride differencing. `build_gait()` takes a forward stride and a yaw-per-cycle; each planted foot arcs about the body centre (`body_twist_xy_path`), its neutral hip position rotated `± yaw/2` across the stroke, so the four feet phased together rotate the body -- the hip-roll joint carrying the lateral part of each arc. `yaw == 0` is the straight gait, unchanged term for term.
+ 
+`pi5_main` maps the turn command (+ = right; a dashboard button or the GPS heading error) to a yaw rate plus a forward stride that tapers to zero by 90°, so a hard LEFT/RIGHT spins in place and a moderate heading error arcs while still advancing. `quadruped_sim.py --report` checks the straight gait *and* a turn sweep: a full spin is ~13°/cycle (~16°/s, a 90° turn in ~5.5 s) with the stability margin, joint rate, and one-leg-airborne crawl all holding.
+ 
+Before any of this runs, the robot must be homed, stood up, and started from the web dashboard -- see `KNOWN_ISSUES.md` for that flow.
  
 ---
  
