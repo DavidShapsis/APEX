@@ -23,6 +23,7 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 - **GPS Navigation** — autonomous waypoint following using bearing and distance calculations from a HGLRC M100 GPS module
 - **Live Video Streaming** — USB webcam feed served over Flask to any device on the same network
 - **Guided Startup** — web dashboard walks through homing each leg, standing, and going, before the robot is allowed to walk; a Stop control cuts motor power without losing homing
+- **ML Obstacle Avoidance** — pretrained monocular depth model (Depth-Anything-V2-Small, ONNX) turns the webcam feed into a forward costmap and steers around obstacles, layered on top of both manual and GPS waypoint steering. Dashboard toggle
 - **Current Sensing Foot Detection** *(in progress)* — motor current sensing on unexpected ground contact triggers an automatic recovery routine, replacing the FSR-based approach
 - **ROS 2 Integration** — inter-node communication via ROS 2 topics for direction commands, navigation mode switching, and the homing/stand/go/stop dashboard controls
 
@@ -59,6 +60,8 @@ Pi 5 (ROS 2)
 ├── navigation.py        # GPS parsing, compass, waypoint navigation
 ├── stream_server.py     # Flask dashboard -- camera stream, direction/nav, homing/stand/go/stop
 ├── webcam.py            # USB camera capture
+├── vision_obstacle.py   # Depth model, obstacle costmap, committed avoidance planner
+├── vision_test/         # Standalone notebook for tuning the vision pipeline
 ├── power_monitor.py     # INA219 voltage/current
 ├── audio.py             # Bluetooth speaker alerts
 └── single_leg_test.py   # Standalone single-leg test harness (no ROS/IMU/GPS)
@@ -109,6 +112,43 @@ Steering uses differential stride length between left and right leg pairs, simil
  
 ---
  
+## Obstacle Avoidance
+ 
+Camera-only, using a **pretrained** monocular depth model (Depth-Anything-V2-Small, ONNX) — nothing is trained here. Each frame becomes a relative depth map; a band in front of the feet is sliced into 9 angular bins, and each bin is scored by how much of it reads **nearer than the ground does at that image row**. The planner then takes whatever direction the robot wants to travel and returns the nearest one that is actually passable.
+ 
+That row-relative comparison is the important detail. On flat ground the distance to the ground at image row `r` goes as `1/(r - horizon)`, so depth ramps smoothly from far at the top of the frame to near at the bottom — a single absolute threshold flags the ground itself as an obstacle. An upright object instead occupies rows that would otherwise show ground far away, so it stands out sharply against its own row. A uniform slope shifts a whole row together and is correctly ignored.
+ 
+It runs on its own worker thread at 1–3 fps on the Pi 5 CPU, which is ample — the crawl gait only moves at ~16.7 cm/s. No AI accelerator needed.
+ 
+The planner is a committed state machine, not a per-frame reaction:
+ 
+| State | Behaviour |
+|---|---|
+| `CLEAR` | Corridor open. Navigation steers, full stride |
+| `AVOIDING` | Obstacle ahead. Committed to one side, steering to the passable heading nearest the goal, 0.6x stride |
+| `CLEARING` | Corridor reopened. Keeps turning while the obstacle is still in frame, then drives straight until the body is past |
+| `BLOCKED` | No gap anywhere. Stride drops to zero — the robot **marches in place**, still standing (unlike STOP, which cuts torque) |
+| `ESCAPE` | Still blocked. Slow committed arc toward the least-obstructed side |
+ 
+**Why commitment matters:** the naive version oscillates. Steer away from an obstacle, it leaves the field of view, GPS points straight back at it, repeat forever. Latching a side until the detour completes is what prevents that.
+ 
+**Getting back on track is automatic** — `Navigator.calculate_nav` recomputes the bearing from the live GPS fix every pass, so there is no route line to rejoin. Within a detour the planner always picks the passable heading *closest to the goal bearing*, so it drifts back toward the waypoint as soon as the geometry allows.
+ 
+Verified in simulation against the real `Navigator`: obstacles struck by 0.95 m with avoidance off were cleared by 0.25–0.50 m with it on, with zero steering oscillations, at a 3–19% cost in route time.
+ 
+```bash
+cd Code/Pi5
+python3 vision_obstacle.py --download    # fetch the ~100MB depth model, once
+python3 vision_obstacle.py               # planner self-test, no camera needed
+python3 vision_obstacle.py --live 0      # live decisions from the camera
+```
+ 
+Then toggle **AVOIDANCE** on the dashboard. While it is on, the video feed is overlaid with the detection bins (red = blocked), so the thresholds can be tuned by eye. `Code/Pi5/vision_test/obstacle_avoidance_test.ipynb` is a standalone notebook for the same tuning against still images.
+ 
+**Not yet verified on hardware** — see `KNOWN_ISSUES.md` for what needs measuring first.
+ 
+---
+ 
 ## Getting Started
  
 > Full setup instructions are a work in progress. The notes below are enough to get running.
@@ -117,7 +157,10 @@ Steering uses differential stride length between left and right leg pairs, simil
  
 ```bash
 pip install pyserial smbus2 flask opencv-python adafruit-circuitpython-bno08x
+pip install onnxruntime numpy        # obstacle avoidance only; optional
 ```
+
+Obstacle avoidance is optional at runtime — if `onnxruntime` or the model file is missing, the import is caught, the dashboard shows `AVOIDANCE: NO MODEL`, and everything else runs unchanged.
  
 ROS 2 (Humble or later) required for `pi5_main.py`. For testing without ROS, use `single_leg_test.py` — it has no ROS dependency, runs a single leg, and serves the camera stream.
  
@@ -157,11 +200,11 @@ Flash each Pico with MicroPython, then copy the contents of `Code/Pico/` to the 
 | Camera streaming | Complete |
 | Recovery path | Complete |
 | Homing / Stand / Go / Stop dashboard workflow | Complete |
+| ML obstacle avoidance | Built, needs hardware tuning |
 | Current sensing foot detection | In progress |
 | Mechanical build | In progress |
 | Custom PCB | In progress |
 | CAD files | In progress |
-| ML obstacle avoidance | Planned |
  
 ---
  

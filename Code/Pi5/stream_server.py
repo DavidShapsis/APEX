@@ -15,6 +15,7 @@ class RobodogStreamer(Node):
         # ROS 2 Publishers
         self.dir_pub = self.create_publisher(Int32, '/apex/navigation/cmd_dir', 10)
         self.nav_mode_pub = self.create_publisher(Bool, '/apex/navigation/nav_mode', 10)
+        self.avoid_pub = self.create_publisher(Bool, '/apex/vision/cmd_avoid', 10)
         self.home_leg_pub = self.create_publisher(Int32, '/apex/homing/cmd_home_leg', 10)
         self.stand_pub = self.create_publisher(Bool, '/apex/homing/cmd_stand', 10)
         self.go_pub = self.create_publisher(Bool, '/apex/homing/cmd_go', 10)
@@ -32,6 +33,7 @@ class RobodogStreamer(Node):
 
         self.current_direction = 0
         self.nav_mode = False  # Track state of autonomous navigation
+        self.avoid_mode = False  # Track state of vision obstacle avoidance
 
         # Updated by homing_status_callback from pi5_main.py's periodic publish.
         # Everything starts false/0 -- matches the real state at boot, since
@@ -39,12 +41,15 @@ class RobodogStreamer(Node):
         self.homing_status = {
             'homed': [0, 0, 0, 0], 'standing': 0, 'walking': 0,
             'deactivated': [0, 0, 0, 0],
+            'avoid_available': 0, 'avoid_enabled': 0, 'avoid_state': 0,
+            'avoid_steer': 0, 'avoid_stride': 100,
         }
 
         self.app.add_url_rule('/video_feed', 'video_feed', self.video_feed)
         self.app.add_url_rule('/', 'index', self.index)
         self.app.add_url_rule('/set_direction', 'set_direction', self.set_direction, methods=['POST'])
         self.app.add_url_rule('/toggle_nav', 'toggle_nav', self.toggle_nav, methods=['POST'])
+        self.app.add_url_rule('/toggle_avoid', 'toggle_avoid', self.toggle_avoid, methods=['POST'])
         self.app.add_url_rule('/home_leg', 'home_leg', self.home_leg, methods=['POST'])
         self.app.add_url_rule('/stand', 'stand', self.stand, methods=['POST'])
         self.app.add_url_rule('/go', 'go', self.go, methods=['POST'])
@@ -56,12 +61,29 @@ class RobodogStreamer(Node):
     def homing_status_callback(self, msg):
         data = list(msg.data)
         if len(data) >= 10:
-            self.homing_status = {
+            status = {
                 'homed': data[0:4],
                 'standing': data[4],
                 'walking': data[5],
                 'deactivated': data[6:10],
+                # Defaults, so a controller that predates the avoidance fields
+                # still produces a complete status dict for the UI.
+                'avoid_available': 0, 'avoid_enabled': 0, 'avoid_state': 0,
+                'avoid_steer': 0, 'avoid_stride': 100,
             }
+            if len(data) >= 15:
+                status.update({
+                    'avoid_available': data[10],
+                    'avoid_enabled': data[11],
+                    'avoid_state': data[12],
+                    'avoid_steer': data[13],
+                    'avoid_stride': data[14],
+                })
+                # The controller is the authority on whether avoidance is
+                # actually on, so a toggle lost in transit self-corrects here
+                # instead of leaving the button lying about the robot's state.
+                self.avoid_mode = bool(data[11])
+            self.homing_status = status
 
     def index(self):
         # Dynamic button styling based on initial state
@@ -90,6 +112,10 @@ class RobodogStreamer(Node):
                 .debug-section {{ border:1px solid #444; border-radius:8px; padding:10px; margin:15px auto; max-width:420px; }}
                 .deact-btn {{ background:#333; color:white; border:1px solid #555; padding:10px; margin:5px; width:90px; border-radius:5px; cursor:pointer; }}
                 .deact-btn.off {{ background:#a50; border-color:#f80; }}
+                .avoid-section {{ border:1px solid #333; border-radius:8px; padding:10px; margin:15px auto; max-width:420px; }}
+                #avoidBtn {{ background:#ff0000; color:black; font-weight:bold; width:220px; padding:15px; margin:10px; border-radius:5px; cursor:pointer; border:none; }}
+                #avoidBtn:disabled {{ background:#333; color:#777; cursor:not-allowed; }}
+                #avoidState {{ font-family:monospace; font-size:0.95em; }}
             </style>
             <script>
                 function sendDir(val) {{
@@ -130,6 +156,20 @@ class RobodogStreamer(Node):
                     const url = currentlyDeactivated ? '/reactivate_leg' : '/deactivate_leg';
                     fetch(url, {{"method": 'POST', "headers": {{'Content-Type': 'application/x-www-form-urlencoded'}}, "body": 'leg=' + id}});
                 }}
+                function toggleAvoid() {{
+                    fetch('/toggle_avoid', {{"method": 'POST'}})
+                    .then(r => r.json())
+                    .then(d => {{ if (!d.ok && d.error) alert(d.error); }});
+                }}
+                // Must match AvoidState.CODES in vision_obstacle.py.
+                const AVOID_STATES = {{
+                    0: ['OFF',      '#888', 'not running'],
+                    1: ['CLEAR',    '#0f6', 'path clear, navigation steering'],
+                    2: ['AVOIDING', '#fc0', 'obstacle ahead, committed to a detour'],
+                    3: ['CLEARING', '#fc0', 'driving past before turning back'],
+                    4: ['BLOCKED',  '#f44', 'no gap -- marching in place'],
+                    5: ['ESCAPE',   '#f44', 'arcing to find a way out']
+                }};
                 const LEG_NAMES = ['FL', 'FR', 'RR', 'RL'];
                 function refreshStatus() {{
                     fetch('/status').then(r => r.json()).then(s => {{
@@ -150,6 +190,25 @@ class RobodogStreamer(Node):
                         document.getElementById('goBtn').innerText = s.walking === 1 ? 'WALKING' : 'GO';
                         if (s.walking === 1) document.getElementById('goBtn').disabled = true;
                         document.getElementById('warnBanner').style.display = allHomed ? 'none' : 'block';
+
+                        const avoidBtn = document.getElementById('avoidBtn');
+                        avoidBtn.disabled = s.avoid_available !== 1;
+                        if (s.avoid_available !== 1) {{
+                            avoidBtn.innerText = 'AVOIDANCE: NO MODEL';
+                            document.getElementById('avoidState').innerHTML =
+                                '<span style="color:#888">Depth model not loaded \\u2014 run ' +
+                                '<code>python3 vision_obstacle.py --download</code> on the Pi.</span>';
+                        }} else {{
+                            const on = s.avoid_enabled === 1;
+                            avoidBtn.style.background = on ? '#00ff00' : '#ff0000';
+                            avoidBtn.innerText = on ? 'AVOIDANCE: ON' : 'AVOIDANCE: OFF';
+                            const st = AVOID_STATES[s.avoid_state] || AVOID_STATES[0];
+                            document.getElementById('avoidState').innerHTML = on
+                                ? '<span style="color:' + st[1] + '"><b>' + st[0] + '</b></span> \\u2014 ' + st[2] +
+                                  '<br><span style="color:#999">steer ' + (s.avoid_steer >= 0 ? '+' : '') +
+                                  s.avoid_steer + '\\u00b0 \\u00b7 stride ' + s.avoid_stride + '%</span>'
+                                : '<span style="color:#888">off \\u2014 steering is unmodified</span>';
+                        }}
                     }}).catch(() => {{}});
                 }}
                 setInterval(refreshStatus, 1000);
@@ -176,6 +235,8 @@ class RobodogStreamer(Node):
                 <p style="font-size:0.85em;color:#999;">STOP cuts motor power (no holding torque) but keeps encoder
                 tracking, so re-homing isn't needed to resume. It does NOT lower the robot first — only use it once
                 the robot is off the ground or supported, not while it's standing/walking on its own legs.</p>
+                <p style="font-size:0.85em;color:#999;">Pressing STAND while WALKING stops the walk and settles into
+                the stand pose, keeping the legs powered — use that, not STOP, to halt a robot that is on its feet.</p>
             </div>
 
             <div class="debug-section">
@@ -187,6 +248,19 @@ class RobodogStreamer(Node):
                 <button id="deact_FR" class="deact-btn" onclick="toggleLeg(1, false)">Deactivate FR</button>
                 <button id="deact_RR" class="deact-btn" onclick="toggleLeg(2, false)">Deactivate RR</button>
                 <button id="deact_RL" class="deact-btn" onclick="toggleLeg(3, false)">Deactivate RL</button>
+            </div>
+
+            <div class="avoid-section">
+                <h3>Obstacle Avoidance</h3>
+                <button id="avoidBtn" onclick="toggleAvoid()" disabled>AVOIDANCE: OFF</button>
+                <p id="avoidState">&mdash;</p>
+                <p style="font-size:0.85em;color:#999;">Camera-based. Works in both manual and
+                NAV mode: it takes whichever direction the robot wants to travel and returns the
+                nearest one that is actually clear. In NAV mode the GPS bearing is recomputed from
+                the live fix every pass, so once the obstacle is behind it heads for the waypoint
+                again on its own. When the view is fully blocked it drops stride to zero and
+                marches in place &mdash; it keeps standing, unlike STOP. While ON, the video feed
+                is overlaid with the detection bins (red = blocked).</p>
             </div>
 
             <h3>Direction: <span id="angleDisp">0°</span></h3>
@@ -218,6 +292,18 @@ class RobodogStreamer(Node):
         msg.data = self.nav_mode
         self.nav_mode_pub.publish(msg)
         return jsonify({"nav_mode": self.nav_mode})
+
+    def toggle_avoid(self):
+        """Toggles vision obstacle avoidance. Independent of nav mode -- it
+        layers on top of manual steering and GPS waypoint following alike."""
+        if not self.homing_status.get('avoid_available'):
+            return jsonify({"ok": False, "avoid_mode": False,
+                            "error": "Vision model not loaded on the Pi."}), 409
+        self.avoid_mode = not self.avoid_mode
+        msg = Bool()
+        msg.data = self.avoid_mode
+        self.avoid_pub.publish(msg)
+        return jsonify({"ok": True, "avoid_mode": self.avoid_mode})
 
     def home_leg(self):
         try:
