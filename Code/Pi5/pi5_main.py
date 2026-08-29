@@ -25,6 +25,7 @@ from webcam import USBWebcam
 from stream_server import RobodogStreamer
 from navigation import GPSReader, CompassReader, Navigator
 from imu import IMU
+from sensor_hub import SensorHub
 
 # Vision-based obstacle avoidance is optional and guarded: it pulls in
 # onnxruntime and a ~100MB model file, neither of which is needed to walk. A
@@ -870,6 +871,14 @@ def main():
     last_audio_warning = 0
     last_status_publish = time.time()
 
+    # Every blocking sensor read (IMU + compass over I2C, GPS UART drain, INA219
+    # battery reads) runs on its own poller thread from here on. The control
+    # loop only ever reads lock-protected snapshots, so a wedged I2C bus can no
+    # longer stall steering or the IMU reflex -- it just makes that snapshot go
+    # stale and the loop falls back to a safe default.
+    sensor_hub = SensorHub(imu=imu, gps=gps, compass=compass, power=power_monitor)
+    sensor_hub.start()
+
     controller = PiQuadrupedController()
     controller.avoider = avoider
 
@@ -895,29 +904,50 @@ def main():
     print("Boot complete. Legs are NOT driven -- home each leg from the web "
           "dashboard, then Stand, then Go.")
 
-    try:
-        initial_head = compass.get_heading()
+    # Seed the heading filter from the first compass reading the hub gets, so it
+    # does not spend its first seconds slewing from an arbitrary 0 deg.
+    initial_head = None
+    for _ in range(20):
+        initial_head = sensor_hub.nav_snapshot()["heading"]
+        if initial_head is not None:
+            break
+        time.sleep(0.1)
+    if initial_head is not None:
         controller.filtered_heading = initial_head
         print(f"Compass tracking initialized successfully at: {initial_head:.2f}°")
-    except Exception as e:
-        print(f"[Hardware Warning] Failed to fetch initial compass sync: {e}")
+    else:
+        controller.filtered_heading = 0.0
+        print("[Hardware Warning] No compass reading from sensor hub; heading starts at 0°")
 
     # Edge-detects the avoidance toggle so a detour in progress is cleared once,
     # on the transition, rather than every pass.
     avoid_was_enabled = False
 
+    # The heading EMA below is tuned for one step per fresh compass sample. The
+    # nav poller runs at ~10 Hz but this loop at ~100 Hz, so gate the filter on
+    # the snapshot timestamp -- otherwise it steps 10x per sample and barely
+    # smooths anything.
+    last_heading_t = 0.0
+
     try:
         while rclpy.ok():
             try:
                 current_time = time.time()
-                gps.update()
-                
-                raw_head = compass.get_heading()
-                # Blend along the shortest arc. Averaging raw degrees sends the
-                # estimate the long way round every time the robot crosses north
-                # (filtered=359, raw=1 would give 305).
-                head_delta = (raw_head - controller.filtered_heading + 180.0) % 360.0 - 180.0
-                controller.filtered_heading = (controller.filtered_heading + 0.15 * head_delta) % 360.0
+
+                # Sensors are polled on their own threads now -- this is a dict
+                # copy, never a hardware call, so a hung I2C bus cannot stall
+                # the loop here.
+                nav_s = sensor_hub.nav_snapshot()
+                if nav_s["heading"] is not None and nav_s["t"] != last_heading_t:
+                    last_heading_t = nav_s["t"]
+                    raw_head = nav_s["heading"]
+                    # Blend along the shortest arc. Averaging raw degrees sends
+                    # the estimate the long way round every time the robot
+                    # crosses north (filtered=359, raw=1 would give 305).
+                    head_delta = (raw_head - controller.filtered_heading + 180.0) % 360.0 - 180.0
+                    controller.filtered_heading = (controller.filtered_heading + 0.15 * head_delta) % 360.0
+                elif nav_s["heading"] is None and int(current_time) % 2 == 0:
+                    print("[Hardware Error] No compass heading; holding last estimate")
 
                 with controller.serial_lock:
                     snap_state = controller.current_state
@@ -928,16 +958,18 @@ def main():
                     snap_last_stride = controller.last_sent_stride_scale
                     snap_avoid_enabled = controller.avoid_enabled
                 
-                # update() reports failure by returning None rather than raising,
-                # so this must be checked -- otherwise a dead IMU silently feeds
-                # its last good attitude into the gait forever.
-                if imu.update() is not None:
-                    roll_tilt = imu.get_roll()
-                    pitch_tilt = imu.get_pitch()
+                # imu_snapshot() is None when the last poll failed (imu.update()
+                # returned None) or the last good sample is stale -- either way
+                # a dead or hung IMU degrades to flat attitude here instead of
+                # silently feeding its last reading into the gait forever.
+                imu_s = sensor_hub.imu_snapshot()
+                if imu_s is not None:
+                    roll_tilt = imu_s["roll"]
+                    pitch_tilt = imu_s["pitch"]
                 else:
                     roll_tilt, pitch_tilt = 0.0, 0.0
                     if int(current_time) % 2 == 0:
-                        print("[Hardware Error] IMU read failed; stabilization disabled")
+                        print("[Hardware Error] IMU read stale/failed; stabilization disabled")
 
                 # Levelling is differential leg height, computed per leg inside
                 # build_gait via attitude_height_offsets -- there is no common
@@ -948,13 +980,14 @@ def main():
 
                 chosen_direction = snap_target_dir
                 if snap_state == RobotState.AUTONOMOUS:
-                    if not gps.has_fix:
+                    if not nav_s["has_fix"] or nav_s["age"] > 5.0:
                         # Without a fix lat/lon are 0.0, which would produce a
-                        # confident bearing from the Gulf of Guinea.
+                        # confident bearing from the Gulf of Guinea; a stale
+                        # snapshot (nav poller wedged) is treated the same way.
                         if int(current_time) % 2 == 0:
-                            print("[NAV] No GPS fix; ignoring waypoint guidance")
+                            print("[NAV] No usable GPS fix; ignoring waypoint guidance")
                     else:
-                        nav_data = nav_engine.calculate_nav(gps.lat, gps.lon, controller.filtered_heading)
+                        nav_data = nav_engine.calculate_nav(nav_s["lat"], nav_s["lon"], controller.filtered_heading)
                         if nav_data is not None:
                             chosen_direction = nav_data["turn"]
 
@@ -1053,11 +1086,12 @@ def main():
                         controller.last_sent_stride_scale = stride_scale
 
                 if current_time - last_power_check > 1.0:
-                    v = power_monitor.get_voltage()
-                    c = power_monitor.get_current()
-                    if (v < LOW_VOLT_THRESHOLD or c > MAX_CURRENT_MA) and (current_time - last_audio_warning > AUDIO_COOLDOWN):
-                        audio_engine.play(os.path.join(WAV_DIR, "low_battery.wav"))
-                        last_audio_warning = current_time
+                    p = sensor_hub.power_snapshot()
+                    if p is not None:
+                        v, c = p["voltage"], p["current"]
+                        if (v < LOW_VOLT_THRESHOLD or c > MAX_CURRENT_MA) and (current_time - last_audio_warning > AUDIO_COOLDOWN):
+                            audio_engine.play(os.path.join(WAV_DIR, "low_battery.wav"))
+                            last_audio_warning = current_time
                     last_power_check = current_time
 
                 for s, line in controller.read_pico_lines():
@@ -1081,6 +1115,14 @@ def main():
                     controller.publish_homing_status()
                     last_status_publish = current_time
 
+                    # Watchdog: a poller that has not completed a loop in 2 s is
+                    # blocked inside a hardware call. The snapshot fallbacks
+                    # above already keep the robot walking; this just surfaces
+                    # which bus is the problem.
+                    down = [n for n, ok in sensor_hub.health(timeout=2.0).items() if not ok]
+                    if down and int(current_time) % 5 == 0:
+                        print(f"[SENSOR] poller(s) stalled: {', '.join(down)}")
+
                 time.sleep(0.01)
             except Exception as loop_err:
                 print(f"[RUNTIME WARNING] Iteration skipped due to error: {loop_err}")
@@ -1090,6 +1132,7 @@ def main():
         print("\nShutting down controller hardware nodes safely...")
     finally:
         controller.close_hardware()
+        sensor_hub.stop()
         if avoider is not None:
             avoider.stop()
         cam.release()
