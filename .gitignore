@@ -1,0 +1,20 @@
+CAD/Backup/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor / tooling -- local settings, not project files
+.claude/
+.vscode/
+
+network_info.txt
+power_shutoff_wiring.txt
+
+# Depth model weights (~100MB) -- fetched on demand, see README.
+# python3 Code/Pi5/vision_obstacle.py --download
+*.onnx
+Code/Pi5/models/
+Code/Pi5/vision_test/models/
+Code/Pi5/vision_test/test_images/
