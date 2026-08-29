@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -m py_compile Pi5/pi5_main.py Pi5/inverse_kinematics/ik_and_gait.py Pico/pico_main.py)",
-      "Bash(python quadruped_sim.py --report)"
-    ]
-  }
-}
