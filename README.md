@@ -22,8 +22,9 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 - **IMU Stabilization** — BNO085 quaternion-based roll/pitch feeds a per-leg differential foot-height correction, so the body actually levels instead of just translating
 - **GPS Navigation** — autonomous waypoint following using bearing and distance calculations from a HGLRC M100 GPS module
 - **Live Video Streaming** — USB webcam feed served over Flask to any device on the same network
-- **Guided Startup** — web dashboard walks through homing each leg, standing, and going, before the robot is allowed to walk; a Stop control cuts motor power without losing homing
+- **Mission Control Dashboard** — Flask web UI that walks through homing each leg, standing, and going before the robot is allowed to walk; live camera feed with a steering readout, an obstacle-avoidance toggle, and per-leg debug controls. Served entirely from the Pi (Bootstrap vendored locally, no internet needed in the field)
 - **ML Obstacle Avoidance** — pretrained monocular depth model (Depth-Anything-V2-Small, ONNX) turns the webcam feed into a forward costmap and steers around obstacles, layered on top of both manual and GPS waypoint steering. Dashboard toggle
+- **Threaded Sensor Polling** — every blocking sensor read (IMU + compass over I2C, GPS UART, INA219) runs on its own poller thread; the control loop only ever reads a lock-protected snapshot, so a stuck bus degrades to a safe default instead of stalling the gait
 - **Current Sensing Foot Detection** *(in progress)* — motor current sensing on unexpected ground contact triggers an automatic recovery routine, replacing the FSR-based approach
 - **ROS 2 Integration** — inter-node communication via ROS 2 topics for direction commands, navigation mode switching, and the homing/stand/go/stop dashboard controls
 
@@ -60,7 +61,9 @@ Pi 5 (ROS 2)
 ├── imu.py               # BNO085 quaternion → roll/pitch
 ├── navigation.py        # GPS parsing, compass, waypoint navigation
 ├── stream_server.py     # Flask dashboard node -- ROS wiring, routes, /status plumbing
-├── dashboard_page.py    # The dashboard HTML/CSS/JS (shared, no deps)
+├── dashboard_page.py    # The dashboard HTML/CSS/JS (shared string, zero deps)
+├── dashboard_preview.py # Throwaway standalone dashboard mock (Flask only, no hardware)
+├── static/              # Vendored assets served at /static/ (bootstrap.min.css)
 ├── webcam.py            # USB camera capture
 ├── vision_obstacle.py   # Depth model, obstacle costmap, committed avoidance planner
 ├── vision_test/         # Standalone notebook for tuning the vision pipeline
@@ -114,9 +117,25 @@ The gait path is a 20-step cycle, one leg airborne at a time (25% of the cycle) 
  
 A **body twist**, not stride differencing. `build_gait()` takes a forward stride and a yaw-per-cycle; each planted foot arcs about the body centre (`body_twist_xy_path`), its neutral hip position rotated `± yaw/2` across the stroke, so the four feet phased together rotate the body -- the hip-roll joint carrying the lateral part of each arc. `yaw == 0` is the straight gait, unchanged term for term.
  
-`pi5_main` maps the turn command (+ = right; a dashboard button or the GPS heading error) to a yaw rate plus a forward stride that tapers to zero by 90°, so a hard LEFT/RIGHT spins in place and a moderate heading error arcs while still advancing. `quadruped_sim.py --report` checks the straight gait *and* a turn sweep: a full spin is ~13°/cycle (~16°/s, a 90° turn in ~5.5 s) with the stability margin, joint rate, and one-leg-airborne crawl all holding.
+`pi5_main` maps the turn command (+ = right; a dashboard control or the GPS heading error) to a yaw rate plus a forward stride that tapers to zero by 90°, so a ±90° command spins in place while a smaller heading error arcs and still advances. On the dashboard the **LEFT / RIGHT** buttons send ±45° (a moderate arc at about half stride) and the slider spans the full −90°…+90°, its ends being a spin in place; the slider tracks the buttons so it always shows the active command. `quadruped_sim.py --report` checks the straight gait *and* a turn sweep: a full spin is ~13°/cycle (~16°/s, a 90° turn in ~5.5 s) with the stability margin, joint rate, and one-leg-airborne crawl all holding.
  
 Before any of this runs, the robot must be homed, stood up, and started from the web dashboard -- see `KNOWN_ISSUES.md` for that flow.
+ 
+---
+ 
+## Control Loop
+ 
+`pi5_main.py` runs a ~100 Hz loop that fuses heading, chooses a steering command (manual, GPS, or the avoidance override), and rebuilds the gait only when the command or attitude actually changes. Everything that could block it is pushed onto its own thread:
+ 
+| Thread | Job |
+|---|---|
+| Control loop | Steering decision, gait rebuild, Pico ack/recovery handling, status publish |
+| Gait serial worker | The single writer to the four Pico UARTs -- gait frames, home/stop commands, recovery |
+| `SensorHub` pollers | One each for IMU (50 Hz), GPS + compass (10 Hz), INA219 (1 Hz) |
+| Vision worker | Depth inference + costmap, 1-3 fps; not started if the ONNX model isn't installed |
+| Flask / ROS executor | Dashboard requests and ROS 2 callbacks |
+ 
+The sensor split matters: those reads are synchronous I2C/UART transactions, and a NAKing or wedged bus blocks the kernel for its timeout. Inline, that used to stall steering and the IMU reflex with it. Now each poller owns its device and publishes a timestamped snapshot; the loop reads the snapshot with a staleness cutoff, so a dead sensor degrades to a safe default (flat attitude, hold last heading, skip the battery check) and a watchdog logs which poller is stuck. `python3 sensor_hub.py` runs a self-test with fake sensors, including a hung-bus case.
  
 ---
  
@@ -154,6 +173,14 @@ python3 vision_obstacle.py --live 0      # live decisions from the camera
 Then toggle **AVOIDANCE** on the dashboard. While it is on, the video feed is overlaid with the detection bins (red = blocked), so the thresholds can be tuned by eye. `Code/Pi5/vision_test/obstacle_avoidance_test.ipynb` is a standalone notebook for the same tuning against still images.
  
 **Not yet verified on hardware** — see `KNOWN_ISSUES.md` for what needs measuring first.
+ 
+---
+ 
+## Dashboard
+ 
+Open `http://<pi-ip>:5000`. Top to bottom: live camera feed, **Steering** (direction readout, LEFT / FWD / RIGHT, the −90…+90 slider, NAV MODE), **Startup** (Home ×4 → STAND → GO → STOP), **Obstacle Avoidance** toggle with a live state readout, then **Debug** per-leg deactivation at the bottom. Each card's wordy explanation is tucked behind a small **i** button. STAND and GO stay disabled, with a warning banner, until all four legs are homed; status pills up top show homed count / standing / walking.
+ 
+The markup lives in one place — `dashboard_page.py`, a plain string with no imports — so `stream_server.py` (the real node) and `dashboard_preview.py` (a hardware-free mock for working on the UI) render the identical page. Styling is an APEX red/black theme over Bootstrap 5, and Bootstrap is **vendored** at `Code/Pi5/static/bootstrap.min.css` rather than pulled from a CDN, so the page is fully functional when the Pi is its own access point with no route to the internet.
  
 ---
  
