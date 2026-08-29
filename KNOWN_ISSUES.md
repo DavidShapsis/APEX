@@ -690,6 +690,36 @@ foot targets reachable. Full spin is ~13 deg/cycle → ~16 deg/s → a 90° turn
 forever. Blocked on having a zero-velocity travel state (see the steering entry
 above).
 
+### RESOLVED — blocking sensor reads moved off the control loop
+The `while rclpy.ok()` loop in `pi5_main.main()` used to call `imu.update()`,
+`compass.get_heading()` and (once a second) the INA219 reads **inline, every
+iteration**. Those are synchronous I2C transactions — a few ms on a healthy bus,
+but on a NAKing or wedged bus the kernel blocks for its I2C timeout, and while it
+blocked so did steering resends, the IMU reflex and the avoidance stride command.
+
+`sensor_hub.SensorHub` now runs one poller thread per sensor (IMU 50 Hz, GPS +
+compass 10 Hz, INA219 1 Hz); each thread owns its hardware object exclusively and
+publishes into a lock-protected snapshot. The loop reads `imu_snapshot()` /
+`nav_snapshot()` / `power_snapshot()` — dict copies, never hardware — each with a
+staleness cutoff, so a dead or hung sensor degrades to the safe default (flat
+attitude, hold last heading, skip the battery check) instead of stalling the
+gait. Two failure signals: snapshot freshness (poll ran, reading was bad/old) and
+`thread_alive()` (poller blocked inside a hardware call right now); the loop logs
+which poller is stalled every ~5 s via `SensorHub.health()`.
+
+`GPSReader.update()` was already non-blocking (drains the UART buffer only) — it
+rides the nav poller just to keep all sensor I/O in one place.
+`CompassReader.get_heading()` now returns `None` (not `0.0`) on an I2C failure so
+a wedged bus is distinguishable from a genuine due-north reading; the hub holds
+the last good heading across a `None`. Self-test: `python sensor_hub.py` →
+`SENSOR HUB OK` (covers a failing sensor and a hung poller).
+
+Still inline and still blocking, but sub-millisecond so not worth threading:
+`controller.read_pico_lines()` (non-blocking by construction, same buffered-drain
+pattern as GPS) and `audio_engine.play()` (already fire-and-forget — it spawns
+its own daemon thread, `play()` itself just does an `os.path.exists` and a thread
+start).
+
 ### RESOLVED — IMU stabilization is now differential, not a common offset
 It used to feed pitch into `center_stride_y` and roll into `lateral_roll_offset`,
 applying **the same offset to all four legs**. Measured directly: at the maximum

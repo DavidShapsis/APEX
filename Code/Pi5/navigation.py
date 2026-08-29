@@ -90,13 +90,16 @@ class CompassReader:
         except: print(f"Compass not found on Bus {self.bus_id}")
 
     def get_heading(self):
+        """Heading in degrees, or None if the I2C read failed. None (not 0.0)
+        so a wedged bus is distinguishable from a genuine due-north reading --
+        SensorHub holds the last good heading when this returns None."""
         try:
             data = self.bus.read_i2c_block_data(self.addr, 0x00, 6)
             x = self._convert(data[0], data[1])
             y = self._convert(data[2], data[3])
             return (math.degrees(math.atan2(y, x)) + 360) % 360
-        except: 
-            return 0.0
+        except:
+            return None
 
     def _convert(self, lsb, msb):
         val = lsb | (msb << 8)

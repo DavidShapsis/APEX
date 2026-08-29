@@ -52,10 +52,11 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
  
 ```
 Pi 5 (ROS 2)
-├── pi5_main.py          # Main control loop, IMU, GPS, gait generation, homing/stand/go/stop state
+├── pi5_main.py          # Main control loop, gait generation, homing/stand/go/stop state
 ├── inverse_kinematics/
 │   ├── ik_and_gait.py   # IK, FK, GaitPath, GaitIK, RecoveryPath, shared leg/body geometry
 │   └── quadruped_sim.py # PC-only 4-leg gait simulator (no ROS) -- --report and 3D animation modes
+├── sensor_hub.py        # Per-sensor poller threads -- keeps blocking I2C/UART off the control loop
 ├── imu.py               # BNO085 quaternion → roll/pitch
 ├── navigation.py        # GPS parsing, compass, waypoint navigation
 ├── stream_server.py     # Flask dashboard node -- ROS wiring, routes, /status plumbing
