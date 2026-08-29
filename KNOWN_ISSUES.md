@@ -453,22 +453,42 @@ no longer matters. But two boards sharing an ID, or one set to the wrong corner,
 produces a wrong gait phase and the robot falls. **The Pi logs the map it detects at
 startup; check it before any powered walking.**
 
-### Set the left/right `reverse` flags
+### Set the left/right `reverse` flags — now matters for turning, verify it
 The joint setup in `pico_main.py` takes a `reverse` argument per joint, currently
 `False` everywhere. Left and right legs are mirror-image copies — the abductor
 segment sticks outboard on both sides — and a reflection reverses handedness, so
-one side needs its motor polarity flipped. The commanded angles are identical
-either way; only the `reverse` flags differ. Manual per-board setting, like `LEG_ID`.
+one side needs its motor polarity flipped. Manual per-board setting, like `LEG_ID`.
 
-### Front/rear mirroring is handled in software — note which pair
-The IK solves a **knee-forward** leg: at neutral stance the knee node sits at local
-y = +18.8 cm. That matches how the **rear** pair is mounted. The **front** pair is
-bolted on turned round so its knees point back (as on a real dog), so the front legs
-are the ones whose stride gets mirrored — `mirror_y=(leg_id in FRONT_LEGS)` in
-`pi5_main.build_gait()`.
+**"The commanded angles are identical either way" is only true while walking
+straight.** Verified: `build_gait` commands FL ≡ FR and RL ≡ RR joint-for-joint
+at `yaw_deg == 0`, so `reverse` does the entire left/right mirror. But a **turn**
+commands left ≠ right — a body spin rotates every foot the *same* angular
+direction about the centre, which is a rotation between the two sides, not a
+reflection, so `reverse` alone cannot produce it. `body_twist_xy_path` converts
+the arc into each leg's own local frame with `LEG_SIGN_X`, and `reverse` then
+maps that to physical motion. The turn *kinematics* are verified in
+`quadruped_sim --report` (body spins the correct direction, margin/rate hold),
+but the sim does not model `reverse`, so **whether the `reverse` flags compose
+correctly with a turn is a bench check** — do it on a stand, off the ground,
+before any powered turning.
 
-It is a spatial mirror, **not** a time reversal. Reversing the cycle would also shift
-each flipped leg half a cycle and scramble the FL → RR → FR → RL crawl order.
+### Front/rear mirroring is handled in software — verified
+The IK solves a **knee-forward** leg: at neutral stance the knee node sits at
+local y = +18.8 cm. That matches the **rear** pair. The **front** pair is bolted
+on turned round so its knees point back (toward the rear knees, as on a real
+dog), so the front legs' stride is mirrored in software: `LEG_SIGN_Y = -1` for
+the front pair, applied inside `body_twist_xy_path` (this replaced the old
+`mirror_y=(leg_id in FRONT_LEGS)` flag; the two are equivalent and
+`body_twist_xy_path` at `yaw == 0` reproduces the old gait term for term).
+
+Verified numerically: during stance the front feet travel one way in their
+*local* frame and the rear feet the opposite way, but `LEG_SIGN_Y` makes all
+four move **backward in the body frame** together — which is what drives the
+body forward. Without the flip the front legs would push against the rear.
+
+It is a spatial mirror, **not** a time reversal. Reversing the cycle would also
+shift each flipped leg half a cycle and scramble the FL → RR → FR → RL crawl
+order.
 
 ### Body geometry (set — recorded here because it lives nowhere else)
 `quadruped_sim.py` uses `BODY_LENGTH = 67.5`, `BODY_WIDTH = 53.0` cm. Both are
