@@ -237,7 +237,8 @@ class Decision:
     """What the planner wants the robot to do this tick.
 
     steer_deg     -- in the same convention as /apex/navigation/cmd_dir:
-                     negative left, positive right, saturating at +/-45.
+                     negative left, positive right, saturating at
+                     +/-MAX_STEER_DEG (90, which pi5_main reads as a spin).
     stride_scale  -- multiplier on the base stride length. 0.0 marches in place.
     """
 

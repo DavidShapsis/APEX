@@ -58,6 +58,15 @@ SWING_HEIGHT = 5.0
 # Must match Pico/pico_main.py STEP_TICK_MS -- used to time the startup ramp.
 STEP_TICK_S = 0.040
 
+# Must match Pico/pico_main.py MAX_GAIT_STEPS. The Pico treats an overlong frame
+# as a desynced stream and throws the whole thing away, so a frame that exceeds
+# this does not degrade -- it silently does nothing. send_entire_gait() refuses
+# to transmit past it rather than letting that happen unnoticed. The largest
+# legitimate frame is the Stand/Go ramp at RAMP_STEPS + 1.
+PICO_MAX_FRAMES = 48
+# Cartesian ramp resolution for Stand and Go. steps+1 entries are sent.
+RAMP_STEPS = 40
+
 # Zero, not 2.5. Three feet are planted at different points in the stance phase,
 # so any downward push commands them to depths spanning ~2.2 cm -- on flat rigid
 # ground they cannot all be there, and it becomes body bob or lost contact.
@@ -280,7 +289,7 @@ class PiQuadrupedController(Node):
         num_steps = len(per_leg[LEG_FL])
         return [[per_leg[leg_id][i] for leg_id in LEG_ORDER] for i in range(num_steps)]
 
-    def build_ramp(self, start_pose, target_by_leg, steps=40):
+    def build_ramp(self, start_pose, target_by_leg, steps=RAMP_STEPS):
         """One-shot Cartesian ramp from a single fixed joint pose into a per-leg
         target, e.g. HOME_POSE into the stand pose, or the stand pose into the
         gait's first step. target_by_leg entries may carry a trailing is_swing
@@ -387,7 +396,8 @@ class PiQuadrupedController(Node):
         """
         hold = list(self.stand_pose) + [0.0]
         frame = [[list(hold) for _ in LEG_ORDER] for _ in range(2)]
-        self.send_entire_gait(frame, cycle=False)
+        if not self.send_entire_gait(frame, cycle=False):
+            return False
         with self.serial_lock:
             self.standing = True
             self.walking_enabled = False
@@ -415,7 +425,8 @@ class PiQuadrupedController(Node):
             return self.settle_to_stand()
         target = {leg_id: self.stand_pose for leg_id in LEG_ORDER}
         ramp = self.build_ramp(HOME_POSE, target)
-        self.send_entire_gait(ramp, cycle=False)
+        if not self.send_entire_gait(ramp, cycle=False):
+            return False
         with self.serial_lock:
             self.standing = True
             self.walking_enabled = False
@@ -434,9 +445,11 @@ class PiQuadrupedController(Node):
             return False
 
         ramp = self.build_ramp(self.stand_pose, self.all_angles[0])
-        self.send_entire_gait(ramp, cycle=False)
+        if not self.send_entire_gait(ramp, cycle=False):
+            return False
         time.sleep((len(ramp) - 1) * STEP_TICK_S + 0.2)
-        self.send_entire_gait(self.all_angles)
+        if not self.send_entire_gait(self.all_angles):
+            return False
 
         with self.serial_lock:
             self.walking_enabled = True
@@ -587,10 +600,22 @@ class PiQuadrupedController(Node):
         ramp) -- every leg plays the same tick index with no phase rotation,
         since the four paths are independent trajectories, not a shared cycle
         sampled at different offsets.
+
+        Refuses a frame longer than the Pico will accept. The firmware treats an
+        overlong frame as a desynced stream and discards it wholesale, so
+        oversizing is not a graceful degradation -- the move silently never
+        happens. Better to log and skip than to believe it was sent.
         """
+        if len(angles_list) > PICO_MAX_FRAMES:
+            self.get_logger().error(
+                f"Refusing to send a {len(angles_list)}-frame buffer: the Pico "
+                f"discards anything over MAX_GAIT_STEPS ({PICO_MAX_FRAMES}). "
+                "Raise it in Pico/pico_main.py or shorten the trajectory.")
+            return False
         self.publish_joints(angles_list)
         with self.serial_lock:
             self.gait_update_queue = (angles_list, cycle)
+        return True
 
     def handle_recovery(self, abort_payload, trigger_serial):
         """Processes recovery calculations safely and hands off execution to the

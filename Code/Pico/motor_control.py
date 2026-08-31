@@ -105,12 +105,26 @@ class JointController:
         # Rejects NaN/inf as well as out-of-range values: a non-finite target
         # would survive the clamp below as full duty, because min()/max()
         # return the bound when the comparison against NaN is False.
+        #
+        # Coast rather than return: leaving the previous duty applied means a
+        # single bad target latches whatever the motor was last doing until a
+        # good one arrives, which on a saturated PID is full duty into a stop.
+        # last_time is advanced too, so the next good call sees a normal dt
+        # instead of one inflated by however long the bad targets lasted --
+        # which would otherwise dump a large error*dt straight into the
+        # integrator.
         if not (-360.0 <= target_angle <= 360.0):
+            self.forward_pwm.duty_u16(0)
+            self.backward_pwm.duty_u16(0)
+            self.integral = 0
+            self.prev_error = None
+            self.last_time = time.ticks_us()
             return
 
         now = time.ticks_us()
         dt = (time.ticks_diff(now, self.last_time)) / 1000000.0
-        if dt <= 0: return
+        if dt <= 0:
+            return
 
         # 1. Calculate Error (using the standardized target and standardized current_angle)
         current = self.current_angle

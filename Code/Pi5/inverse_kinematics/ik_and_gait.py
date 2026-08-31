@@ -394,8 +394,12 @@ class GaitPath:
             the foot planted for the other 75%, which is what a one-leg-at-a-time
             crawl needs -- three feet are always down. 0.5 would be a trot.
         mirror_y: negates the stride direction for legs mounted facing the opposite
-            way (the rear pair, whose knees point forward). This is a spatial mirror,
-            not a time reversal, so it leaves the leg's lift timing untouched.
+            way. The IK solves a knee-forward leg, which is how the REAR pair is
+            mounted; the FRONT pair is turned round (knees back, so the two pairs'
+            knees face each other), so the front pair is the one that gets
+            mirrored -- see LEG_SIGN_Y, which is -1 for FRONT_LEGS. This is a
+            spatial mirror, not a time reversal, so it leaves the leg's lift
+            timing, and therefore the crawl order, untouched.
         """
         self.params = {
             'cy': center_stride_y, 'cz': center_height_z, 'len': length,

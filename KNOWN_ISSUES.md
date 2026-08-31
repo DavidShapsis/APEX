@@ -6,11 +6,19 @@ Ordered by how badly they bite.
 
 Fixed items are not listed here — see git history.
 
+> **⚠ RE-FLASH THE PICOS BEFORE THE NEXT POWERED TEST.** The 2026-08-29 review
+> found two firmware defects, both fixed in `Code/Pico/pico_main.py`: the Stand
+> and Go ramps were being silently discarded (the robot could not stand at all),
+> and every gait re-send restarted the cycle from step 0, slamming the feet. A Pi
+> running the new code against old firmware still cannot stand. Both are written
+> up in the first two sections below.
+
 **Verify the whole control path without hardware:**
 
 ```bash
 cd Code/Pi5/inverse_kinematics && python quadruped_sim.py --report   # gait verdict
 cd Code/Pi5 && python vision_obstacle.py                             # avoidance planner
+cd Code/Pi5 && python sensor_hub.py                                  # sensor pollers
 ```
 
 **Verify the gait before touching hardware:**
@@ -24,6 +32,82 @@ python quadruped_sim.py               # 3D animation, needs matplotlib
 `matplotlib` is not currently installed (`pip install matplotlib`), which also means
 `gait_testing2.py` and `gait_testing3.py` cannot run as-is. `--report` works without
 it.
+
+---
+
+## RESOLVED — the Pico threw away every Stand and Go ramp (robot could not stand)
+
+**This one stopped the robot working at all, and needs a Pico reflash to fix.**
+
+`pico_main.MAX_GAIT_STEPS` was **32**. It exists as a desync guard — an overlong
+frame means the byte stream lost sync mid-payload, and the cap stops the buffer
+growing until `MemoryError`:
+
+```python
+gait_buffer.append(parts)
+if len(gait_buffer) > MAX_GAIT_STEPS:
+    gait_buffer = []          # the WHOLE frame is thrown away
+    is_receiving = False
+```
+
+But the largest frame the Pi legitimately sends is the Stand/Go Cartesian ramp,
+and `build_ramp(steps=40)` → `cartesian_ramp` → `range(steps + 1)` = **41
+frames**. Every STAND and every GO therefore hit the guard at frame 33, had the
+whole buffer discarded, and the remaining 8 frames plus the end marker were
+rescanned as raw bytes looking for a start marker. The leg never left its homed
+pose. Nothing logged it — from the Pi's side the frame went out fine.
+
+The 20-frame walking gait, the 21-frame recovery path and the 2-frame
+`settle_to_stand` were all under the cap, which is why the bug hid: everything
+except the two ramps worked.
+
+**Fixed** by raising `MAX_GAIT_STEPS` to **48** (still a desync guard, now above
+every legitimate frame) and adding `PICO_MAX_FRAMES = 48` on the Pi, which
+`send_entire_gait()` checks — it now logs and returns `False` rather than
+believing an oversized frame was sent, and `request_stand` / `engage_walking` /
+`settle_to_stand` propagate that failure instead of setting `standing = True`
+regardless. Verified by replaying the real wire bytes through a copy of the
+Pico's parser: the 41-frame ramp is accepted and ends holding the stand pose.
+
+---
+
+## RESOLVED — every gait re-send teleported the feet (25.6° / 17.6 cm, full duty)
+
+Also needs the Pico reflash. The Pi rebuilds and re-sends the entire gait
+whenever the steering command moves >5°, the IMU tilt moves >1.5°, or the
+avoidance stride changes — which in normal walking is often. The Pico's
+end-marker handler did:
+
+```python
+current_step_index = 0      # restart the cycle
+```
+
+So a foot that was mid-stance was told, in one 40 ms tick, to be at the start of
+swing instead. That is a phase jump, not a geometry change, and it is large:
+
+| re-send trigger | old (restart at 0) | now (phase kept) |
+|---|---|---|
+| straight → hard turn | 25.6° / 17.6 cm | **7.1° / 4.2 cm** |
+| straight → 45° arc | 20.5° / 12.8 cm | **7.6° / 4.6 cm** |
+| walk → march in place | 14.5° / 5.0 cm | **8.9° / 5.0 cm** |
+| IMU tilt nudge only | 21.5° / 13.1 cm | **0.0° / 0.00 cm** |
+
+At `kp = 0.8` (saturating above 1.25°) all of the left column is a full-duty slam
+— the same failure class as the STAND lurch below, but happening several times a
+second while walking rather than once on a button press.
+
+**Fixed** by keeping the buffer index across a re-send *of the same walking
+cycle* — same length, both cyclic — and resetting to 0 only for a genuinely new
+trajectory (a one-shot ramp, or a cycle of a different length, which must run
+from its first entry). `last_step_time` is still reset on every frame, which is
+worth keeping: all four boards get their end marker within a few ms of each
+other, so it re-aligns the 40 ms tick across legs and stops them free-running
+apart. Verified in the wire simulation: all four legs keep the same index across
+a re-send and exactly one leg is still airborne immediately after.
+
+Note this is also *safer* for phase than the old behaviour. Previously, if one
+leg missed a frame, the three that received it reset to 0 while the fourth kept
+counting — a real desync. Now a leg that misses a frame simply keeps its place.
 
 ---
 
@@ -453,6 +537,13 @@ no longer matters. But two boards sharing an ID, or one set to the wrong corner,
 produces a wrong gait phase and the robot falls. **The Pi logs the map it detects at
 startup; check it before any powered walking.**
 
+Confirmed on re-review that a *duplicate* ID fails safe rather than dangerously:
+the second board to claim an ID is logged as an error and never enters
+`port_by_leg`, so `request_home_leg` refuses it, `all(self.homed.values())` never
+becomes true, and STAND is refused. You get a robot that will not stand, not one
+that walks on three legs. A *wrong but unique* ID does not fail safe — all four
+home, and the gait phases go to the wrong corners. Check the logged map.
+
 ### Set the left/right `reverse` flags — now matters for turning, verify it
 The joint setup in `pico_main.py` takes a `reverse` argument per joint, currently
 `False` everywhere. Left and right legs are mirror-image copies — the abductor
@@ -489,6 +580,20 @@ body forward. Without the flip the front legs would push against the rear.
 It is a spatial mirror, **not** a time reversal. Reversing the cycle would also
 shift each flipped leg half a cycle and scramble the FL → RR → FR → RL crawl
 order.
+
+**One thing `LEG_SIGN_Y` does NOT do, and must not be confused with:** it mirrors
+the *stride direction*, not the *knee bend direction*. Whether a given knee angle
+bends the joint fore or aft is a property of the assembly and the `reverse` flag
+on that joint's `JointController`, not of the gait. So "the front knees face the
+rear knees" is handled in two separate places — stride by `LEG_SIGN_Y` (verified
+above, in software), bend direction by the per-joint `reverse` flags (still all
+`False`, still a bench check — see the entry above this one). Getting
+`LEG_SIGN_Y` right does not tell you the `reverse` flags are right.
+
+A stale docstring on `GaitPath.update_params` used to say `mirror_y` applied to
+"the rear pair, whose knees point forward", contradicting `FRONT_LEGS` three
+screens above it. The code was always right (front pair mirrored); the comment
+has been corrected.
 
 ### Body geometry (set — recorded here because it lives nowhere else)
 `quadruped_sim.py` uses `BODY_LENGTH = 67.5`, `BODY_WIDTH = 53.0` cm. Both are
@@ -765,15 +870,22 @@ word `0x399F` decodes to 32 V range / ±320 mV / 12-bit / continuous, calibratio
 2048 gives a 0.2 mA current LSB matching `raw * 0.2`, and the power LSB is 20×
 that, matching `raw * 4.0` mW.
 
-### An out-of-range target leaves the motor at its last duty
+### RESOLVED — an out-of-range target left the motor at its last duty
 
-`JointController.move_to()` returns early — before touching the PWM registers —
-when `target_angle` is non-finite or outside ±360°. The guard itself is right
-(it is what stops NaN surviving the clamp as full duty), but the early return
-means the joint keeps driving at whatever duty the previous call set, rather
-than coasting. Low risk in practice: `pico_main` range-checks every payload
-before it reaches the buffer, so an out-of-range value should never get this
-far. Zeroing both PWMs before the `return` would close it.
+`JointController.move_to()` returned early — before touching the PWM registers —
+when `target_angle` was non-finite or outside ±360°. The guard itself is right
+(it is what stops NaN surviving the clamp as full duty), but the bare `return`
+meant the joint kept driving at whatever duty the previous call set. On a
+saturated PID that is full duty into a stop, held until a good target arrives.
+
+It also left `self.last_time` untouched, so the first good call after a run of
+bad ones saw a `dt` inflated by the whole gap and dumped a large `error * dt`
+straight into the integrator.
+
+**Fixed:** the guard now zeroes both PWMs (coast), clears `integral` and
+`prev_error` so nothing carries across the gap, and advances `last_time`. Still
+low-likelihood — `pico_main` range-checks every payload before it reaches the
+buffer — but it is now a safe failure rather than a latched one.
 
 ### Compass has no declination or tilt compensation
 `get_heading()` is a raw two-axis `atan2(y, x)` — magnetic, uncalibrated for
@@ -909,6 +1021,36 @@ Verified correct during the review, recorded so nobody re-derives them:
 - **`engage_walking()` sleeps ~1.8 s inside a ROS callback.** It is on an
   executor thread and `MultiThreadedExecutor` has others, so nothing deadlocks,
   but that thread is blocked for the duration of the ramp.
+
+From the second review pass (2026-08-29), all re-verified by running:
+
+- **Nothing winds up at power-on.** `JointController(initial_angle=0)` and
+  `current_targets = [0.0, 0.0, 0.0]` mean the first `move_to()` sees error = 0,
+  which is inside the 1° deadband, so `output = 0` and `integral = 0`. Both PWMs
+  stay at zero. The legs hold under nothing at all until the first Home press,
+  which is the intent. `zero_at()` then clears `integral`/`prev_error`, so homing
+  cannot carry a stale term into the first real move either.
+- **Body-shift phase alignment is exact.** `apply_body_shift` samples the profile
+  at `(j - offset_L) % N` and `_gait_serial_worker` writes buffer index
+  `(i + offset_L) % N`, so at Pico tick `i` every leg uses profile index `i`. The
+  two rotations cancel. Checked for all four legs at all 20 ticks.
+- **March-in-place is genuinely a march.** At `stride_scale = 0` (BLOCKED),
+  `body_twist_xy_path(fwd_cm=0, yaw_rad=0)` gives exactly zero horizontal foot
+  travel — `max(|x|, |y|) = 0.0` — while the swing lift still peaks at 4.76 cm.
+  The robot picks its feet up in place and stays IMU-levelled, which is the
+  documented difference from STOP.
+- **The avoidance planner cannot make the robot fall.** Its only outputs are a
+  steering angle and a stride multiplier, both of which feed the same
+  `build_gait()` path as manual steering; the stability margin and joint-rate
+  checks in `quadruped_sim.py --report` cover the whole commanded range. A dead
+  camera fails *open* (`reset()` + `AvoidState.OFF`, stride 1.0), so it degrades
+  to ordinary walking rather than halting in a field.
+- **A missing depth model degrades cleanly.** `ObstacleAvoider` constructs with
+  `depth = None` rather than raising, `available` is False, `start()` no-ops,
+  `plan()` returns the desired heading unchanged at stride 1.0, and the dashboard
+  shows `AVOIDANCE: NO MODEL` with the toggle disabled.
+- **`Decision`'s docstring said "saturating at +/-45"** while `MAX_STEER_DEG` is
+  90. Comment only — corrected.
 
 ---
 
