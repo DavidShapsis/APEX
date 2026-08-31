@@ -42,7 +42,14 @@ CYCLE_END_MARKER = b'\xFF' * 16     # gait: loop the buffer indefinitely
 ONESHOT_END_MARKER = b'\xFE' * 16   # recovery: hold on the final step
 PAYLOAD_SIZE = 16
 ANGLE_LIMIT = 360.0
-MAX_GAIT_STEPS = 32   # real frames are 20 (gait) / 21 (recovery)
+# Desync guard, not a design limit: an overlong frame means the stream lost
+# sync mid-payload, and this stops the buffer growing until MemoryError.
+# It MUST stay above every frame the Pi legitimately sends, and the biggest of
+# those is the Stand/Go Cartesian ramp -- pi5_main.build_ramp(steps=40) emits
+# steps+1 = 41 entries. This was 32, which silently threw the Stand and Go
+# ramps away: the leg never left its homed pose and the robot could not stand.
+# pi5_main.PICO_MAX_FRAMES mirrors this number and refuses to send past it.
+MAX_GAIT_STEPS = 48
 
 # Must match ik_and_gait.HOME_POSE on the Pi. Zeroing here only redefines what
 # "current position" means -- it does not move the leg -- so this has to be the
@@ -55,6 +62,11 @@ is_receiving = False
 has_aborted = False
 cycle_buffer = True
 current_step_index = 0
+# Length of the cyclic buffer that was playing when the current frame started
+# arriving, or 0 if a one-shot was playing. Used to decide whether an incoming
+# frame is a re-send of the same walking cycle (keep the phase) or something
+# new (start at 0) -- see the end-marker handling.
+prev_cycle_len = 0
 # Web UI "Stop": no active holding torque, but the encoder ISR keeps counting
 # regardless of this flag, so position (and homing) survives being unpowered.
 # Resumes automatically the moment a real command arrives -- see HOME_MARKER
@@ -95,6 +107,9 @@ while True:
             byte = uart.read(1)
             candidate = prev_byte + byte
             if candidate == START_MARKER:
+                # Remember what was playing so the end-marker handler can tell a
+                # re-send of the walking cycle from a genuinely new trajectory.
+                prev_cycle_len = len(gait_buffer) if cycle_buffer else 0
                 gait_buffer = []
                 is_receiving = True
                 has_aborted = False
@@ -130,7 +145,31 @@ while True:
             if full_payload == CYCLE_END_MARKER or full_payload == ONESHOT_END_MARKER:
                 cycle_buffer = full_payload == CYCLE_END_MARKER
                 is_receiving = False
-                current_step_index = 0
+
+                # KEEP THE PHASE across a re-send of the same walking cycle.
+                # The Pi rebuilds and re-sends the whole gait whenever steering
+                # or the IMU tilt changes, which is often. Restarting at index 0
+                # every time teleports the foot from wherever it was in the
+                # stroke to the start of swing -- measured worst case 25.6 deg
+                # at a joint / 17.6 cm at the foot, and kp saturates above
+                # 1.25 deg, so that is a full-duty slam several times a second.
+                # Continuing at the same index leaves only the geometry
+                # difference: 7.1 deg / 4.2 cm for a hard turn, and exactly zero
+                # for an IMU-only nudge.
+                #
+                # Same length + both cyclic is the test for "this is the same
+                # 20-step walking cycle, re-rendered". Anything else -- a
+                # one-shot ramp, or a cycle of a different length -- starts at 0,
+                # because a ramp genuinely has to run from its first entry.
+                if (cycle_buffer and gait_buffer
+                        and prev_cycle_len == len(gait_buffer)):
+                    current_step_index = current_step_index % len(gait_buffer)
+                else:
+                    current_step_index = 0
+
+                # Reset regardless: all four boards receive their end marker
+                # within a few ms of each other, so this re-aligns the 40 ms
+                # tick across legs and stops them free-running apart.
                 last_step_time = time.ticks_ms()
                 prev_byte = b''
                 identified = True   # the Pi is talking to us; stop announcing
