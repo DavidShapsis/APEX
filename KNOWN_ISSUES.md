@@ -950,13 +950,43 @@ straight into the integrator.
 low-likelihood — `pico_main` range-checks every payload before it reaches the
 buffer — but it is now a safe failure rather than a latched one.
 
-### Compass has no declination or tilt compensation
-`get_heading()` is a raw two-axis `atan2(y, x)` — magnetic, uncalibrated for
-hard/soft iron, uncompensated for tilt. GPS bearings are *true* north; declination
-at the current waypoints (~41.05N, -74.14W) is about **-12°**. A platform that
-pitches and rolls by design also makes an uncompensated 2-axis heading very noisy.
-`get_heading()` additionally returns `0.0` on exception, indistinguishable from an
-actual north heading.
+### Compass: declination + tilt now handled; hard/soft-iron calibration still not
+
+Fixed:
+
+- **Declination.** `CompassReader(declination_deg=...)` is fed
+  `MAGNETIC_DECLINATION_DEG` (pi5_main, currently `-13.0` for northern NJ) and
+  added to every reading, so `get_heading()` now returns *true* north to match
+  the GPS bearings and Google-Maps coordinates. Edit the constant for your area.
+- **Tilt compensation.** `get_heading(roll_deg, pitch_deg)` de-rotates the field
+  into the horizontal plane (Honeywell AN3192 form) using the latest IMU
+  attitude, which `SensorHub._nav_poll` now passes in. At roll = pitch = 0 it is
+  byte-identical to the old `atan2(y, x)`, so there is no regression when level;
+  it only removes the per-stride heading wobble when the body tilts.
+- **Bad-sample rejection.** Returns `None` (not `0.0`, and not a garbage angle)
+  on I2C `OSError`, on the QMC5883L overflow bit, and on an all-`0x0000` /
+  all-`0xFFFF` block. Init does a soft reset first and records `configured`.
+- **Frozen-heading detection.** `nav_snapshot()` exposes `heading_age` (time
+  since the last *good* read — the shared nav poller keeps ticking on GPS alone,
+  so `heading` staying non-None can't reveal a dead compass). Under AUTONOMOUS,
+  `heading_age > HEADING_MAX_AGE_S` (3 s) makes the robot hold position instead
+  of driving on a stale bearing, and drops the `compass` health bit live so the
+  dashboard shows the amber "compass offline" banner.
+
+Still open (descoped on purpose):
+
+- **No hard/soft-iron calibration.** Raw `atan2` on a frame full of servo
+  magnets and battery current carries a large *heading-dependent* offset that
+  declination cannot remove. Needs a "spin 360° and collect min/max" routine
+  writing a cal file. Until then, absolute heading accuracy is poor; the closed
+  nav loop still converges because `calculate_nav` re-derives the bearing from
+  the live GPS every pass and `ARRIVE_RADIUS_M` is 4 m.
+- **Axis / sign not bench-verified.** The tilt-comp math assumes x-forward,
+  y-right (or the pre-existing frame the old `atan2(y, x)` implied), z-down, with
+  the BNO085 roll/pitch signs matching. If a bench heading check ever shows the
+  robot turning *away* from a waypoint, the heading runs the wrong way and the
+  `atan2` / roll / pitch signs in `CompassReader.get_heading` need flipping.
+  (This is a no-op-at-level change, so it did not make anything worse.)
 
 ### IK clamps unreachable targets silently
 `InverseKinematics.calculate` clamps out-of-range law-of-cosines arguments and the

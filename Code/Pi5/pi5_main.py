@@ -140,6 +140,20 @@ YAW_FULL_SPIN_DEG = 90.0
 # existing avoid_available field already carries it.
 HEALTH_BITS = ('imu', 'gps', 'compass', 'power', 'camera', 'audio')
 
+# Magnetic declination at the operating area, degrees, EAST positive. The
+# compass measures magnetic north; GPS waypoint bearings -- and the lat/lon you
+# copy off Google Maps -- are true north. CompassReader adds this to every
+# heading. Look yours up (magnetic-declination.com / NOAA) and set it here;
+# northern NJ is about -13 (13 W) in 2026. It is small enough that the closed
+# nav loop still converges without it, but every straight leg crabs ~this many
+# degrees off course until it is set.
+MAGNETIC_DECLINATION_DEG = -13.0
+
+# Under AUTONOMOUS, if the last good compass read is older than this the robot
+# holds position instead of driving on a frozen heading (which curves it off
+# course while it believes it is tracking). The nav poller runs at 10 Hz.
+HEADING_MAX_AGE_S = 3.0
+
 class PiQuadrupedController(Node):
     def __init__(self):
         super().__init__('pi5_main_node')
@@ -1001,7 +1015,8 @@ def main():
     # already accepts None for any sensor.
     imu = _bring_up("IMU", lambda: IMU(sda_pin="D0", scl_pin="D1", bus_id=13, window_size=12), disp, health)
     gps = _bring_up("GPS", lambda: GPSReader(uart_path='/dev/ttyUSB0', baudrate=9600), disp, health)
-    compass = _bring_up("Compass", lambda: CompassReader(sda_pin=2, scl_pin=3), disp, health)
+    compass = _bring_up("Compass", lambda: CompassReader(
+        sda_pin=2, scl_pin=3, declination_deg=MAGNETIC_DECLINATION_DEG), disp, health)
     cam = _bring_up("Camera", lambda: USBWebcam(device_index="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_Camera_SN0001-video-index0"), disp, health)
 
     # The dashboard is the one genuinely required subsystem -- without it there
@@ -1139,15 +1154,24 @@ def main():
                 # copy, never a hardware call, so a hung I2C bus cannot stall
                 # the loop here.
                 nav_s = sensor_hub.nav_snapshot()
-                if nav_s["heading"] is not None and nav_s["t"] != last_heading_t:
-                    last_heading_t = nav_s["t"]
+                # heading_age is time since the last *good* compass read; the
+                # shared nav poller keeps ticking (GPS) even when the compass
+                # fails, so nav_s["heading"] alone stays non-None (last value
+                # held) and cannot reveal this.
+                heading_stale = nav_s["heading_age"] > HEADING_MAX_AGE_S
+                # Live health: a compass fine at boot but no longer reading
+                # should light the dashboard degrade banner, not just print.
+                controller.subsystem_health['compass'] = (compass is not None) and not heading_stale
+
+                if nav_s["heading"] is not None and nav_s["heading_t"] != last_heading_t:
+                    last_heading_t = nav_s["heading_t"]
                     raw_head = nav_s["heading"]
                     # Blend along the shortest arc. Averaging raw degrees sends
                     # the estimate the long way round every time the robot
                     # crosses north (filtered=359, raw=1 would give 305).
                     head_delta = (raw_head - controller.filtered_heading + 180.0) % 360.0 - 180.0
                     controller.filtered_heading = (controller.filtered_heading + 0.15 * head_delta) % 360.0
-                elif nav_s["heading"] is None and int(current_time) % 2 == 0:
+                elif heading_stale and int(current_time) % 2 == 0:
                     print("[Hardware Error] No compass heading; holding last estimate")
 
                 with controller.serial_lock:
@@ -1200,6 +1224,14 @@ def main():
                         # snapshot (nav poller wedged) is treated the same way.
                         if int(current_time) % 2 == 0:
                             print("[NAV] No usable GPS fix; ignoring waypoint guidance")
+                    elif heading_stale:
+                        # filtered_heading is frozen at its last value. Driving
+                        # on it curves the robot off course while calculate_nav
+                        # still reports a shrinking turn error -- so hold.
+                        chosen_direction = 0
+                        stride_scale = 0.0
+                        if int(current_time) % 2 == 0:
+                            print("[NAV] Compass heading stale; holding position")
                     else:
                         nav_data = nav_engine.calculate_nav(nav_s["lat"], nav_s["lon"], controller.filtered_heading)
                         if nav_data is not None:

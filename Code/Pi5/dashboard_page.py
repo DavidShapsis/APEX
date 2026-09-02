@@ -469,14 +469,16 @@ _PAGE = """
 
                 // Subsystem health. Bit order must match HEALTH_BITS in pi5_main.
                 // A missing field (older controller) reads as 0x3F = all up.
+                // A bit can also drop mid-run (compass stops reading), so the
+                // wording is "offline", not "did not start".
                 const HEALTH_NAMES = ['IMU', 'GPS', 'compass', 'power monitor', 'camera', 'audio'];
                 const mask = (s.health === undefined) ? 0x3F : s.health;
                 const down = HEALTH_NAMES.filter((_, i) => !((mask >> i) & 1));
                 const dBanner = document.getElementById('degradeBanner');
                 if (down.length) {
                     dBanner.innerText = '\u26a0 Running degraded — ' + down.join(', ') +
-                        (down.length === 1 ? ' did not start.' : ' did not start.') +
-                        ' Check the boot screen or the Pi console.';
+                        (down.length === 1 ? ' is' : ' are') + ' offline. ' +
+                        'Check the boot screen or the Pi console.';
                     dBanner.style.display = 'block';
                 } else {
                     dBanner.style.display = 'none';
@@ -549,7 +551,15 @@ _PAGE = """
             document.getElementById('wpSaveState').innerText =
                 wpDirty ? 'unsent changes \u2014 press Send route' : '';
         }
-        function wpEdit(i, col, val) { WP[i][col] = val.trim(); wpDirty = true; wpRender(); }
+        function wpEdit(i, col, val) {
+            val = val.trim();
+            // Google Maps "copy coordinates" hands you "lat, lon" in one string.
+            // If that lands in either box, split it across both.
+            const m = val.match(/^(-?\\d+(?:\\.\\d+)?)\\s*[,\\s]\\s*(-?\\d+(?:\\.\\d+)?)$/);
+            if (m) { WP[i][0] = m[1]; WP[i][1] = m[2]; }
+            else   { WP[i][col] = val; }
+            wpDirty = true; wpRender();
+        }
         function wpAdd() { WP.push(['', '']); wpDirty = true; wpRender(); }
         function wpRemove(i) { WP.splice(i, 1); wpDirty = true; wpRender(); }
         function wpMove(i, d) {
@@ -684,7 +694,10 @@ _PAGE = """
                 <div class="nav-sec-body">
                     <div class="info" id="i_gps">Enter a route as latitude/longitude pairs in
                         decimal degrees (e.g. <code>41.0561</code>, <code>-74.1452</code>) &mdash;
-                        south and west are negative. &#9650;/&#9660; reorder, &#215; removes,
+                        south and west are negative. On Google Maps, right&#8209;click a spot and
+                        click the <code>lat, lng</code> readout to copy it, then paste the whole
+                        thing into either box and it splits across both.
+                        &#9650;/&#9660; reorder, &#215; removes,
                         nothing reaches the robot until <b>Send route</b>. NAV MODE is the master
                         autonomous switch; <b>Start</b> runs the route from the first point,
                         <b>Pause</b> holds position, <b>Stop</b> returns to manual. With no route

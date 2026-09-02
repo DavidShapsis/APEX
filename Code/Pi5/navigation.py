@@ -1,5 +1,6 @@
 import math
 import threading
+import time
 
 import serial
 from smbus2 import SMBus
@@ -75,33 +76,78 @@ class GPSReader:
         return round(decimal_degrees, 8)
 
 class CompassReader:
-    def __init__(self, sda_pin, scl_pin, explicit_bus_id=None):
+    # QMC5883L status register (0x06) bits.
+    _STATUS_DRDY = 0x01
+    _STATUS_OVL = 0x02      # any axis saturated -> the reading is pinned garbage
+
+    def __init__(self, sda_pin, scl_pin, explicit_bus_id=None, declination_deg=0.0):
         """
         Determines Bus ID with explicit override support for custom Linux I2C buses.
+
+        declination_deg: magnetic declination at the operating area, EAST
+        positive. The chip measures magnetic north; GPS waypoint bearings (and
+        coordinates copied from Google Maps) are true north. get_heading() adds
+        this so everything downstream is in true north. See MAGNETIC_DECLINATION_DEG
+        in pi5_main.
         """
         if explicit_bus_id is not None:
             self.bus_id = explicit_bus_id
         else:
             self.bus_id = 1 if sda_pin == 2 else 0
-            
+
         self.bus = SMBus(self.bus_id)
         self.addr = 0x0D
+        self.declination_deg = declination_deg
+        self.configured = False
         try:
+            self.bus.write_byte_data(self.addr, 0x0A, 0x80)   # soft reset
+            time.sleep(0.01)
+            self.bus.write_byte_data(self.addr, 0x0B, 0x01)   # SET/RESET period (recommended)
+            # 0x1D = OSR 512 | RNG 8G | ODR 200Hz | continuous
             self.bus.write_byte_data(self.addr, 0x09, 0x1D)
-            self.bus.write_byte_data(self.addr, 0x0B, 0x01)
-        except: print(f"Compass not found on Bus {self.bus_id}")
+            self.configured = True
+        except OSError:
+            print(f"Compass not found on Bus {self.bus_id}")
 
-    def get_heading(self):
-        """Heading in degrees, or None if the I2C read failed. None (not 0.0)
-        so a wedged bus is distinguishable from a genuine due-north reading --
-        SensorHub holds the last good heading when this returns None."""
+    def get_heading(self, roll_deg=0.0, pitch_deg=0.0):
+        """True-north heading in degrees, or None if the read failed or the
+        sample is unusable. None (not 0.0) so a wedged bus is distinguishable
+        from a genuine due-north reading -- SensorHub holds the last good
+        heading across a None, and the control loop stops driving on a run of
+        them.
+
+        roll_deg / pitch_deg (from the IMU) tilt-compensate the reading. The
+        body pitches and rolls every gait step; without this the heading
+        oscillates with the stride. When both are 0 the result is identical to
+        the old flat-mount atan2(y, x). Frame assumed: x forward, y right,
+        z down, roll about x, pitch about y -- verify the signs if a bench
+        heading check ever shows the turn direction inverted.
+        """
         try:
-            data = self.bus.read_i2c_block_data(self.addr, 0x00, 6)
-            x = self._convert(data[0], data[1])
-            y = self._convert(data[2], data[3])
-            return (math.degrees(math.atan2(y, x)) + 360) % 360
-        except:
+            data = self.bus.read_i2c_block_data(self.addr, 0x00, 7)
+        except OSError:
             return None
+
+        if data[6] & self._STATUS_OVL:
+            return None
+        x = self._convert(data[0], data[1])
+        y = self._convert(data[2], data[3])
+        z = self._convert(data[4], data[5])
+        if (x, y, z) in ((0, 0, 0), (-1, -1, -1)):
+            # all 0x0000 or all 0xFFFF -> chip not really answering
+            return None
+
+        # Tilt compensation, Honeywell AN3192 form. De-rotates the field into
+        # the horizontal plane before the atan2. At roll = pitch = 0 this
+        # reduces exactly to atan2(y, x) -- identical to the old flat-mount code.
+        roll = math.radians(roll_deg)
+        pitch = math.radians(pitch_deg)
+        cr, sr = math.cos(roll), math.sin(roll)
+        cp, sp = math.cos(pitch), math.sin(pitch)
+        xh = x * cp + y * sr * sp + z * cr * sp
+        yh = y * cr - z * sr
+        heading = math.degrees(math.atan2(yh, xh))
+        return (heading + self.declination_deg + 360.0) % 360.0
 
     def _convert(self, lsb, msb):
         val = lsb | (msb << 8)
