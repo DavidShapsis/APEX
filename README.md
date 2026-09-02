@@ -58,6 +58,7 @@ Pi 5 (ROS 2)
 │   ├── ik_and_gait.py   # IK, FK, GaitPath, GaitIK, RecoveryPath, shared leg/body geometry
 │   └── quadruped_sim.py # PC-only 4-leg gait simulator (no ROS) -- --report and 3D animation modes
 ├── sensor_hub.py        # Per-sensor poller threads -- keeps blocking I2C/UART off the control loop
+├── boot_display.py      # Optional SH1106 OLED: boot progress + status (no-op if absent)
 ├── imu.py               # BNO085 quaternion → roll/pitch
 ├── navigation.py        # GPS parsing, compass, waypoint navigation
 ├── stream_server.py     # Flask dashboard node -- ROS wiring, routes, /status plumbing
@@ -198,6 +199,8 @@ pip install onnxruntime numpy        # obstacle avoidance only; optional
 ```
 
 Obstacle avoidance is optional at runtime — if `onnxruntime` or the model file is missing, the import is caught, the dashboard shows `AVOIDANCE: NO MODEL`, and everything else runs unchanged.
+
+Hardware init is non-fatal: a missing IMU, dead GPS, unplugged camera or absent power monitor each leave that subsystem reporting *down* — an amber "running degraded" banner on the dashboard, and a line on the optional SH1106 OLED (`boot_display.py`, wired per `HARDWARE.md`) — rather than stopping the boot. Only the Flask dashboard itself is required. `pip install luma.oled` enables the OLED; without it the same progress goes to stdout.
  
 ROS 2 (Humble or later) required for `pi5_main.py`. For testing without ROS, use `single_leg_test.py` — it has no ROS dependency, runs a single leg, and serves the camera stream.
  

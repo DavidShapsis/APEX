@@ -227,13 +227,19 @@ _PAGE = """
             font-family: ui-monospace, Consolas, monospace;
         }
 
-        /* ---- warning banner --------------------------------------------------- */
-        #warnBanner {
-            display: none; max-width: 560px; margin: 0 auto; border-radius: 10px;
+        /* ---- banners --------------------------------------------------------- */
+        #warnBanner, #degradeBanner {
+            display: none; max-width: 560px; margin: 0 auto .4rem; border-radius: 10px;
             padding: .75rem .9rem; font-size: .78rem; font-weight: 700;
             letter-spacing: .05em; color: #fff;
+        }
+        #warnBanner {
             background: repeating-linear-gradient(135deg, #9d0c17 0 14px, #7d0a13 14px 28px);
             border: 1px solid #ff4b57;
+        }
+        #degradeBanner {
+            background: repeating-linear-gradient(135deg, #7a5c10 0 14px, #5e470c 14px 28px);
+            border: 1px solid var(--apex-amber);
         }
 
         /* ---- avoidance readout -------------------------------------------------- */
@@ -453,6 +459,21 @@ _PAGE = """
                 if (s.walking === 1) document.getElementById('goBtn').disabled = true;
                 document.getElementById('warnBanner').style.display = allHomed ? 'none' : 'block';
 
+                // Subsystem health. Bit order must match HEALTH_BITS in pi5_main.
+                // A missing field (older controller) reads as 0x3F = all up.
+                const HEALTH_NAMES = ['IMU', 'GPS', 'compass', 'power monitor', 'camera', 'audio'];
+                const mask = (s.health === undefined) ? 0x3F : s.health;
+                const down = HEALTH_NAMES.filter((_, i) => !((mask >> i) & 1));
+                const dBanner = document.getElementById('degradeBanner');
+                if (down.length) {
+                    dBanner.innerText = '\u26a0 Running degraded — ' + down.join(', ') +
+                        (down.length === 1 ? ' did not start.' : ' did not start.') +
+                        ' Check the boot screen or the Pi console.';
+                    dBanner.style.display = 'block';
+                } else {
+                    dBanner.style.display = 'none';
+                }
+
                 const avoidBtn = document.getElementById('avoidBtn');
                 avoidBtn.disabled = s.avoid_available !== 1;
                 if (s.avoid_available !== 1) {
@@ -616,6 +637,7 @@ _PAGE = """
         </div>
 
         <div id="warnBanner">&#9888; Not every leg is homed &mdash; STAND and GO are disabled until you home all four.</div>
+        <div id="degradeBanner"></div>
 
         <div class="apex-card">
             <h3 class="card-head">Startup

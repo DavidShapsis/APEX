@@ -1,7 +1,20 @@
 import math
 from collections import deque
-from adafruit_bno08x import BNO08X
 from adafruit_bno08x.i2c import BNO08X_I2C
+
+# The report-id constants moved from class attributes (BNO08X.REPORT_*) to
+# module-level names (BNO_REPORT_*) across Adafruit library versions. Accept
+# either, so which version is installed on the Pi stops mattering -- this was
+# a documented 'the robot won't boot' hazard when the names did not line up.
+try:
+    from adafruit_bno08x import (
+        BNO_REPORT_LINEAR_ACCELERATION as _REPORT_LINEAR_ACCEL,
+        BNO_REPORT_ROTATION_VECTOR as _REPORT_ROTATION,
+    )
+except ImportError:  # older layout
+    from adafruit_bno08x import BNO08X as _BNO
+    _REPORT_LINEAR_ACCEL = _BNO.REPORT_LINEAR_ACCELERATION
+    _REPORT_ROTATION = _BNO.REPORT_ROTATION_VECTOR
 import busio
 from adafruit_blinka.microcontroller.generic_linux.i2c import I2C as BlinkaI2C
 
@@ -24,8 +37,8 @@ class IMU:
             
         self.bno = BNO08X_I2C(self.i2c)
         
-        self.bno.enable_feature(BNO08X.REPORT_LINEAR_ACCELERATION)
-        self.bno.enable_feature(BNO08X.REPORT_ROTATION_VECTOR)
+        self.bno.enable_feature(_REPORT_LINEAR_ACCEL)
+        self.bno.enable_feature(_REPORT_ROTATION)
 
         # Roll/pitch are held as (sin, cos) pairs so the moving average survives
         # the +/-180 wrap; averaging the degree values directly does not.

@@ -26,6 +26,7 @@ from stream_server import RobodogStreamer
 from navigation import GPSReader, CompassReader, Navigator
 from imu import IMU
 from sensor_hub import SensorHub
+from boot_display import BootDisplay
 
 # Vision-based obstacle avoidance is optional and guarded: it pulls in
 # onnxruntime and a ~100MB model file, neither of which is needed to walk. A
@@ -133,6 +134,12 @@ MAX_YAW_PER_CYCLE = 10.0
 # to keep progressing past them, not stop and pirouette).
 YAW_FULL_SPIN_DEG = 90.0
 
+# Order of the subsystem-health bitmask published in the status array
+# (bit i set = subsystem i came up at boot). The dashboard decodes this to
+# show a 'running degraded' banner. Obstacle avoidance is NOT here -- the
+# existing avoid_available field already carries it.
+HEALTH_BITS = ('imu', 'gps', 'compass', 'power', 'camera', 'audio')
+
 class PiQuadrupedController(Node):
     def __init__(self):
         super().__init__('pi5_main_node')
@@ -233,6 +240,10 @@ class PiQuadrupedController(Node):
         self.nav_engine = None
 
         self.avoider = None          # set by main() once the camera exists
+        # {name: bool} filled by main() from the boot sequence. Missing keys
+        # read as healthy, so an older main() reports all-ok rather than
+        # tripping a false alarm on the dashboard.
+        self.subsystem_health = {}
         self.avoid_enabled = False
         self.avoid_state_code = 0    # AvoidState.CODES value, for the dashboard
         self.avoid_steer = 0.0
@@ -500,7 +511,8 @@ class PiQuadrupedController(Node):
     def publish_homing_status(self):
         """Wire layout: [homed x4, standing, walking, deactivated x4,
         avoid_available, avoid_enabled, avoid_state_code, avoid_steer_deg,
-        avoid_stride_pct, wp_index, wp_total, nav_mode, nav_paused].
+        avoid_stride_pct, wp_index, wp_total, nav_mode, nav_paused,
+         health_mask].
 
         Fields are only ever APPENDED, never inserted: stream_server reads each
         block by fixed index behind a length check, so an older dashboard against
@@ -526,9 +538,14 @@ class PiQuadrupedController(Node):
         with self.serial_lock:
             nav_mode = int(self.current_mode == RobotMode.AUTONOMOUS)
             nav_paused = int(self.nav_paused)
+        health_mask = 0
+        for i, key in enumerate(HEALTH_BITS):
+            if self.subsystem_health.get(key, True):
+                health_mask |= (1 << i)
         msg = Int32MultiArray()
         msg.data = (homed + [standing, walking] + deactivated + avoid
-                    + [int(wp_idx), int(wp_total), nav_mode, nav_paused])
+                    + [int(wp_idx), int(wp_total), nav_mode, nav_paused,
+                       int(health_mask)])
         self.homing_status_pub.publish(msg)
 
     def swing_steps(self, height_z):
@@ -933,26 +950,59 @@ class PiQuadrupedController(Node):
             if s.is_open:
                 s.close()
 
+def _bring_up(name, factory, disp, health):
+    """Construct one hardware handle. On failure: log it, mark the subsystem
+    down, return None -- the robot boots degraded rather than not at all. The
+    OLED (if present) shows which step failed; if it is not present the same
+    line goes to stdout."""
+    disp.step(name)
+    try:
+        obj = factory()
+        disp.ok(name)
+        health[name.lower()] = True
+        return obj
+    except Exception as e:
+        disp.fail(name)
+        print(f"[BOOT] {name} init failed: {e!r}")
+        health[name.lower()] = False
+        return None
+
+
 def main():
     rclpy.init(args=None)
 
-    # IMU Configuration
-    imu = IMU(sda_pin="D0", scl_pin="D1", bus_id=13, window_size=12)
-    print("IMU setup successful")
+    disp = BootDisplay()
+    disp.line("APEX starting")
+    health = {}
 
-    # Navigation Configuration
-    # Empty by default: the route is set from the dashboard now. A hardcoded
-    # default would mean flipping NAV MODE on sends the robot off toward
-    # somebody else's test coordinates. With no route it marches in place
-    # instead. (Previous default was [(41.056, -74.145), (41.057, -74.146)].)
+    # Navigation route is empty by default -- set from the dashboard. A hardcoded
+    # default would send the robot toward somebody else's test coordinates the
+    # moment NAV MODE is flipped on. (Previous default was two NJ test points.)
     MISSION_WAYPOINTS = []
-    gps = GPSReader(uart_path='/dev/ttyUSB0', baudrate=9600)
-    compass = CompassReader(sda_pin=2, scl_pin=3)
     nav_engine = Navigator(MISSION_WAYPOINTS)
 
-    # Vision
-    cam = USBWebcam(device_index="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_Camera_SN0001-video-index0")
-    streamer = RobodogStreamer()
+    # Every hardware handle below is now non-fatal: a missing IMU, dead GPS,
+    # unplugged camera etc. leaves that subsystem reporting 'down' on the
+    # dashboard instead of killing the boot before Flask is even up. SensorHub
+    # already accepts None for any sensor.
+    imu = _bring_up("IMU", lambda: IMU(sda_pin="D0", scl_pin="D1", bus_id=13, window_size=12), disp, health)
+    gps = _bring_up("GPS", lambda: GPSReader(uart_path='/dev/ttyUSB0', baudrate=9600), disp, health)
+    compass = _bring_up("Compass", lambda: CompassReader(sda_pin=2, scl_pin=3), disp, health)
+    cam = _bring_up("Camera", lambda: USBWebcam(device_index="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_Camera_SN0001-video-index0"), disp, health)
+
+    # The dashboard is the one genuinely required subsystem -- without it there
+    # is no way to home the legs. If it will not start, say so on the OLED and
+    # then let the exception stop the boot.
+    disp.step("Dashboard")
+    try:
+        streamer = RobodogStreamer()
+        disp.ok("Dashboard")
+        health["dashboard"] = True
+    except Exception as e:
+        disp.fail("Dashboard")
+        disp.line("FATAL: no dashboard")
+        print(f"[BOOT] dashboard failed to start: {e!r}")
+        raise
 
     # Obstacle avoidance shares this camera rather than opening its own: only
     # one process can hold the V4L2 device, and this loop already has it. The
@@ -960,14 +1010,21 @@ def main():
     # the 100 Hz control loop.
     avoider = None
     if ObstacleAvoider is not None:
+        disp.step("Avoidance")
         try:
             avoider = ObstacleAvoider()
             avoider.start()
+            disp.ok("Avoidance") if avoider.available else disp.line("Avoidance      no model")
         except Exception as e:
             print(f"[VISION] failed to start obstacle avoidance: {e}")
+            disp.fail("Avoidance")
             avoider = None
+    else:
+        disp.line("Avoidance      no lib")
 
     def camera_loop():
+        if cam is None:
+            return          # no camera this boot -- nothing to stream
         while rclpy.ok():
             frame = cam.get_frame()
             if frame is not None:
@@ -986,8 +1043,8 @@ def main():
     print("Vision and Stream components online")
 
     # Telemetry & Audio System
-    power_monitor = INA219(bus_id=3)
-    audio_engine = QuadrupedAudio("30:8D:EB:5D:AC:11")
+    power_monitor = _bring_up("Power", lambda: INA219(bus_id=3), disp, health)
+    audio_engine = _bring_up("Audio", lambda: QuadrupedAudio("30:8D:EB:5D:AC:11"), disp, health)
     LOW_VOLT_THRESHOLD = 4.75
     # The +/-320mV shunt range across 0.1 ohm saturates at 3.2A, so anything
     # above that can never be reached and the alarm would never fire.
@@ -1008,6 +1065,7 @@ def main():
     controller = PiQuadrupedController()
     controller.avoider = avoider
     controller.nav_engine = nav_engine
+    controller.subsystem_health = dict(health)
 
     # Started only now: camera_loop reads controller.avoid_enabled, so the
     # controller has to exist first.
@@ -1034,11 +1092,12 @@ def main():
     # Seed the heading filter from the first compass reading the hub gets, so it
     # does not spend its first seconds slewing from an arbitrary 0 deg.
     initial_head = None
-    for _ in range(20):
-        initial_head = sensor_hub.nav_snapshot()["heading"]
-        if initial_head is not None:
-            break
-        time.sleep(0.1)
+    if compass is not None:
+        for _ in range(20):
+            initial_head = sensor_hub.nav_snapshot()["heading"]
+            if initial_head is not None:
+                break
+            time.sleep(0.1)
     if initial_head is not None:
         controller.filtered_heading = initial_head
         print(f"Compass tracking initialized successfully at: {initial_head:.2f}°")
@@ -1049,6 +1108,7 @@ def main():
     # Edge-detects the avoidance toggle so a detour in progress is cleared once,
     # on the transition, rather than every pass.
     avoid_was_enabled = False
+    last_oled_refresh = 0.0
 
     # The heading EMA below is tuned for one step per fresh compass sample. The
     # nav poller runs at ~10 Hz but this loop at ~100 Hz, so gate the filter on
@@ -1244,7 +1304,8 @@ def main():
                     if p is not None:
                         v, c = p["voltage"], p["current"]
                         if (v < LOW_VOLT_THRESHOLD or c > MAX_CURRENT_MA) and (current_time - last_audio_warning > AUDIO_COOLDOWN):
-                            audio_engine.play(os.path.join(WAV_DIR, "low_battery.wav"))
+                            if audio_engine is not None:
+                                audio_engine.play(os.path.join(WAV_DIR, "low_battery.wav"))
                             last_audio_warning = current_time
                     last_power_check = current_time
 
@@ -1262,12 +1323,18 @@ def main():
                         continue
                     if line.startswith("ABORTED"):
                         print(f"Hardware Stall Warning on UART: {s.port}")
-                        audio_engine.play(os.path.join(WAV_DIR, "abort_sound.wav"))
+                        if audio_engine is not None:
+                            audio_engine.play(os.path.join(WAV_DIR, "abort_sound.wav"))
                         controller.handle_recovery(line, s)
 
                 if current_time - last_status_publish > 0.2:
                     controller.publish_homing_status()
                     last_status_publish = current_time
+                    if current_time - last_oled_refresh > 2.0:
+                        disp.summary(health={k.upper(): v for k, v in health.items()},
+                                     extra=("STOPPED" if not controller.walking_enabled
+                                            else "WALKING"))
+                        last_oled_refresh = current_time
 
                     # Watchdog: a poller that has not completed a loop in 2 s is
                     # blocked inside a hardware call. The snapshot fallbacks
@@ -1289,7 +1356,8 @@ def main():
         sensor_hub.stop()
         if avoider is not None:
             avoider.stop()
-        cam.release()
+        if cam is not None:
+            cam.release()
         controller.destroy_node()
         streamer.destroy_node()
         rclpy.shutdown()
