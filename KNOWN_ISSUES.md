@@ -843,10 +843,15 @@ one — `MISSION_WAYPOINTS` was two hardcoded pairs in `main()`. Now:
   *Obstacle Avoidance* (the avoidance toggle + state readout, unchanged). The
   route status line reads e.g. "PAUSED — driving to waypoint 2 of 3".
 
-With no route loaded, flipping NAV MODE just marches in place rather than
-driving toward stale coordinates. Verified end to end without hardware
-(`Navigator` editing, arrival advance, concurrent-access smoke, `stream_server`
-route + `nav_control` publish, 19-field status parse, and the preview server
+NAV MODE and Start are now refused outright until a route is loaded, rather than
+flipping AUTONOMOUS on to march in place. Three layers: the dashboard greys the
+toggle out (`wp_total === 0`), `stream_server.toggle_nav` / `nav_control` return
+409 without publishing, and `nav_mode_callback` / `nav_cmd_callback` in the
+controller bail on `_route_loaded()` — so a message that bypasses the UI (replayed
+topic, direct publish) still can't put the robot in nav mode with nowhere to go.
+Verified end to end without hardware (`Navigator` editing, arrival advance,
+concurrent-access smoke, `stream_server` route + `nav_control` publish, the
+no-route refusals at every layer, 19-field status parse, and the preview server
 driving a route through start → pause → stop).
 
 Note the drift caveat from the steering entry above still applies to any turn,

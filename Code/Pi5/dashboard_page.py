@@ -349,7 +349,10 @@ _PAGE = """
         function toggleNav() {
             // Master MANUAL/AUTONOMOUS switch. Start/Stop below also move it;
             // refreshStatus() is what keeps the button honest either way.
-            fetch('/toggle_nav', {"method": 'POST'}).then(r => r.json()).catch(() => {});
+            fetch('/toggle_nav', {"method": 'POST'})
+                .then(r => r.json())
+                .then(d => { if (d && d.ok === false && d.error) alert(d.error); })
+                .catch(() => {});
         }
         function navControl(action) {
             fetch('/nav_control', {
@@ -423,17 +426,22 @@ _PAGE = """
                 const navOn = s.nav_mode === 1;
                 const navPaused = s.nav_paused === 1;
                 const walking = s.walking === 1;
+                const hasRoute = s.wp_total > 0;
 
                 const navBtn = document.getElementById('navBtn');
                 navBtn.classList.toggle('on', navOn);
                 navBtn.classList.toggle('off', !navOn);
-                navBtn.innerText = navOn ? 'NAV MODE: ON' : 'NAV MODE: OFF';
+                navBtn.innerText = navOn ? 'NAV MODE: ON'
+                    : (hasRoute ? 'NAV MODE: OFF' : 'NAV MODE — add a waypoint first');
+                // The robot refuses AUTONOMOUS with an empty route; grey the
+                // toggle out to match rather than let it bounce straight back.
+                navBtn.disabled = !navOn && !hasRoute;
 
                 const startBtn = document.getElementById('navStartBtn');
                 const pauseBtn = document.getElementById('navPauseBtn');
                 const stopBtn2 = document.getElementById('navStopBtn');
                 startBtn.innerText = navPaused ? 'Resume' : 'Start';
-                startBtn.disabled = !(walking && (!navOn || navPaused));
+                startBtn.disabled = !(walking && hasRoute && (!navOn || navPaused));
                 pauseBtn.disabled = !(walking && navOn && !navPaused);
                 stopBtn2.disabled = !navOn;
 
@@ -441,7 +449,7 @@ _PAGE = """
                 if (wpEl) {
                     let msg;
                     if (!s.wp_total) {
-                        msg = 'no route loaded — NAV MODE holds position';
+                        msg = 'no route — add at least one waypoint to enable NAV MODE';
                     } else if (s.wp_index >= s.wp_total) {
                         msg = 'route complete (' + s.wp_total + '/' + s.wp_total + ') — holding position';
                     } else {

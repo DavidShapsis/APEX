@@ -141,6 +141,8 @@ class MockRobot:
     def nav_control(self, action):
         with self.lock:
             if action == 'start':
+                if not self.waypoints:
+                    return
                 self.nav_mode, self.nav_paused, self.wp_index = True, False, 0
             elif action == 'pause':
                 self.nav_paused = True
@@ -276,8 +278,11 @@ def set_direction():
 
 @app.route('/toggle_nav', methods=['POST'])
 def toggle_nav():
+    if not robot.nav_mode and not robot.waypoints:
+        return jsonify({"ok": False, "nav_mode": robot.nav_mode,
+                        "error": "Add at least one waypoint before NAV MODE."}), 409
     robot.nav_mode = not robot.nav_mode
-    return jsonify({"nav_mode": robot.nav_mode})
+    return jsonify({"ok": True, "nav_mode": robot.nav_mode})
 
 
 @app.route('/toggle_avoid', methods=['POST'])
@@ -358,6 +363,8 @@ def nav_control():
     action = request.form.get('action', '')
     if action not in ('start', 'pause', 'stop'):
         return jsonify({"ok": False, "error": "action must be start, pause or stop"}), 400
+    if action == 'start' and not robot.waypoints:
+        return jsonify({"ok": False, "error": "No route loaded. Add a waypoint and Send route first."}), 409
     robot.nav_control(action)
     return jsonify({"ok": True, "action": action})
 
