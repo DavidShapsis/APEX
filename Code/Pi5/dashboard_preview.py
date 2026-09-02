@@ -59,6 +59,10 @@ class MockRobot:
 
         self.direction = 0
         self.nav_mode = False
+        # Subsystem health bitmask, HEALTH_BITS order (imu,gps,compass,
+        # power,camera,audio). 0x3F = all up. Flip bits to preview the
+        # 'running degraded' banner, e.g. 0x2F drops the camera.
+        self.health = 0x3F
 
         # Route: [[lat, lon], ...] plus which one we are 'driving to'. The
         # _route_sim thread below advances the index while walking, in NAV mode,
@@ -126,6 +130,7 @@ class MockRobot:
                 'wp_total': len(self.waypoints),
                 'nav_mode': 1 if self.nav_mode else 0,
                 'nav_paused': 1 if self.nav_paused else 0,
+                'health': self.health,
             }
 
     def set_waypoints(self, pairs):

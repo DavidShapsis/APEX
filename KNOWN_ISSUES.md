@@ -1011,17 +1011,47 @@ buffer entirely.
 
 ## Verify on hardware
 
-### BNO085 constant names — check this first
-`imu.py`:
-```python
-self.bno.enable_feature(BNO08X.REPORT_LINEAR_ACCELERATION)
-self.bno.enable_feature(BNO08X.REPORT_ROTATION_VECTOR)
-```
-The Adafruit library exposes these as **module-level** constants named
-`BNO_REPORT_LINEAR_ACCELERATION` / `BNO_REPORT_ROTATION_VECTOR`, not as class
-attributes. If that's the case in the installed version this is an `AttributeError`
-in the constructor, and `IMU(...)` at `pi5_main.py` has no try/except around it —
-**the robot won't boot.** One-line check on the Pi.
+### RESOLVED — BNO085 constant names, and boot no longer dies on a bad hardware init
+
+`imu.py` used `BNO08X.REPORT_LINEAR_ACCELERATION` / `...REPORT_ROTATION_VECTOR`.
+Newer Adafruit library versions moved those to **module-level** names
+(`BNO_REPORT_*`). Where the installed version has the module-level layout, the
+old code raised `AttributeError` in the `IMU` constructor — and `main()` had no
+guard, so **the robot would not boot at all.**
+
+Two independent fixes:
+
+1. **`imu.py` accepts either layout.** It now imports `BNO_REPORT_*` and falls
+   back to `BNO08X.REPORT_*`, so which library version is installed stops
+   mattering.
+
+2. **Hardware init in `main()` is non-fatal.** IMU, GPS, compass, camera, power
+   monitor and audio are each brought up through `_bring_up(name, factory, ...)`,
+   which on failure logs the exception, marks that subsystem down, and returns
+   `None`. `SensorHub` already tolerates a `None` sensor; `camera_loop` returns
+   early with no camera; every `audio_engine.play()` is guarded. The robot boots
+   **degraded** instead of not at all. The one exception is the Flask dashboard
+   itself — without it you cannot home the legs — which still stops the boot, but
+   only after announcing "FATAL: no dashboard" on the OLED.
+
+The degraded state is surfaced:
+
+- **On the dashboard:** the status array gained a 6-bit health mask at index 19
+  (`imu, gps, compass, power, camera, audio`; behind `len >= 20`). The page
+  shows an amber "Running degraded — camera did not start" banner, distinct from
+  the red not-homed banner.
+- **On an optional OLED:** `Code/Pi5/boot_display.py` drives a 1.3" SH1106 I2C
+  panel — boot progress line by line ("IMU ... / IMU OK / Camera FAIL"), then the
+  dashboard URL and the down-list once running. If `luma.oled` or the panel is
+  absent every call is a no-op that echoes to stdout, so the error display can
+  never itself become a boot blocker. Wiring and the one-line install are in
+  `HARDWARE.md` at the repo root — it hangs on the existing I2C1 bus at 0x3C,
+  no config change.
+
+Still worth a bench check: that the BNO085 actually responds on `/dev/i2c-13`
+and that the axis/sign conventions match (see the IMU-levelling entry above) —
+but a wrong answer there now degrades to "IMU down, flat-footed walking", not a
+dead boot.
 
 ### RESOLVED — BTS7960 dual enable confirmed tied together on the PCB
 `JointController` drives a single `en_pin`; the chip has separate R_EN and L_EN (as
