@@ -129,11 +129,17 @@ class RobodogStreamer(Node):
 
     def toggle_nav(self):
         """Toggles navigation mode state and publishes it to ROS 2."""
-        self.nav_mode = not self.nav_mode
+        going_on = not self.nav_mode
+        if going_on and not self.homing_status.get('wp_total', 0):
+            # The controller rejects AUTONOMOUS with an empty route; refuse here
+            # too so the button does not flip on and bounce straight back.
+            return jsonify({"ok": False, "nav_mode": self.nav_mode,
+                            "error": "Add at least one waypoint before NAV MODE."}), 409
+        self.nav_mode = going_on
         msg = Bool()
         msg.data = self.nav_mode
         self.nav_mode_pub.publish(msg)
-        return jsonify({"nav_mode": self.nav_mode})
+        return jsonify({"ok": True, "nav_mode": self.nav_mode})
 
     def nav_control(self):
         """Route transport buttons. Body: form field action=start|pause|stop.
@@ -142,6 +148,8 @@ class RobodogStreamer(Node):
         code = {'start': 1, 'pause': 2, 'stop': 3}.get(action)
         if code is None:
             return jsonify({"ok": False, "error": "action must be start, pause or stop"}), 400
+        if action == 'start' and not self.homing_status.get('wp_total', 0):
+            return jsonify({"ok": False, "error": "No route loaded. Add a waypoint and Send route first."}), 409
         msg = Int32()
         msg.data = code
         self.nav_cmd_pub.publish(msg)

@@ -617,10 +617,20 @@ class PiQuadrupedController(Node):
         with self.serial_lock:
             self.target_direction = msg.data
 
+    def _route_loaded(self):
+        """True when the Navigator holds at least one waypoint. NAV MODE is
+        refused otherwise -- an empty route used to flip AUTONOMOUS on and just
+        march in place, which looks like the toggle is broken."""
+        return self.nav_engine is not None and len(self.nav_engine.get_waypoints()) > 0
+
     def nav_mode_callback(self, msg):
         """Changes the robot's primary operating state machine channel."""
         with self.serial_lock:
             if msg.data:
+                if not self._route_loaded():
+                    self.get_logger().warn(
+                        "NAV MODE ignored: no waypoints. Send a route first.")
+                    return
                 self.current_mode = RobotMode.AUTONOMOUS
                 self.get_logger().info("Robot State Transited to: AUTONOMOUS_NAV")
             else:
@@ -635,6 +645,10 @@ class PiQuadrupedController(Node):
         cmd = int(msg.data)
         with self.serial_lock:
             if cmd == 1:
+                if not self._route_loaded():
+                    self.get_logger().warn(
+                        "NAV: start ignored, no waypoints loaded.")
+                    return
                 self.current_mode = RobotMode.AUTONOMOUS
                 self.nav_paused = False
                 if self.nav_engine is not None:
