@@ -4,7 +4,7 @@ import threading
 from flask import Flask, Response, request, jsonify
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, Int32MultiArray, Bool
+from std_msgs.msg import Int32, Int32MultiArray, Float32MultiArray, Bool
 
 import dashboard_page
 
@@ -24,6 +24,10 @@ class RobodogStreamer(Node):
         self.stop_pub = self.create_publisher(Bool, '/apex/homing/cmd_stop', 10)
         self.deactivate_leg_pub = self.create_publisher(Int32, '/apex/homing/cmd_deactivate_leg', 10)
         self.reactivate_leg_pub = self.create_publisher(Int32, '/apex/homing/cmd_reactivate_leg', 10)
+        self.waypoints_pub = self.create_publisher(
+            Float32MultiArray, '/apex/navigation/waypoints', 10)
+        self.nav_cmd_pub = self.create_publisher(
+            Int32, '/apex/navigation/nav_cmd', 10)
         self.homing_status_sub = self.create_subscription(
             Int32MultiArray, '/apex/homing/status', self.homing_status_callback, 10)
 
@@ -37,6 +41,12 @@ class RobodogStreamer(Node):
         self.nav_mode = False  # Track state of autonomous navigation
         self.avoid_mode = False  # Track state of vision obstacle avoidance
 
+        # The route lives on the controller (Navigator). This is the browser's
+        # working copy: what the operator has typed but not necessarily sent.
+        # Seeded from the controller's echo in the status message so a page
+        # reload shows the route that is actually loaded, not an empty list.
+        self.waypoints = []
+
         # Updated by homing_status_callback from pi5_main.py's periodic publish.
         # Everything starts false/0 -- matches the real state at boot, since
         # nothing is homed until the operator does it from this UI.
@@ -45,6 +55,7 @@ class RobodogStreamer(Node):
             'deactivated': [0, 0, 0, 0],
             'avoid_available': 0, 'avoid_enabled': 0, 'avoid_state': 0,
             'avoid_steer': 0, 'avoid_stride': 100,
+            'wp_index': 0, 'wp_total': 0, 'nav_mode': 0, 'nav_paused': 0,
         }
 
         self.app.add_url_rule('/video_feed', 'video_feed', self.video_feed)
@@ -59,6 +70,9 @@ class RobodogStreamer(Node):
         self.app.add_url_rule('/deactivate_leg', 'deactivate_leg', self.deactivate_leg, methods=['POST'])
         self.app.add_url_rule('/reactivate_leg', 'reactivate_leg', self.reactivate_leg, methods=['POST'])
         self.app.add_url_rule('/status', 'status', self.status, methods=['GET'])
+        self.app.add_url_rule('/waypoints', 'get_waypoints', self.get_waypoints, methods=['GET'])
+        self.app.add_url_rule('/set_waypoints', 'set_waypoints', self.set_waypoints, methods=['POST'])
+        self.app.add_url_rule('/nav_control', 'nav_control', self.nav_control, methods=['POST'])
 
     def homing_status_callback(self, msg):
         data = list(msg.data)
@@ -72,6 +86,7 @@ class RobodogStreamer(Node):
                 # still produces a complete status dict for the UI.
                 'avoid_available': 0, 'avoid_enabled': 0, 'avoid_state': 0,
                 'avoid_steer': 0, 'avoid_stride': 100,
+                'wp_index': 0, 'wp_total': 0, 'nav_mode': 0, 'nav_paused': 0,
             }
             if len(data) >= 15:
                 status.update({
@@ -85,6 +100,15 @@ class RobodogStreamer(Node):
                 # actually on, so a toggle lost in transit self-corrects here
                 # instead of leaving the button lying about the robot's state.
                 self.avoid_mode = bool(data[11])
+            if len(data) >= 17:
+                status['wp_index'] = data[15]
+                status['wp_total'] = data[16]
+            if len(data) >= 19:
+                status['nav_mode'] = data[17]
+                status['nav_paused'] = data[18]
+                # Controller is the authority; keep the toggle honest even if a
+                # /toggle_nav or Start/Stop was lost in transit.
+                self.nav_mode = bool(data[17])
             self.homing_status = status
 
     def index(self):
@@ -106,6 +130,24 @@ class RobodogStreamer(Node):
         msg.data = self.nav_mode
         self.nav_mode_pub.publish(msg)
         return jsonify({"nav_mode": self.nav_mode})
+
+    def nav_control(self):
+        """Route transport buttons. Body: form field action=start|pause|stop.
+        Maps to nav_cmd 1/2/3 on the controller."""
+        action = request.form.get('action', '')
+        code = {'start': 1, 'pause': 2, 'stop': 3}.get(action)
+        if code is None:
+            return jsonify({"ok": False, "error": "action must be start, pause or stop"}), 400
+        msg = Int32()
+        msg.data = code
+        self.nav_cmd_pub.publish(msg)
+        # Optimistic local mirror so the NAV MODE button reflects the press
+        # before the next status frame; the status parse corrects it if wrong.
+        if action == 'start':
+            self.nav_mode = True
+        elif action == 'stop':
+            self.nav_mode = False
+        return jsonify({"ok": True, "action": action})
 
     def toggle_avoid(self):
         """Toggles vision obstacle avoidance. Independent of nav mode -- it
@@ -179,6 +221,38 @@ class RobodogStreamer(Node):
 
     def status(self):
         return jsonify(self.homing_status)
+
+    def get_waypoints(self):
+        """The browser's working copy of the route. Sent on page load so a
+        reload restores whatever was last entered here."""
+        return jsonify({"waypoints": self.waypoints})
+
+    def set_waypoints(self):
+        """Accept an edited route from the dashboard and publish it to the
+        controller. Body is JSON {"waypoints": [[lat, lon], ...]}.
+
+        Validated here for a clean UI error; Navigator re-validates on the
+        controller side because ROS messages can arrive from anywhere.
+        """
+        payload = request.get_json(silent=True) or {}
+        raw = payload.get("waypoints", [])
+        clean, flat = [], []
+        for pair in raw:
+            try:
+                lat, lon = float(pair[0]), float(pair[1])
+            except (TypeError, ValueError, IndexError):
+                return jsonify({"ok": False,
+                                "error": "Every point needs a numeric latitude and longitude."}), 400
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                return jsonify({"ok": False,
+                                "error": f"({lat}, {lon}) is outside valid latitude/longitude range."}), 400
+            clean.append([lat, lon])
+            flat += [lat, lon]
+        self.waypoints = clean
+        msg = Float32MultiArray()
+        msg.data = flat
+        self.waypoints_pub.publish(msg)
+        return jsonify({"ok": True, "count": len(clean)})
 
     def update_frame(self, frame):
         with self.lock:

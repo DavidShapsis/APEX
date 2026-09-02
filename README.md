@@ -20,7 +20,7 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 - **Inverse Kinematics** — custom 3-link IK engine with forward kinematics for recovery, computing joint angles in real time for all four legs
 - **Body-Twist Steering** — each foot arcs about the body centre so the robot yaws in place or blends yaw with forward travel into an arc, recruiting the hip-roll joint into the turn (not tank-style stride differencing)
 - **IMU Stabilization** — BNO085 quaternion-based roll/pitch feeds a per-leg differential foot-height correction, so the body actually levels instead of just translating
-- **GPS Navigation** — autonomous waypoint following using bearing and distance calculations from a HGLRC M100 GPS module
+- **GPS Navigation** — autonomous waypoint following using bearing and distance calculations from a HGLRC M100 GPS module; the route is entered and reordered live from the dashboard, and the robot holds position (marching in place) once the last point is reached
 - **Live Video Streaming** — USB webcam feed served over Flask to any device on the same network
 - **Mission Control Dashboard** — Flask web UI that walks through homing each leg, standing, and going before the robot is allowed to walk; live camera feed with a steering readout, an obstacle-avoidance toggle, and per-leg debug controls. Served entirely from the Pi (Bootstrap vendored locally, no internet needed in the field)
 - **ML Obstacle Avoidance** — pretrained monocular depth model (Depth-Anything-V2-Small, ONNX) turns the webcam feed into a forward costmap and steers around obstacles, layered on top of both manual and GPS waypoint steering. Dashboard toggle
@@ -178,7 +178,9 @@ Then toggle **AVOIDANCE** on the dashboard. While it is on, the video feed is ov
  
 ## Dashboard
  
-Open `http://<pi-ip>:5000`. Top to bottom: live camera feed, **Steering** (direction readout, LEFT / FWD / RIGHT, the −90…+90 slider, NAV MODE), **Startup** (Home ×4 → STAND → GO → STOP), **Obstacle Avoidance** toggle with a live state readout, then **Debug** per-leg deactivation at the bottom. Each card's wordy explanation is tucked behind a small **i** button. STAND and GO stay disabled, with a warning banner, until all four legs are homed; status pills up top show homed count / standing / walking.
+Open `http://<pi-ip>:5000`. Top to bottom: live camera feed, **Steering** (direction readout, LEFT / FWD / RIGHT, the −90…+90 slider, NAV MODE), **Route** (GPS waypoint editor), **Startup** (Home ×4 → STAND → GO → STOP), **Obstacle Avoidance** toggle with a live state readout, then **Debug** per-leg deactivation at the bottom. Each card's wordy explanation is tucked behind a small **i** button. STAND and GO stay disabled, with a warning banner, until all four legs are homed; status pills up top show homed count / standing / walking.
+ 
+The **Route** card is one latitude box and one longitude box per waypoint, with ▲/▼ to reorder, × to remove, **+ Add point**, and **Send route** — nothing reaches the robot until that is pressed. It shows "driving to waypoint N of M" / "route complete — holding position" / "no route loaded". With no route, NAV MODE just marches in place instead of driving toward stale coordinates. On reaching the last point the robot holds position; STAND or STOP ends the walk.
  
 The markup lives in one place — `dashboard_page.py`, a plain string with no imports — so `stream_server.py` (the real node) and `dashboard_preview.py` (a hardware-free mock for working on the UI) render the identical page. Styling is an APEX red/black theme over Bootstrap 5, and Bootstrap is **vendored** at `Code/Pi5/static/bootstrap.min.css` rather than pulled from a CDN, so the page is fully functional when the Pi is its own access point with no route to the internet.
  

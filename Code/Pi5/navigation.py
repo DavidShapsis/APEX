@@ -1,4 +1,6 @@
 import math
+import threading
+
 import serial
 from smbus2 import SMBus
 
@@ -106,15 +108,73 @@ class CompassReader:
         return val if val < 32768 else val - 65536
 
 class Navigator:
-    def __init__(self, waypoints):
-        self.waypoints = waypoints
+    """Waypoint follower. The list can be replaced at runtime from the
+    dashboard, so every access is under a lock -- the control loop reads it at
+    ~100 Hz while a ROS executor thread may be rewriting it."""
+
+    # How close counts as "arrived", metres.
+    ARRIVE_RADIUS_M = 4.0
+
+    def __init__(self, waypoints=None):
+        self._lock = threading.Lock()
+        self.waypoints = list(waypoints or [])
         self.wp_idx = 0
 
+    # -- runtime editing --------------------------------------------------
+
+    def set_waypoints(self, waypoints):
+        """Replace the whole route and restart it. Returns the accepted list.
+
+        Rejects anything outside real lat/lon range rather than trusting the
+        dashboard: a bad pair here becomes a confident bearing to nowhere.
+        """
+        clean = []
+        for pair in waypoints or []:
+            try:
+                lat, lon = float(pair[0]), float(pair[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0:
+                clean.append((lat, lon))
+        with self._lock:
+            self.waypoints = clean
+            self.wp_idx = 0
+        return clean
+
+    def get_waypoints(self):
+        with self._lock:
+            return list(self.waypoints)
+
+    def reset_progress(self):
+        """Rewind to the first waypoint without changing the list. Used by the
+        dashboard's Start and Stop so a route can be replayed from the top."""
+        with self._lock:
+            self.wp_idx = 0
+
+    def progress(self):
+        """(index of the waypoint being driven to, total). index == total means
+        the route is finished."""
+        with self._lock:
+            return min(self.wp_idx, len(self.waypoints)), len(self.waypoints)
+
+    @property
+    def mission_complete(self):
+        """True when there is nothing left to drive to -- either the route ran
+        out or none was ever set. The caller must stop; see pi5_main."""
+        with self._lock:
+            return self.wp_idx >= len(self.waypoints)
+
+    # -- guidance ---------------------------------------------------------
+
     def calculate_nav(self, curr_lat, curr_lon, curr_head):
-        if self.wp_idx >= len(self.waypoints): 
-            return None
-        target_lat, target_lon = self.waypoints[self.wp_idx]
-        
+        """Bearing error and distance to the active waypoint, or None once the
+        route is finished. None means STOP, not "carry on as you were" -- see
+        the mission-end handling in pi5_main's control loop."""
+        with self._lock:
+            if self.wp_idx >= len(self.waypoints):
+                return None
+            target_lat, target_lon = self.waypoints[self.wp_idx]
+
         rad_lat1, rad_lat2 = math.radians(curr_lat), math.radians(target_lat)
         d_lon = math.radians(target_lon - curr_lon)
         y = math.sin(d_lon) * math.cos(rad_lat2)
@@ -122,13 +182,14 @@ class Navigator:
         target_bearing = (math.degrees(math.atan2(y, x)) + 360) % 360
 
         turn_error = target_bearing - curr_head
-        if turn_error > 180: 
+        if turn_error > 180:
             turn_error -= 360
-        if turn_error < -180: 
+        if turn_error < -180:
             turn_error += 360
 
         acos_arg = (math.sin(rad_lat1)*math.sin(rad_lat2) + math.cos(rad_lat1)*math.cos(rad_lat2) * math.cos(d_lon))
         dist = math.acos(max(-1.0, min(1.0, acos_arg))) * 6371000
-        if dist < 4.0:
-            self.wp_idx += 1
+        if dist < self.ARRIVE_RADIUS_M:
+            with self._lock:
+                self.wp_idx += 1
         return {"turn": turn_error, "dist": dist}

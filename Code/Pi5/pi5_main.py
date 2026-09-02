@@ -37,10 +37,33 @@ except Exception as _vision_err:
     ObstacleAvoider, AvoidState = None, None
     print(f"[VISION] obstacle avoidance unavailable: {_vision_err}")
 
-class RobotState:
+class RobotMode:
+    """What the operator asked for. Only nav_mode_callback writes this."""
     MANUAL = 0
     AUTONOMOUS = 1
-    RECOVERY = 2
+
+
+class RobotActivity:
+    """What the robot is doing right now. Only the recovery path writes this.
+
+    Split out of the old single `current_state` field, which used one variable
+    for both meanings. That caused a real hazard: nav_mode_callback overwrote
+    it unconditionally from a ROS executor thread, so a NAV toggle landing
+    between handle_recovery() staging a recovery and _gait_serial_worker
+    reading it made the worker's `== RECOVERY` test fail. The recovery was then
+    never transmitted and the aborted leg stayed frozen at zero PWM with
+    has_aborted latched, while the other three kept walking -- i.e. the robot
+    falls. It also meant every recovery silently reset the mode to MANUAL,
+    dropping the robot out of GPS nav while the dashboard still read NAV: ON.
+    """
+    NORMAL = 0
+    RECOVERY = 1
+
+
+# Back-compat alias: RobotState.MANUAL / .AUTONOMOUS still resolve for anything
+# that imports them. RECOVERY deliberately does NOT exist here any more, so a
+# stale reference fails loudly instead of silently comparing against a mode.
+RobotState = RobotMode
 
 # Leg identity, body geometry and mounting all live in ik_and_gait.py so that
 # pi5_main and quadruped_sim cannot drift apart. build_gait() lays the second
@@ -119,6 +142,16 @@ class PiQuadrupedController(Node):
         self.dir_sub = self.create_subscription(Int32, '/apex/navigation/cmd_dir', self.direction_callback, 10)
         self.nav_mode_sub = self.create_subscription(Bool, '/apex/navigation/nav_mode', self.nav_mode_callback, 10)
         self.avoid_sub = self.create_subscription(Bool, '/apex/vision/cmd_avoid', self.avoid_callback, 10)
+        # Route editing from the dashboard. Flat [lat0, lon0, lat1, lon1, ...];
+        # an empty array is a valid message meaning "no route", which parks the
+        # robot at the next AUTONOMOUS pass rather than leaving a stale one.
+        self.waypoints_sub = self.create_subscription(
+            Float32MultiArray, '/apex/navigation/waypoints', self.waypoints_callback, 10)
+        # Route transport from the dashboard: 1 START, 2 PAUSE, 3 STOP. Separate
+        # from nav_mode (the master MANUAL/AUTONOMOUS switch) so Start can also
+        # rewind the route and Pause can hold without leaving autonomous mode.
+        self.nav_cmd_sub = self.create_subscription(
+            Int32, '/apex/navigation/nav_cmd', self.nav_cmd_callback, 10)
 
         # --- Homing / stand / go / stop / per-leg debug deactivation, driven
         # from the web dashboard ---
@@ -175,7 +208,12 @@ class PiQuadrupedController(Node):
         self.deactivated_legs = set()
 
         # System State Tracking Management
-        self.current_state = RobotState.MANUAL
+        self.current_mode = RobotMode.MANUAL
+        self.current_activity = RobotActivity.NORMAL
+        # Pause holds position (march in place) while staying in AUTONOMOUS, so
+        # Resume picks the route straight back up. Only nav_cmd_callback and the
+        # control loop touch it.
+        self.nav_paused = False
         self.last_sent_direction = 0
         self.last_sent_pitch = 0.0
         self.last_sent_roll = 0.0
@@ -190,6 +228,10 @@ class PiQuadrupedController(Node):
         # flags as the cause of three separate bugs -- and avoidance is
         # orthogonal to both anyway: it modifies the steering command in either
         # mode without changing which mode is active.
+        # Set by main() once it exists; the dashboard edits the route through
+        # this rather than main() owning it privately.
+        self.nav_engine = None
+
         self.avoider = None          # set by main() once the camera exists
         self.avoid_enabled = False
         self.avoid_state_code = 0    # AvoidState.CODES value, for the dashboard
@@ -458,11 +500,11 @@ class PiQuadrupedController(Node):
     def publish_homing_status(self):
         """Wire layout: [homed x4, standing, walking, deactivated x4,
         avoid_available, avoid_enabled, avoid_state_code, avoid_steer_deg,
-        avoid_stride_pct].
+        avoid_stride_pct, wp_index, wp_total, nav_mode, nav_paused].
 
-        The avoidance fields are APPENDED, never inserted: stream_server reads
-        the first ten by fixed index and only checks len >= 10, so an older
-        dashboard against a newer controller still works.
+        Fields are only ever APPENDED, never inserted: stream_server reads each
+        block by fixed index behind a length check, so an older dashboard against
+        a newer controller still works.
         """
         with self.serial_lock:
             homed = [int(self.homed[leg_id]) for leg_id in LEG_ORDER]
@@ -476,8 +518,17 @@ class PiQuadrupedController(Node):
                 int(round(self.avoid_steer)),
                 int(round(self.avoid_stride_scale * 100)),
             ]
+        # Outside the lock: Navigator has its own, and nesting the two in one
+        # order here while another path takes them in the other is how deadlocks
+        # get written.
+        wp_idx, wp_total = (self.nav_engine.progress()
+                            if self.nav_engine is not None else (0, 0))
+        with self.serial_lock:
+            nav_mode = int(self.current_mode == RobotMode.AUTONOMOUS)
+            nav_paused = int(self.nav_paused)
         msg = Int32MultiArray()
-        msg.data = homed + [standing, walking] + deactivated + avoid
+        msg.data = (homed + [standing, walking] + deactivated + avoid
+                    + [int(wp_idx), int(wp_total), nav_mode, nav_paused])
         self.homing_status_pub.publish(msg)
 
     def swing_steps(self, height_z):
@@ -553,11 +604,34 @@ class PiQuadrupedController(Node):
         """Changes the robot's primary operating state machine channel."""
         with self.serial_lock:
             if msg.data:
-                self.current_state = RobotState.AUTONOMOUS
+                self.current_mode = RobotMode.AUTONOMOUS
                 self.get_logger().info("Robot State Transited to: AUTONOMOUS_NAV")
             else:
-                self.current_state = RobotState.MANUAL
+                self.current_mode = RobotMode.MANUAL
+                self.nav_paused = False
                 self.get_logger().info("Robot State Transited to: MANUAL")
+
+    def nav_cmd_callback(self, msg):
+        """Route transport. 1 START (autonomous + rewind + unpause),
+        2 PAUSE (hold in place, stay autonomous), 3 STOP (back to manual +
+        rewind + unpause)."""
+        cmd = int(msg.data)
+        with self.serial_lock:
+            if cmd == 1:
+                self.current_mode = RobotMode.AUTONOMOUS
+                self.nav_paused = False
+                if self.nav_engine is not None:
+                    self.nav_engine.reset_progress()
+                self.get_logger().info("NAV: start (route from waypoint 1)")
+            elif cmd == 2:
+                self.nav_paused = True
+                self.get_logger().info("NAV: pause (holding position)")
+            elif cmd == 3:
+                self.current_mode = RobotMode.MANUAL
+                self.nav_paused = False
+                if self.nav_engine is not None:
+                    self.nav_engine.reset_progress()
+                self.get_logger().info("NAV: stop (back to manual steering)")
 
     def avoid_callback(self, msg):
         """Dashboard toggle for vision obstacle avoidance.
@@ -570,6 +644,26 @@ class PiQuadrupedController(Node):
             self.avoid_enabled = bool(msg.data)
         self.get_logger().info(
             f"Obstacle avoidance {'ENABLED' if msg.data else 'DISABLED'}")
+
+    def waypoints_callback(self, msg):
+        """Replace the GPS route from the dashboard.
+
+        Navigator does its own validation and locking, so this hands the pairs
+        straight over. Setting a route always restarts it at waypoint 0 -- there
+        is no way to express "keep going from where you were" through a list
+        that may have been reordered underneath you.
+        """
+        if self.nav_engine is None:
+            self.get_logger().error("Waypoints arrived before the navigator existed")
+            return
+        flat = list(msg.data)
+        pairs = list(zip(flat[0::2], flat[1::2]))
+        accepted = self.nav_engine.set_waypoints(pairs)
+        if len(accepted) != len(pairs):
+            self.get_logger().warn(
+                f"Dropped {len(pairs) - len(accepted)} waypoint(s) outside valid "
+                "lat/lon range")
+        self.get_logger().info(f"Route set: {len(accepted)} waypoint(s)")
 
     def publish_joints(self, angles_matrix):
         """Flattens gait matrix and publishes to the ROS world for visualization/logging."""
@@ -652,7 +746,7 @@ class PiQuadrupedController(Node):
 
             # Stage details to background worker thread atomically
             with self.serial_lock:
-                self.current_state = RobotState.RECOVERY
+                self.current_activity = RobotActivity.RECOVERY
                 self.emergency_queue = (trigger_serial, recovery_gait, other_targets, neutral_hold)
                 self.gait_update_queue = None  # Clear outstanding standard gait steps
                 self.standing = False
@@ -670,9 +764,9 @@ class PiQuadrupedController(Node):
             command_job = None
 
             with self.serial_lock:
-                state_check = self.current_state
+                state_check = self.current_activity
 
-                if state_check == RobotState.RECOVERY and self.emergency_queue is not None:
+                if state_check == RobotActivity.RECOVERY and self.emergency_queue is not None:
                     recovery_job = self.emergency_queue
                     self.emergency_queue = None
 
@@ -724,7 +818,10 @@ class PiQuadrupedController(Node):
                     print(f"Serial transmission crash during recovery: {e}")
 
                 with self.serial_lock:
-                    self.current_state = RobotState.MANUAL
+                    # Clears the RECOVERY activity only. The operating mode is
+                    # a separate field now, so a stumble no longer silently
+                    # drops the robot out of GPS navigation.
+                    self.current_activity = RobotActivity.NORMAL
                     # All four legs are now at stand_pose -- Go re-arms the walk
                     # with a fresh ramp, same as any other post-Stand start.
                     self.standing = True
@@ -773,7 +870,7 @@ class PiQuadrupedController(Node):
             # --- PROTECTED HYBRID SERIAL ENGINE LOOP ---
             for i in range(num_steps):
                 with self.serial_lock:
-                    if self.current_state == RobotState.RECOVERY:
+                    if self.current_activity == RobotActivity.RECOVERY:
                         aborted = True
                         break
 
@@ -844,7 +941,11 @@ def main():
     print("IMU setup successful")
 
     # Navigation Configuration
-    MISSION_WAYPOINTS = [(41.056, -74.145), (41.057, -74.146)] 
+    # Empty by default: the route is set from the dashboard now. A hardcoded
+    # default would mean flipping NAV MODE on sends the robot off toward
+    # somebody else's test coordinates. With no route it marches in place
+    # instead. (Previous default was [(41.056, -74.145), (41.057, -74.146)].)
+    MISSION_WAYPOINTS = []
     gps = GPSReader(uart_path='/dev/ttyUSB0', baudrate=9600)
     compass = CompassReader(sda_pin=2, scl_pin=3)
     nav_engine = Navigator(MISSION_WAYPOINTS)
@@ -906,6 +1007,7 @@ def main():
 
     controller = PiQuadrupedController()
     controller.avoider = avoider
+    controller.nav_engine = nav_engine
 
     # Started only now: camera_loop reads controller.avoid_enabled, so the
     # controller has to exist first.
@@ -975,7 +1077,8 @@ def main():
                     print("[Hardware Error] No compass heading; holding last estimate")
 
                 with controller.serial_lock:
-                    snap_state = controller.current_state
+                    snap_mode = controller.current_mode
+                    snap_nav_paused = controller.nav_paused
                     snap_target_dir = controller.target_direction
                     snap_last_dir = controller.last_sent_direction
                     snap_last_pitch = controller.last_sent_pitch
@@ -1004,7 +1107,19 @@ def main():
                         print(f"[IMU Warning] Large Tilt! Roll: {roll_tilt:.2f}, Pitch: {pitch_tilt:.2f}")
 
                 chosen_direction = snap_target_dir
-                if snap_state == RobotState.AUTONOMOUS:
+                # 1.0 unless something below decides the robot should not be
+                # covering ground: mission complete, or the avoidance planner
+                # slowing/halting it. 0.0 marches in place -- feet still lift
+                # and the body stays IMU-levelled, unlike STOP which cuts torque.
+                stride_scale = 1.0
+                if snap_mode == RobotMode.AUTONOMOUS and snap_nav_paused:
+                    # Paused: hold position, do not advance the route. Same
+                    # march-in-place command as mission end.
+                    chosen_direction = 0
+                    stride_scale = 0.0
+                    if int(current_time) % 2 == 0:
+                        print("[NAV] Paused; holding position")
+                elif snap_mode == RobotMode.AUTONOMOUS:
                     if not nav_s["has_fix"] or nav_s["age"] > 5.0:
                         # Without a fix lat/lon are 0.0, which would produce a
                         # confident bearing from the Gulf of Guinea; a stale
@@ -1015,6 +1130,17 @@ def main():
                         nav_data = nav_engine.calculate_nav(nav_s["lat"], nav_s["lon"], controller.filtered_heading)
                         if nav_data is not None:
                             chosen_direction = nav_data["turn"]
+                        else:
+                            # Route finished (or none was ever set). Previously
+                            # chosen_direction fell through to whatever manual
+                            # heading was last commanded and the robot walked
+                            # off forever. March in place instead: it holds
+                            # position, stays standing, and STAND or STOP from
+                            # the dashboard is still the way to end the walk.
+                            chosen_direction = 0
+                            stride_scale = 0.0
+                            if int(current_time) % 2 == 0:
+                                print("[NAV] Route complete; holding position")
 
                 # --- VISION OBSTACLE AVOIDANCE ---------------------------------
                 # Layered on top of whichever steering source is active, in both
@@ -1030,12 +1156,15 @@ def main():
                 # commitment -- without it, steering away would take the
                 # obstacle out of frame, nav would aim straight back into it,
                 # and the robot would oscillate on the spot forever.
-                stride_scale = 1.0
                 if avoider is not None:
                     if snap_avoid_enabled:
                         decision = avoider.plan(chosen_direction)
                         chosen_direction = decision.steer_deg
-                        stride_scale = decision.stride_scale
+                        # min(), not assignment: avoidance may only ever SLOW
+                        # the robot. Assigning would let a CLEAR decision (1.0)
+                        # undo the mission-complete hold above and send it
+                        # walking off the end of the route again.
+                        stride_scale = min(stride_scale, decision.stride_scale)
                         with controller.serial_lock:
                             controller.avoid_state_code = AvoidState.CODES.get(decision.state, 0)
                             controller.avoid_steer = decision.steer_deg

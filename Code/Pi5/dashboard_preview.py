@@ -17,7 +17,7 @@ what you see here is what the robot serves. What is faked:
   * /video_feed             -> an animated SVG placeholder, so there is
                                something in the frame and the ROI-bin overlay
                                is visible without a camera
-  * pi5_main's status topic -> MockRobot.status(), same 15-field layout
+  * pi5_main's status topic -> MockRobot.status(), same 19-field layout
 
 The mock also runs the real gating rules, so the Home -> Stand -> Go -> Stop
 flow behaves the way the robot does, including STAND-while-walking settling
@@ -60,7 +60,15 @@ class MockRobot:
         self.direction = 0
         self.nav_mode = False
 
+        # Route: [[lat, lon], ...] plus which one we are 'driving to'. The
+        # _route_sim thread below advances the index while walking, in NAV mode,
+        # not paused.
+        self.waypoints = []
+        self.wp_index = 0
+        self.nav_paused = False
+
         threading.Thread(target=self._avoid_sim, daemon=True).start()
+        threading.Thread(target=self._route_sim, daemon=True).start()
 
     # -- the real gating rules, reproduced ---------------------------------
 
@@ -114,7 +122,25 @@ class MockRobot:
                 'avoid_state': self.avoid_state,
                 'avoid_steer': self.avoid_steer,
                 'avoid_stride': self.avoid_stride,
+                'wp_index': self.wp_index,
+                'wp_total': len(self.waypoints),
+                'nav_mode': 1 if self.nav_mode else 0,
+                'nav_paused': 1 if self.nav_paused else 0,
             }
+
+    def set_waypoints(self, pairs):
+        with self.lock:
+            self.waypoints = [[float(a), float(b)] for a, b in pairs]
+            self.wp_index = 0
+
+    def nav_control(self, action):
+        with self.lock:
+            if action == 'start':
+                self.nav_mode, self.nav_paused, self.wp_index = True, False, 0
+            elif action == 'pause':
+                self.nav_paused = True
+            elif action == 'stop':
+                self.nav_mode, self.nav_paused, self.wp_index = False, False, 0
 
     # -- fake perception ----------------------------------------------------
 
@@ -146,6 +172,16 @@ class MockRobot:
                     state, steer, stride
             i += 1
             time.sleep(hold)
+
+    def _route_sim(self):
+        """Advance through the loaded route while walking in NAV mode, so the
+        'driving to waypoint N of M' / 'route complete' readout is exercised."""
+        while True:
+            time.sleep(4.0)
+            with self.lock:
+                if (self.nav_mode and self.walking and not self.nav_paused
+                        and self.wp_index < len(self.waypoints)):
+                    self.wp_index += 1
 
 
 robot = MockRobot()
@@ -305,6 +341,36 @@ def reactivate_leg():
 @app.route('/status')
 def status():
     return jsonify(robot.status())
+
+
+@app.route('/waypoints')
+def get_waypoints():
+    return jsonify({"waypoints": robot.waypoints})
+
+
+@app.route('/nav_control', methods=['POST'])
+def nav_control():
+    action = request.form.get('action', '')
+    if action not in ('start', 'pause', 'stop'):
+        return jsonify({"ok": False, "error": "action must be start, pause or stop"}), 400
+    robot.nav_control(action)
+    return jsonify({"ok": True, "action": action})
+
+
+@app.route('/set_waypoints', methods=['POST'])
+def set_waypoints():
+    raw = (request.get_json(silent=True) or {}).get("waypoints", [])
+    clean = []
+    for pair in raw:
+        try:
+            lat, lon = float(pair[0]), float(pair[1])
+        except (TypeError, ValueError, IndexError):
+            return jsonify({"ok": False, "error": "Every point needs a numeric latitude and longitude."}), 400
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            return jsonify({"ok": False, "error": f"({lat}, {lon}) is outside valid latitude/longitude range."}), 400
+        clean.append([lat, lon])
+    robot.set_waypoints(clean)
+    return jsonify({"ok": True, "count": len(clean)})
 
 
 # ==============================================================================

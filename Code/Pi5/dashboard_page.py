@@ -248,6 +248,82 @@ _PAGE = """
             text-indent: .3em; color: #45454e; text-transform: uppercase;
         }
 
+        /* ---- route editor ------------------------------------------------ */
+        .wp-row {
+            display: grid;
+            grid-template-columns: 1.6rem 1fr 1fr auto;
+            gap: .4rem; align-items: center; margin-bottom: .45rem;
+        }
+        .wp-num {
+            font-family: ui-monospace, Consolas, monospace; font-size: .78rem;
+            color: var(--apex-muted); text-align: right;
+        }
+        .wp-row.active .wp-num { color: var(--apex-red-hi); font-weight: 700; }
+        .wp-input {
+            width: 100%; box-sizing: border-box;
+            background: #0c0c0f; color: var(--apex-text);
+            border: 1px solid #2e2e36; border-radius: 7px;
+            padding: .5rem .55rem; font-size: .82rem;
+            font-family: ui-monospace, Consolas, monospace;
+        }
+        .wp-input:focus { outline: none; border-color: var(--apex-red); }
+        .wp-input.bad { border-color: var(--apex-amber); }
+        .wp-ctl { display: flex; gap: .25rem; }
+        .wp-mini {
+            background: #17171b; color: var(--apex-text);
+            border: 1px solid #2e2e36; border-radius: 6px;
+            width: 1.9rem; height: 1.9rem; padding: 0; cursor: pointer;
+            font-size: .85rem; line-height: 1;
+        }
+        .wp-mini:hover:not(:disabled) { border-color: var(--apex-red); color: #fff; }
+        .wp-mini:disabled { opacity: .3; cursor: not-allowed; }
+        .wp-mini.del:hover { background: var(--apex-red); border-color: #ff4b57; color: #fff; }
+        #wpStatus {
+            font-family: ui-monospace, Consolas, monospace; font-size: .78rem;
+            color: var(--apex-muted); margin: .6rem 0 0;
+        }
+        #wpSaveState {
+            font-size: .72rem; color: var(--apex-amber); margin: .35rem 0 0;
+            min-height: 1rem;
+        }
+
+        /* ---- collapsible navigation sections ---------------------------- */
+        .nav-sec { border-top: 1px solid var(--apex-line); }
+        .nav-sec:first-of-type { border-top: none; }
+        .nav-sec-head {
+            width: 100%; display: flex; align-items: center; gap: .5rem;
+            background: transparent; border: none; cursor: pointer;
+            color: #d8d8dd; padding: .85rem .2rem; text-align: left;
+            font-size: .74rem; font-weight: 800; letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+        .nav-sec-head:hover { color: #fff; }
+        .nav-sec-chevron {
+            display: inline-block; transition: transform .15s ease;
+            color: var(--apex-red-hi); font-size: .8rem; flex: 0 0 auto;
+        }
+        .nav-sec.open .nav-sec-chevron { transform: rotate(90deg); }
+        .nav-sec-title { flex: 1 1 auto; }
+        .nav-sec-chip {
+            font-family: ui-monospace, Consolas, monospace; font-size: .6rem;
+            letter-spacing: .1em; padding: .2rem .5rem; border-radius: 999px;
+            border: 1px solid var(--apex-line); color: var(--apex-muted);
+            background: #131316; flex: 0 0 auto;
+        }
+        .nav-sec.open .nav-sec-chip {
+            background: linear-gradient(180deg, var(--apex-red-hi), var(--apex-red));
+            border-color: #ff4b57; color: #fff;
+        }
+        .nav-sec-body { display: none; padding: 0 .1rem .9rem; }
+        .nav-sec.open .nav-sec-body { display: block; }
+
+        .transport-row { display: flex; gap: .5rem; margin-top: .6rem; }
+        .transport-row .apex-btn { flex: 1 1 0; min-width: 0; padding: .7rem .3rem; }
+        .apex-btn.go   { background: #0c2a16; border-color: #1c7a3e; color: #7ff0a8; }
+        .apex-btn.go:hover:not(:disabled) { background: #1c7a3e; border-color: #2ee06a; color: #fff; }
+        .apex-btn.hold { background: #2a2406; border-color: var(--apex-amber); color: #ffce7a; }
+        .apex-btn.hold:hover:not(:disabled) { background: #7a6320; border-color: var(--apex-amber); color: #fff; }
+
         @media (max-width: 380px) {
             .apex-btn { min-width: 72px; font-size: .7rem; padding: .62rem .5rem; }
         }
@@ -265,14 +341,21 @@ _PAGE = """
             document.getElementById('dirSlider').value = val;
         }
         function toggleNav() {
-            fetch('/toggle_nav', {"method": 'POST'})
-            .then(response => response.json())
-            .then(data => {
-                var btn = document.getElementById('navBtn');
-                btn.classList.toggle('on', !!data.nav_mode);
-                btn.classList.toggle('off', !data.nav_mode);
-                btn.innerText = data.nav_mode ? 'NAV MODE: ON' : 'NAV MODE: OFF';
-            });
+            // Master MANUAL/AUTONOMOUS switch. Start/Stop below also move it;
+            // refreshStatus() is what keeps the button honest either way.
+            fetch('/toggle_nav', {"method": 'POST'}).then(r => r.json()).catch(() => {});
+        }
+        function navControl(action) {
+            fetch('/nav_control', {
+                "method": 'POST',
+                "headers": {'Content-Type': 'application/x-www-form-urlencoded'},
+                "body": 'action=' + action,
+            }).then(r => r.json()).then(d => {
+                if (!d.ok && d.error) alert(d.error);
+            }).catch(() => {});
+        }
+        function toggleSection(id) {
+            document.getElementById(id).classList.toggle('open');
         }
         function homeLeg(id) {
             fetch('/home_leg', {"method": 'POST', "headers": {'Content-Type': 'application/x-www-form-urlencoded'}, "body": 'leg=' + id});
@@ -330,6 +413,40 @@ _PAGE = """
                 document.getElementById('pillStand').classList.toggle('live', s.standing === 1);
                 document.getElementById('pillWalk').classList.toggle('live', s.walking === 1);
 
+                // ---- Navigation: mode, pause, route progress, transport ----
+                const navOn = s.nav_mode === 1;
+                const navPaused = s.nav_paused === 1;
+                const walking = s.walking === 1;
+
+                const navBtn = document.getElementById('navBtn');
+                navBtn.classList.toggle('on', navOn);
+                navBtn.classList.toggle('off', !navOn);
+                navBtn.innerText = navOn ? 'NAV MODE: ON' : 'NAV MODE: OFF';
+
+                const startBtn = document.getElementById('navStartBtn');
+                const pauseBtn = document.getElementById('navPauseBtn');
+                const stopBtn2 = document.getElementById('navStopBtn');
+                startBtn.innerText = navPaused ? 'Resume' : 'Start';
+                startBtn.disabled = !(walking && (!navOn || navPaused));
+                pauseBtn.disabled = !(walking && navOn && !navPaused);
+                stopBtn2.disabled = !navOn;
+
+                const wpEl = document.getElementById('wpStatus');
+                if (wpEl) {
+                    let msg;
+                    if (!s.wp_total) {
+                        msg = 'no route loaded — NAV MODE holds position';
+                    } else if (s.wp_index >= s.wp_total) {
+                        msg = 'route complete (' + s.wp_total + '/' + s.wp_total + ') — holding position';
+                    } else {
+                        msg = 'driving to waypoint ' + (s.wp_index + 1) + ' of ' + s.wp_total;
+                    }
+                    if (navPaused) msg = 'PAUSED — ' + msg;
+                    else if (!navOn) msg = 'nav off — ' + msg;
+                    wpEl.innerText = msg;
+                    if (!wpDirty) wpRender(s.wp_index);
+                }
+
                 document.getElementById('standBtn').disabled = !allHomed;
                 document.getElementById('goBtn').disabled = !(allHomed && s.standing === 1);
                 document.getElementById('goBtn').innerText = s.walking === 1 ? 'WALKING' : 'GO';
@@ -359,8 +476,98 @@ _PAGE = """
                 }
             }).catch(() => {});
         }
+        // ---- GPS route editor ---------------------------------------
+        // WP is the browser's working copy: [[lat, lon], ...] as strings while
+        // being typed. The robot only sees it when "Send route" is pressed.
+        let WP = [];
+        let wpDirty = false;
+
+        function wpValidPair(latStr, lonStr) {
+            const lat = parseFloat(latStr), lon = parseFloat(lonStr);
+            return {
+                lat: lat, lon: lon,
+                latOk: Number.isFinite(lat) && lat >= -90 && lat <= 90,
+                lonOk: Number.isFinite(lon) && lon >= -180 && lon <= 180,
+            };
+        }
+        function wpRender(activeIdx) {
+            const list = document.getElementById('wpList');
+            list.innerHTML = '';
+            WP.forEach((pt, i) => {
+                const v = wpValidPair(pt[0], pt[1]);
+                const row = document.createElement('div');
+                row.className = 'wp-row' + (i === activeIdx ? ' active' : '');
+                row.innerHTML =
+                    '<span class="wp-num">' + (i + 1) + '</span>' +
+                    '<input class="wp-input' + (pt[0] !== '' && !v.latOk ? ' bad' : '') +
+                        '" inputmode="decimal" placeholder="latitude" value="' + pt[0] + '" ' +
+                        'oninput="wpEdit(' + i + ',0,this.value)">' +
+                    '<input class="wp-input' + (pt[1] !== '' && !v.lonOk ? ' bad' : '') +
+                        '" inputmode="decimal" placeholder="longitude" value="' + pt[1] + '" ' +
+                        'oninput="wpEdit(' + i + ',1,this.value)">' +
+                    '<span class="wp-ctl">' +
+                        '<button class="wp-mini" title="move up" ' + (i === 0 ? 'disabled' : '') +
+                            ' onclick="wpMove(' + i + ',-1)">&#9650;</button>' +
+                        '<button class="wp-mini" title="move down" ' +
+                            (i === WP.length - 1 ? 'disabled' : '') +
+                            ' onclick="wpMove(' + i + ',1)">&#9660;</button>' +
+                        '<button class="wp-mini del" title="remove" ' +
+                            'onclick="wpRemove(' + i + ')">&#215;</button>' +
+                    '</span>';
+                list.appendChild(row);
+            });
+            document.getElementById('wpSend').disabled = !wpDirty;
+            document.getElementById('wpSaveState').innerText =
+                wpDirty ? 'unsent changes \u2014 press Send route' : '';
+        }
+        function wpEdit(i, col, val) { WP[i][col] = val.trim(); wpDirty = true; wpRender(); }
+        function wpAdd() { WP.push(['', '']); wpDirty = true; wpRender(); }
+        function wpRemove(i) { WP.splice(i, 1); wpDirty = true; wpRender(); }
+        function wpMove(i, d) {
+            const j = i + d;
+            if (j < 0 || j >= WP.length) return;
+            const tmp = WP[i]; WP[i] = WP[j]; WP[j] = tmp;
+            wpDirty = true; wpRender();
+        }
+        function wpSend() {
+            const out = [];
+            for (let k = 0; k < WP.length; k++) {
+                const v = wpValidPair(WP[k][0], WP[k][1]);
+                if (!v.latOk || !v.lonOk) {
+                    document.getElementById('wpSaveState').innerText =
+                        'point ' + (k + 1) + ' is not a valid latitude/longitude';
+                    return;
+                }
+                out.push([v.lat, v.lon]);
+            }
+            fetch('/set_waypoints', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({waypoints: out}),
+            }).then(r => r.json()).then(d => {
+                if (d.ok) {
+                    wpDirty = false;
+                    document.getElementById('wpSaveState').innerText =
+                        'route sent (' + d.count + ' point' + (d.count === 1 ? '' : 's') + ')';
+                    wpRender();
+                } else {
+                    document.getElementById('wpSaveState').innerText = d.error || 'route rejected';
+                }
+            }).catch(() => {
+                document.getElementById('wpSaveState').innerText = 'could not reach the robot';
+            });
+        }
+        function wpLoad() {
+            fetch('/waypoints').then(r => r.json()).then(d => {
+                if (wpDirty) return;   // do not stomp on what the operator is typing
+                WP = (d.waypoints || []).map(pt => [String(pt[0]), String(pt[1])]);
+                wpRender();
+            }).catch(() => {});
+        }
+
         setInterval(refreshStatus, 1000);
-        window.onload = refreshStatus;
+        window.onload = () => { refreshStatus(); wpLoad(); };
+        // Both navigation sections start collapsed on purpose.
     </script>
 </head>
 <body>
@@ -406,9 +613,6 @@ _PAGE = """
                 <button class="apex-btn" onclick="sendDir(0)">&#9650; Fwd</button>
                 <button class="apex-btn" onclick="sendDir(45)">Right 45° &#9654;</button>
             </div>
-            <div class="btn-row">
-                <button id="navBtn" class="apex-btn wide {{NAV_STATE}}" onclick="toggleNav()">{{NAV_TEXT}}</button>
-            </div>
         </div>
 
         <div id="warnBanner">&#9888; Not every leg is homed &mdash; STAND and GO are disabled until you home all four.</div>
@@ -439,19 +643,58 @@ _PAGE = """
         </div>
 
         <div class="apex-card">
-            <h3 class="card-head">Obstacle Avoidance
-                <button class="info-btn" onclick="toggleInfo('i_avoid')">i</button></h3>
-            <div class="info" id="i_avoid">Camera-based. Works in manual and NAV mode: it takes
-                whichever direction the robot wants to travel and returns the nearest one that
-                is actually clear. In NAV mode the GPS bearing is recomputed every pass, so
-                once an obstacle is behind it heads for the waypoint again on its own. Fully
-                blocked &rarr; stride drops to zero and it marches in place, still standing
-                (unlike STOP). While ON, the video feed is overlaid with detection bins
-                (red = blocked).</div>
-            <div class="btn-row">
-                <button id="avoidBtn" class="apex-btn wide off" onclick="toggleAvoid()" disabled>AVOIDANCE: OFF</button>
+            <h3 class="card-head">Navigation</h3>
+
+            <div class="nav-sec" id="sec_gps">
+                <button class="nav-sec-head" onclick="toggleSection('sec_gps')">
+                    <span class="nav-sec-chevron">&#9654;</span>
+                    <span class="nav-sec-title">GPS Waypoints &amp; Routing</span>
+                    <span class="nav-sec-chip">OFF</span>
+                </button>
+                <div class="nav-sec-body">
+                    <div class="info" id="i_gps">Enter a route as latitude/longitude pairs in
+                        decimal degrees (e.g. <code>41.0561</code>, <code>-74.1452</code>) &mdash;
+                        south and west are negative. &#9650;/&#9660; reorder, &#215; removes,
+                        nothing reaches the robot until <b>Send route</b>. NAV MODE is the master
+                        autonomous switch; <b>Start</b> runs the route from the first point,
+                        <b>Pause</b> holds position, <b>Stop</b> returns to manual. With no route
+                        loaded the robot just marches in place.</div>
+                    <button class="info-btn" onclick="toggleInfo('i_gps')"
+                            style="align-self:flex-start;margin-bottom:.5rem;">i</button>
+                    <button id="navBtn" class="apex-btn wide {{NAV_STATE}}" onclick="toggleNav()">{{NAV_TEXT}}</button>
+                    <div id="wpList" style="margin-top:.7rem;"></div>
+                    <div class="btn-row">
+                        <button class="apex-btn" onclick="wpAdd()">+ Add point</button>
+                        <button id="wpSend" class="apex-btn primary" onclick="wpSend()" disabled>Send route</button>
+                    </div>
+                    <p id="wpStatus">no route loaded &mdash; NAV MODE holds position</p>
+                    <p id="wpSaveState"></p>
+                    <div class="transport-row">
+                        <button id="navStartBtn" class="apex-btn go" onclick="navControl('start')" disabled>Start</button>
+                        <button id="navPauseBtn" class="apex-btn hold" onclick="navControl('pause')" disabled>Pause</button>
+                        <button id="navStopBtn" class="apex-btn stop" onclick="navControl('stop')" disabled>Stop</button>
+                    </div>
+                </div>
             </div>
-            <p id="avoidState">&mdash;</p>
+
+            <div class="nav-sec" id="sec_avoid">
+                <button class="nav-sec-head" onclick="toggleSection('sec_avoid')">
+                    <span class="nav-sec-chevron">&#9654;</span>
+                    <span class="nav-sec-title">Obstacle Avoidance</span>
+                    <span class="nav-sec-chip">OFF</span>
+                </button>
+                <div class="nav-sec-body">
+                    <div class="info" id="i_avoid">Camera-based. Works in manual and NAV mode:
+                        it takes whichever direction the robot wants to travel and returns the
+                        nearest one that is actually clear. Fully blocked &rarr; stride drops to
+                        zero and it marches in place, still standing (unlike STOP). While ON, the
+                        video feed is overlaid with detection bins (red = blocked).</div>
+                    <button class="info-btn" onclick="toggleInfo('i_avoid')"
+                            style="align-self:flex-start;margin-bottom:.5rem;">i</button>
+                    <button id="avoidBtn" class="apex-btn wide off" onclick="toggleAvoid()" disabled>AVOIDANCE: OFF</button>
+                    <p id="avoidState">&mdash;</p>
+                </div>
+            </div>
         </div>
 
         <div class="apex-card">

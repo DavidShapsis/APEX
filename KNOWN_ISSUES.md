@@ -706,20 +706,35 @@ them differ by up to 0.85 cm/tick (127% of a step) and scrub against the ground.
 
 ## Will misbehave
 
-### `current_state` conflates operating mode with transient activity
-`pi5_main.py` — `RobotState` is used both for MANUAL/AUTONOMOUS and for RECOVERY.
-Three separate bugs follow:
+### RESOLVED — `current_state` conflated operating mode with transient activity
 
-1. After any recovery the worker hard-sets `current_state = MANUAL`, so a stumble
-   silently drops the robot out of GPS nav while the web UI still shows NAV: ON.
-2. `nav_mode_callback` overwrites `current_state` unconditionally from the executor
-   thread. If a toggle lands while `handle_recovery` has staged a recovery, the
-   worker's `state_check == RECOVERY` test fails and **the recovery never
-   transmits** — the leg stays frozen with `has_aborted = True`.
-3. The worker's state check races that same callback.
+`RobotState` was one field used for two unrelated things: MANUAL/AUTONOMOUS
+(what the operator asked for) and RECOVERY (what the robot is doing right now).
+Three bugs followed, the middle one able to drop the robot:
 
-Fix is `self.mode` + `self.activity` as separate fields. Deferred because it changes
-control flow rather than fixing a localized defect.
+1. After any recovery the worker hard-set `current_state = MANUAL`, so a stumble
+   silently dropped the robot out of GPS nav while the dashboard still read
+   NAV: ON.
+2. `nav_mode_callback` overwrote `current_state` unconditionally from a ROS
+   executor thread. A NAV toggle landing between `handle_recovery()` staging a
+   recovery and `_gait_serial_worker` reading it flipped the worker's
+   `== RECOVERY` test false — **the recovery was never transmitted, and the
+   aborted leg stayed frozen at zero PWM with `has_aborted` latched while the
+   other three kept walking.** That is a fall.
+3. The worker's state check raced that same callback.
+
+**Fixed** by splitting into two fields with one writer each:
+`current_mode` (`RobotMode.MANUAL` / `AUTONOMOUS`) written only by
+`nav_mode_callback`, and `current_activity` (`RobotActivity.NORMAL` /
+`RECOVERY`) written only by the recovery path. The worker gates on
+`current_activity`, which the nav toggle cannot touch, so (2) is structurally
+impossible now; clearing a recovery no longer resets the mode, so (1) is gone;
+and there is no longer a single field two threads fight over, so (3) is gone.
+`RobotState` remains as a back-compat alias of `RobotMode` — `.RECOVERY` was
+deliberately removed from it so a stale reference raises instead of silently
+comparing a mode against an activity. Verified against the source: no
+`current_state` in executable code, nav callback touches only `current_mode`,
+recovery touches only `current_activity`.
 
 ### RESOLVED — one leg recovers while the other three keep walking: policy is "go to neutral"
 `handle_recovery` used to send the recovery path only to `trigger_serial`, leaving
@@ -769,9 +784,10 @@ foot targets reachable. Full spin is ~13 deg/cycle → ~16 deg/s → a 90° turn
 
 **Still open / notes:**
 - *There is still no zero-velocity "keep standing, hold heading" travel state.*
-  `chosen_direction = 0` means walk forward. STOP de-powers; a large obstacle
-  makes the avoidance planner march in place (stride 0). None of those is
-  "stand and hold". "Mission end doesn't stop" below is still blocked on this.
+  `chosen_direction = 0` means walk forward. STOP de-powers; a large obstacle,
+  or a completed mission, makes the loop march in place (stride 0) — feet lift,
+  body holds, no ground covered. That covers mission end (now RESOLVED, below),
+  but it is not a true "stand still and hold this heading" state.
 - *A "spin in place" drifts.* The phased crawl means only 3 feet are planted at
   any instant, so each single-leg lift during a spin leaves a few mm of
   un-cancelled translation — measured 3–8 cm of drift over a 53° spin, and
@@ -789,11 +805,46 @@ foot targets reachable. Full spin is ~13 deg/cycle → ~16 deg/s → a 90° turn
   mapping (both want "yaw toward this"), but the `current_state` conflation
   above is the related cleanup.
 
-### Mission end doesn't stop
-`Navigator.calculate_nav` returns `None` once waypoints are exhausted, so
-`chosen_direction` falls through to the last manual direction and the robot walks
-forever. Blocked on having a zero-velocity travel state (see the steering entry
-above).
+### RESOLVED — mission end now holds position; route is editable from the dashboard
+
+`Navigator.calculate_nav` returns `None` once the waypoints are exhausted. The
+control loop used to let `chosen_direction` fall through to the last manual
+value, so the robot walked off forever. It now sets `chosen_direction = 0` and
+`stride_scale = 0.0` on that `None` — the march-in-place command from the
+avoidance work — so the robot picks its feet up on the spot, stays standing and
+IMU-levelled, and waits for STAND or STOP. The avoidance planner's stride is
+folded in with `min()` now, not assignment, so a CLEAR decision (1.0) can no
+longer undo that hold.
+
+This also depended on there being a route at all. There wasn't a way to enter
+one — `MISSION_WAYPOINTS` was two hardcoded pairs in `main()`. Now:
+
+- `Navigator` takes an optional list, defaults to empty, and is fully
+  lock-guarded (`set_waypoints` / `get_waypoints` / `progress` /
+  `mission_complete`) because the control loop reads it at ~100 Hz while a ROS
+  executor thread may be rewriting it. `set_waypoints` validates lat/lon range
+  and always restarts the route at index 0.
+- New topic `/apex/navigation/waypoints` (`Float32MultiArray`, flat
+  `[lat, lon, ...]`, empty = "no route"). `waypoints_callback` on the
+  controller hands it to `Navigator`.
+- `stream_server` gains `/waypoints` (GET, the browser's working copy) and
+  `/set_waypoints` (POST JSON, validated, published). The status array grew two
+  appended fields — `wp_index`, `wp_total` — behind a `len >= 17` guard, so an
+  older dashboard still parses.
+- The dashboard has a **Route** card: one latitude box and one longitude box per
+  point, up/down to reorder, `×` to remove, **+ Add point**, and **Send route**
+  (nothing reaches the robot until pressed). It shows "driving to waypoint N of
+  M" / "route complete — holding position" / "no route loaded".
+
+With no route loaded, flipping NAV MODE just marches in place rather than
+driving toward stale coordinates. Verified end to end without hardware
+(`Navigator` editing, arrival advance, concurrent-access smoke, `stream_server`
+validation + publish, 17-field status parse, and the preview server's route
+progression).
+
+Note the drift caveat from the steering entry above still applies to any turn,
+and there is still no separate "hold heading while stationary" state — but
+mission end is no longer one of the things that needs it.
 
 ### RESOLVED — blocking sensor reads moved off the control loop
 The `while rclpy.ok()` loop in `pi5_main.main()` used to call `imu.update()`,
