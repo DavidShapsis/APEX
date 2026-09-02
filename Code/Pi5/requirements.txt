@@ -36,6 +36,3 @@ onnxruntime>=1.16        # Depth-Anything-V2-Small inference
 # SH1106 128x64 panel on I2C1 - see HARDWARE.md. Without it, boot_display.py
 # echoes the same progress to stdout and the robot is unaffected.
 luma.oled>=3.12          # pulls in luma.core + pillow
-
-# --- developer tooling (not needed on the robot) ---------------------
-# matplotlib>=3.6         # inverse_kinematics/quadruped_sim.py animation mode
