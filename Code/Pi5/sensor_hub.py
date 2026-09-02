@@ -30,7 +30,8 @@ import time
 
 # Per-sensor default poll rates (Hz). The IMU feeds gait levelling, which only
 # rebuilds the gait on a > 1.5 deg attitude change, so 50 Hz is already
-# generous; the compass module updates at ~10 Hz internally and the GPS at 1 Hz;
+# generous; the QMC5883L runs at 200 Hz ODR internally so 10 Hz here always
+# gets a fresh sample, and the GPS emits at 1 Hz;
 # the INA219 battery check runs once a second in the loop.
 IMU_HZ = 50.0
 NAV_HZ = 10.0
@@ -55,7 +56,12 @@ class SensorHub:
         self._lock = threading.Lock()
         self._imu = {"roll": 0.0, "pitch": 0.0, "ok": False, "t": 0.0}
         self._nav = {"lat": 0.0, "lon": 0.0, "has_fix": False,
-                     "satellites": 0, "heading": None, "t": 0.0}
+                     "satellites": 0, "heading": None, "t": 0.0,
+                     # "t" is bumped every poll (GPS drain succeeds even with no
+                     # fix); "heading_t" only on a *good* compass read, so a
+                     # compass that starts failing mid-run is detectable even
+                     # though the shared poller keeps ticking.
+                     "heading_t": 0.0}
         self._power = {"voltage": None, "current": None, "t": 0.0}
 
         # Heartbeat: monotonic time each poller last *finished* an iteration.
@@ -138,7 +144,14 @@ class SensorHub:
     def _nav_poll(self):
         if self.gps is not None:
             self.gps.update()
-        heading = self.compass.get_heading() if self.compass is not None else None
+        # Tilt-compensate the compass with the freshest attitude the IMU poller
+        # has published. Stale/absent IMU -> 0,0 -> plain flat-mount heading.
+        with self._lock:
+            roll = self._imu["roll"] if self._imu["ok"] else 0.0
+            pitch = self._imu["pitch"] if self._imu["ok"] else 0.0
+        heading = (self.compass.get_heading(roll_deg=roll, pitch_deg=pitch)
+                   if self.compass is not None else None)
+        now = time.monotonic()
         with self._lock:
             if self.gps is not None:
                 self._nav["lat"] = self.gps.lat
@@ -146,10 +159,12 @@ class SensorHub:
                 self._nav["has_fix"] = self.gps.has_fix
                 self._nav["satellites"] = self.gps.satellites
             # Keep the last good heading if the read failed -- a wedged compass
-            # should not yank the estimate to 0 deg (due north).
+            # should not yank the estimate to 0 deg (due north) -- but only
+            # advance heading_t on a real reading so the caller can tell.
             if heading is not None:
                 self._nav["heading"] = heading
-            self._nav["t"] = time.monotonic()
+                self._nav["heading_t"] = now
+            self._nav["t"] = now
 
     def _power_poll(self):
         v = self.power.get_voltage()
@@ -172,10 +187,14 @@ class SensorHub:
 
     def nav_snapshot(self):
         """Always returns a dict: lat, lon, has_fix, satellites, heading (may be
-        None), t (monotonic of last poll), age (seconds since last poll)."""
+        None), t (monotonic of last poll), age (seconds since last poll),
+        heading_age (seconds since the last *good* compass read -- large if the
+        compass never read or has been failing)."""
         with self._lock:
             s = dict(self._nav)
-        s["age"] = time.monotonic() - s["t"]
+        now = time.monotonic()
+        s["age"] = now - s["t"]
+        s["heading_age"] = now - s["heading_t"] if s["heading_t"] else float("inf")
         return s
 
     def power_snapshot(self, max_age=POWER_MAX_AGE):
@@ -231,7 +250,7 @@ def _selftest():
         def __init__(self):
             self.n = 0
 
-        def get_heading(self):
+        def get_heading(self, roll_deg=0.0, pitch_deg=0.0):
             self.n += 1
             return None if self.n % 15 == 0 else (self.n * 2.0) % 360.0
 
@@ -259,6 +278,7 @@ def _selftest():
     nav_s = hub.nav_snapshot()
     print("nav_snapshot     :", nav_s)
     ok &= nav_s["has_fix"] and nav_s["heading"] is not None and nav_s["age"] < 0.5
+    ok &= nav_s["heading_age"] < 0.5      # a good read happened recently
 
     pow_s = hub.power_snapshot()
     print("power_snapshot   :", pow_s)
