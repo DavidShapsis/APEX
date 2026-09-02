@@ -194,9 +194,12 @@ The markup lives in one place — `dashboard_page.py`, a plain string with no im
 ### Pi 5 Requirements
  
 ```bash
-pip install pyserial smbus2 flask opencv-python adafruit-circuitpython-bno08x
-pip install onnxruntime numpy        # obstacle avoidance only; optional
+pip install -r Code/Pi5/requirements.txt
 ```
+
+`onnxruntime` / `numpy` (obstacle avoidance) and `luma.oled` (boot OLED) are in
+there but optional — the code runs without them. ROS 2 (Humble or later) is a
+separate apt install and is only needed for `pi5_main.py`.
 
 Obstacle avoidance is optional at runtime — if `onnxruntime` or the model file is missing, the import is caught, the dashboard shows `AVOIDANCE: NO MODEL`, and everything else runs unchanged.
 

@@ -1,0 +1,41 @@
+# APEX - Raspberry Pi 5 runtime dependencies
+#
+#   pip install -r Code/Pi5/requirements.txt
+#
+# NOT included here (install separately):
+#   - ROS 2 Humble or later  -> apt, provides `rclpy` / `std_msgs`
+#     `pi5_main.py` needs it; `single_leg_test.py` does not.
+#   - i2c-tools              -> `sudo apt install i2c-tools` (for i2cdetect)
+#
+# Versions are lower bounds - the Pi wheels are what matter, and these are
+# just the floors the code was written against. Pin exact versions here if you
+# want a reproducible image.
+
+# --- core control loop -------------------------------------------------------
+pyserial>=3.5            # UART to the leg Picos, and the GPS module
+smbus2>=0.4              # I2C for the INA219 power monitor and the QMC5883 compass
+
+# --- IMU (BNO085) ----------------------------------------------------------
+adafruit-circuitpython-bno08x>=1.1
+adafruit-blinka>=8.0     # provides `busio` + the generic-linux I2C backend
+
+# --- dashboard + camera --------------------------------------------------
+flask>=2.2
+opencv-python>=4.6       # `cv2` - webcam capture and MJPEG streaming
+
+# --- audio ---------------------------------------------------------------
+pygame>=2.1              # WAV playback; also shells out to `bluetoothctl`
+
+# --- obstacle avoidance (optional) -------------------------------------
+# If these or the ONNX model file are missing, vision_obstacle catches the
+# ImportError, the dashboard shows AVOIDANCE: NO MODEL, and the rest runs.
+numpy>=1.24
+onnxruntime>=1.16        # Depth-Anything-V2-Small inference
+
+# --- boot status OLED (optional) --------------------------------------
+# SH1106 128x64 panel on I2C1 - see HARDWARE.md. Without it, boot_display.py
+# echoes the same progress to stdout and the robot is unaffected.
+luma.oled>=3.12          # pulls in luma.core + pillow
+
+# --- developer tooling (not needed on the robot) ---------------------
+# matplotlib>=3.6         # inverse_kinematics/quadruped_sim.py animation mode
