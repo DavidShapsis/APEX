@@ -827,20 +827,27 @@ one — `MISSION_WAYPOINTS` was two hardcoded pairs in `main()`. Now:
 - New topic `/apex/navigation/waypoints` (`Float32MultiArray`, flat
   `[lat, lon, ...]`, empty = "no route"). `waypoints_callback` on the
   controller hands it to `Navigator`.
-- `stream_server` gains `/waypoints` (GET, the browser's working copy) and
-  `/set_waypoints` (POST JSON, validated, published). The status array grew two
-  appended fields — `wp_index`, `wp_total` — behind a `len >= 17` guard, so an
-  older dashboard still parses.
-- The dashboard has a **Route** card: one latitude box and one longitude box per
-  point, up/down to reorder, `×` to remove, **+ Add point**, and **Send route**
-  (nothing reaches the robot until pressed). It shows "driving to waypoint N of
-  M" / "route complete — holding position" / "no route loaded".
+- New topic `/apex/navigation/nav_cmd` (`Int32`: 1 START, 2 PAUSE, 3 STOP).
+  START sets `AUTONOMOUS` + `reset_progress()` + clears pause; PAUSE sets
+  `nav_paused` (the loop then marches in place without advancing the route);
+  STOP returns to `MANUAL` + rewinds. `nav_paused` is a separate field, touched
+  only by `nav_cmd_callback` and the loop.
+- `stream_server` gains `/waypoints`, `/set_waypoints` and `/nav_control`
+  (POST `action=start|pause|stop`). The status array grew four appended fields
+  — `wp_index`, `wp_total` (`len >= 17`) then `nav_mode`, `nav_paused`
+  (`len >= 19`) — so an older dashboard still parses.
+- The dashboard's old standalone **Route** and **Obstacle Avoidance** cards are
+  now one **Navigation** card with two collapsible sections (both start closed):
+  *GPS Waypoints & Routing* (the NAV MODE master toggle, the point editor, and a
+  **Start / Pause / Stop** transport row that greys out per state) and
+  *Obstacle Avoidance* (the avoidance toggle + state readout, unchanged). The
+  route status line reads e.g. "PAUSED — driving to waypoint 2 of 3".
 
 With no route loaded, flipping NAV MODE just marches in place rather than
 driving toward stale coordinates. Verified end to end without hardware
 (`Navigator` editing, arrival advance, concurrent-access smoke, `stream_server`
-validation + publish, 17-field status parse, and the preview server's route
-progression).
+route + `nav_control` publish, 19-field status parse, and the preview server
+driving a route through start → pause → stop).
 
 Note the drift caveat from the steering entry above still applies to any turn,
 and there is still no separate "hold heading while stationary" state — but
