@@ -153,6 +153,10 @@ MAGNETIC_DECLINATION_DEG = -13.0
 # holds position instead of driving on a frozen heading (which curves it off
 # course while it believes it is tracking). The nav poller runs at 10 Hz.
 HEADING_MAX_AGE_S = 3.0
+# Likewise for the GPS: a receiver that goes silent leaves has_fix latched True
+# with a frozen lat/lon, so bearing-to-waypoint stops changing. GGA is 1 Hz;
+# allow a few missed sentences before treating the fix as stale.
+GPS_FIX_MAX_AGE_S = 5.0
 
 class PiQuadrupedController(Node):
     def __init__(self):
@@ -584,14 +588,19 @@ class PiQuadrupedController(Node):
             self.get_logger().error(f"Pico on {s.port} announced invalid LEG_ID {leg_id}")
             return True
 
-        claimed = self.port_by_leg.get(leg_id)
-        if claimed is None:
-            self.port_by_leg[leg_id] = s
-            self.get_logger().info(f"Identified {LEG_NAMES[leg_id]} on {s.port}")
-        elif claimed is not s:
-            self.get_logger().error(
-                f"Two Picos both claim {LEG_NAMES[leg_id]}: {claimed.port} and {s.port}. "
-                "Set a unique LEG_ID on each board before walking.")
+        # serial_lock: this runs from the control-loop thread on every pass
+        # (a Pico that resets mid-run re-announces), while the gait worker
+        # reads port_by_leg via active_legs() on another thread -- an
+        # unguarded insert there is a "dict changed size during iteration".
+        with self.serial_lock:
+            claimed = self.port_by_leg.get(leg_id)
+            if claimed is None:
+                self.port_by_leg[leg_id] = s
+                self.get_logger().info(f"Identified {LEG_NAMES[leg_id]} on {s.port}")
+            elif claimed is not s:
+                self.get_logger().error(
+                    f"Two Picos both claim {LEG_NAMES[leg_id]}: {claimed.port} and {s.port}. "
+                    "Set a unique LEG_ID on each board before walking.")
         return True
 
     def identify_legs(self, timeout=5.0):
@@ -885,14 +894,14 @@ class PiQuadrupedController(Node):
 
             # Address legs by identity rather than by position in ser_list, so UART
             # wiring order is irrelevant and one failed port cannot shift every
-            # leg's gait onto the wrong Pico.
-            targets = self.active_legs()
+            # leg's gait onto the wrong Pico. Under the lock: register_leg_announcement
+            # can insert into port_by_leg from the control-loop thread.
+            with self.serial_lock:
+                targets = self.active_legs()
+                deactivated = set(self.deactivated_legs)
             if not targets:
                 local_gait = None
                 continue
-
-            with self.serial_lock:
-                deactivated = set(self.deactivated_legs)
 
             # A deactivated leg gets no wire traffic at all this frame -- not
             # even the open/close markers -- so its Pico is left completely
@@ -1159,9 +1168,17 @@ def main():
                 # fails, so nav_s["heading"] alone stays non-None (last value
                 # held) and cannot reveal this.
                 heading_stale = nav_s["heading_age"] > HEADING_MAX_AGE_S
-                # Live health: a compass fine at boot but no longer reading
+                # Same story for the GPS: has_fix can stay latched True on a
+                # frozen position after the receiver goes quiet. "stale" only
+                # applies once we have actually had a fix -- a cold receiver
+                # with no fix yet is "no fix", not "died".
+                had_fix = math.isfinite(nav_s["fix_age"])
+                fix_stale = had_fix and nav_s["fix_age"] > GPS_FIX_MAX_AGE_S
+                # Live health: a sensor fine at boot but no longer reading
                 # should light the dashboard degrade banner, not just print.
                 controller.subsystem_health['compass'] = (compass is not None) and not heading_stale
+                if gps is not None and fix_stale:
+                    controller.subsystem_health['gps'] = False
 
                 if nav_s["heading"] is not None and nav_s["heading_t"] != last_heading_t:
                     last_heading_t = nav_s["heading_t"]
@@ -1218,12 +1235,18 @@ def main():
                     if int(current_time) % 2 == 0:
                         print("[NAV] Paused; holding position")
                 elif snap_mode == RobotMode.AUTONOMOUS:
-                    if not nav_s["has_fix"] or nav_s["age"] > 5.0:
+                    if not nav_s["has_fix"] or nav_s["age"] > 5.0 or fix_stale:
                         # Without a fix lat/lon are 0.0, which would produce a
                         # confident bearing from the Gulf of Guinea; a stale
-                        # snapshot (nav poller wedged) is treated the same way.
+                        # snapshot (nav poller wedged) or a latched-but-frozen
+                        # fix from a receiver that went quiet is the same danger.
+                        # Hold position -- do NOT fall through to chosen_direction,
+                        # which still carries the last manual steering value and
+                        # would walk the robot off blindly at full stride.
+                        chosen_direction = 0
+                        stride_scale = 0.0
                         if int(current_time) % 2 == 0:
-                            print("[NAV] No usable GPS fix; ignoring waypoint guidance")
+                            print("[NAV] No usable GPS fix; holding position")
                     elif heading_stale:
                         # filtered_heading is frozen at its last value. Driving
                         # on it curves the robot off course while calculate_nav

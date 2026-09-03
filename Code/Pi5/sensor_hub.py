@@ -58,10 +58,11 @@ class SensorHub:
         self._nav = {"lat": 0.0, "lon": 0.0, "has_fix": False,
                      "satellites": 0, "heading": None, "t": 0.0,
                      # "t" is bumped every poll (GPS drain succeeds even with no
-                     # fix); "heading_t" only on a *good* compass read, so a
-                     # compass that starts failing mid-run is detectable even
-                     # though the shared poller keeps ticking.
-                     "heading_t": 0.0}
+                     # fix); "heading_t" only on a *good* compass read and
+                     # "fix_t" only on a positional GGA, so a compass or GPS
+                     # that starts failing mid-run is detectable even though the
+                     # shared poller keeps ticking.
+                     "heading_t": 0.0, "fix_t": 0.0}
         self._power = {"voltage": None, "current": None, "t": 0.0}
 
         # Heartbeat: monotonic time each poller last *finished* an iteration.
@@ -158,6 +159,10 @@ class SensorHub:
                 self._nav["lon"] = self.gps.lon
                 self._nav["has_fix"] = self.gps.has_fix
                 self._nav["satellites"] = self.gps.satellites
+                # GPSReader.fix_t is time.monotonic() (our clock) of its last
+                # positional GGA; carried through so the caller can spot a GPS
+                # that has gone silent with has_fix still latched True.
+                self._nav["fix_t"] = self.gps.fix_t
             # Keep the last good heading if the read failed -- a wedged compass
             # should not yank the estimate to 0 deg (due north) -- but only
             # advance heading_t on a real reading so the caller can tell.
@@ -188,13 +193,15 @@ class SensorHub:
     def nav_snapshot(self):
         """Always returns a dict: lat, lon, has_fix, satellites, heading (may be
         None), t (monotonic of last poll), age (seconds since last poll),
-        heading_age (seconds since the last *good* compass read -- large if the
-        compass never read or has been failing)."""
+        heading_age (seconds since the last *good* compass read), fix_age
+        (seconds since the last positional GPS fix). heading_age / fix_age are
+        +inf until the first good read."""
         with self._lock:
             s = dict(self._nav)
         now = time.monotonic()
         s["age"] = now - s["t"]
         s["heading_age"] = now - s["heading_t"] if s["heading_t"] else float("inf")
+        s["fix_age"] = now - s["fix_t"] if s["fix_t"] else float("inf")
         return s
 
     def power_snapshot(self, max_age=POWER_MAX_AGE):
@@ -243,7 +250,11 @@ def _selftest():
     class FakeGPS:
         lat, lon, has_fix, satellites = 41.05, -74.14, True, 9
 
+        def __init__(self):
+            self.fix_t = 0.0
+
         def update(self):
+            self.fix_t = time.monotonic()
             return True
 
     class FakeCompass:
@@ -278,7 +289,8 @@ def _selftest():
     nav_s = hub.nav_snapshot()
     print("nav_snapshot     :", nav_s)
     ok &= nav_s["has_fix"] and nav_s["heading"] is not None and nav_s["age"] < 0.5
-    ok &= nav_s["heading_age"] < 0.5      # a good read happened recently
+    ok &= nav_s["heading_age"] < 0.5      # a good compass read happened recently
+    ok &= nav_s["fix_age"] < 0.5          # a positional GPS fix happened recently
 
     pow_s = hub.power_snapshot()
     print("power_snapshot   :", pow_s)

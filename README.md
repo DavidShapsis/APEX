@@ -139,6 +139,8 @@ Before any of this runs, the robot must be homed, stood up, and started from the
 The sensor split matters: those reads are synchronous I2C/UART transactions, and a NAKing or wedged bus blocks the kernel for its timeout. Inline, that used to stall steering and the IMU reflex with it. Now each poller owns its device and publishes a timestamped snapshot; the loop reads the snapshot with a staleness cutoff, so a dead sensor degrades to a safe default (flat attitude, hold last heading, skip the battery check) and a watchdog logs which poller is stuck. `python3 sensor_hub.py` runs a self-test with fake sensors, including a hung-bus case.
 
 The compass reads *true* north — `MAGNETIC_DECLINATION_DEG` in `pi5_main.py` (currently `-13` for northern NJ; change it for your area) is added to every heading, and the reading is tilt-compensated with the live IMU attitude so it doesn't wobble with each stride. Bad samples (I2C error, magnetic overflow, dead chip) return `None`; a compass that stops reading for more than 3 s makes the robot hold position under GPS nav rather than drive on a frozen bearing, and lights the degraded banner. It is **not** hard/soft-iron calibrated — absolute accuracy near the motors is poor, but the nav loop re-derives the bearing from GPS every pass so it still converges.
+
+The GPS is guarded the same way: `GPSReader` timestamps its last positional fix, and a receiver that goes quiet (fix older than 5 s) counts as *no fix* even though `has_fix` is still latched — autonomous nav then holds position instead of driving toward a frozen waypoint bearing. A camera that fails to open raises at boot (marked down, degrade banner) rather than reading as healthy while returning nothing.
  
 ---
  
