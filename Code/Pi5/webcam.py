@@ -16,11 +16,15 @@ class USBWebcam:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         
         if not self.cap.isOpened():
-            print(f"Error: Could not open webcam at index {device_index}")
-            self.running = False
-        else:
-            print(f"Webcam successfully initialized at index {device_index}!")
-            self.running = True
+            # Raise, don't just flag: main() brings the camera up through
+            # _bring_up(), which catches this, marks the camera subsystem down
+            # (dashboard degrade banner) and skips camera_loop entirely. A
+            # half-alive object that only ever returns None would instead read
+            # as healthy while obstacle avoidance silently starves for frames.
+            self.cap.release()
+            raise RuntimeError(f"could not open webcam at {device_index}")
+        print(f"Webcam successfully initialized at index {device_index}!")
+        self.running = True
 
     def get_frame(self):
         """

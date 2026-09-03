@@ -15,6 +15,11 @@ class GPSReader:
         self.has_fix = False
         self.satellites = 0
         self._rx = b''
+        # monotonic time of the last GGA that carried a usable position. A GPS
+        # that goes silent (unplugged, lost power) leaves has_fix / lat / lon
+        # frozen at their last values -- this is how a caller tells the fix is
+        # stale rather than current.
+        self.fix_t = 0.0
 
     def update(self):
         """Drains the GPS UART without blocking. True if a fresh position parsed.
@@ -48,6 +53,7 @@ class GPSReader:
                     if self.has_fix and parts[2] and parts[4]:
                         self.lat = self.convert_to_decimal(parts[2], parts[3])
                         self.lon = self.convert_to_decimal(parts[4], parts[5])
+                        self.fix_t = time.monotonic()
                         updated = True
             except Exception:
                 pass

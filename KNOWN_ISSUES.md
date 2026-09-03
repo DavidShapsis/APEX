@@ -988,6 +988,52 @@ Still open (descoped on purpose):
   `atan2` / roll / pitch signs in `CompassReader.get_heading` need flipping.
   (This is a no-op-at-level change, so it did not make anything worse.)
 
+### RESOLVED — autonomous nav no longer drives on a dead sensor
+
+Three related failures, all the same shape as the compass frozen-heading bug:
+
+- **GPS goes silent → frozen fix.** `GPSReader` left `has_fix` / `lat` / `lon`
+  latched at their last values when the receiver stopped sending, and the
+  `AUTONOMOUS` gate only checked `has_fix` and the *poller* age (which the shared
+  GPS+compass poller keeps fresh). Now `GPSReader.fix_t` timestamps the last
+  positional GGA, `nav_snapshot()` exposes `fix_age`, and a fix older than
+  `GPS_FIX_MAX_AGE_S` (5 s) counts as no fix.
+- **No-fix `AUTONOMOUS` walked off blindly.** The "no usable GPS fix" branch
+  printed a message but did **not** set `chosen_direction` / `stride_scale`, so
+  they fell through carrying the last *manual* steering value at full stride —
+  an autonomous robot that lost its fix drove forward in whatever direction the
+  slider was last on. It now holds position, like the paused / mission-complete
+  / heading-stale branches.
+- **Dead sensors reported healthy.** `subsystem_health['gps']` / `['compass']`
+  are updated live from the loop now (not just at boot), so a receiver or
+  magnetometer that quits mid-run lights the dashboard degrade banner.
+
+### RESOLVED — a camera that fails to open no longer reads as healthy
+
+`USBWebcam.__init__` used to set `self.running = False` and return an object.
+`_bring_up()` saw a successful construction, marked the camera up, and
+`camera_loop` spun forever on `get_frame()` returning `None` while obstacle
+avoidance silently starved. It now `raise`s, so `_bring_up` catches it, the
+camera subsystem is marked down (degrade banner), and `camera_loop` returns
+immediately — same as every other missing sensor.
+
+### RESOLVED — `port_by_leg` mutated without the serial lock
+
+`register_leg_announcement` inserts into `self.port_by_leg` from the control-loop
+thread (a Pico that resets mid-run re-announces on every pass), while the gait
+worker reads it via `active_legs()` on its own thread. An insert during the
+worker's `sorted(port_by_leg.items())` is a "dict changed size during iteration".
+Both sides are under `serial_lock` now, matching what `handle_recovery` and
+`request_stop` already did.
+
+### INA219 shunt ceiling — check against the rail it is on
+
+Config `0x399F` + calibration `2048` is ±320 mV across a 0.1 Ω shunt = **±3.2 A
+full scale**. Fine on the Pi's 5 V logic rail; if the INA219 is on a servo/motor
+rail the current and power readings pin at ~3.2 A under load and the register's
+overflow bit (unchecked) sets. Ties into the open "which rail is it on" question
+for `LOW_VOLT_THRESHOLD`.
+
 ### IK clamps unreachable targets silently
 `InverseKinematics.calculate` clamps out-of-range law-of-cosines arguments and the
 shoulder-to-foot distance instead of reporting that a target cannot be reached. Ask
