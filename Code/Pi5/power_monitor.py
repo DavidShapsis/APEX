@@ -1,5 +1,12 @@
 from smbus2 import SMBus
 
+# NOTE: as wired on APEX this is used as a bus-voltage monitor only. Whether a
+# shunt resistor is actually in the load path across VIN+/VIN- is unconfirmed,
+# so get_current() / get_power() are kept but nothing calls them (sensor_hub
+# reads voltage only). Confirm the wiring, then re-enable the current line in
+# sensor_hub._power_poll and the current check in pi5_main. See KNOWN_ISSUES.
+
+
 class INA219:
     def __init__(self, bus_id=1, addr=0x40):
         try:
@@ -29,14 +36,17 @@ class INA219:
         return (raw >> 3) * 0.004
 
     def get_current(self):
-        """Returns Current in Milliamps (mA)"""
+        """Current in mA. NOT CALLED in the current build -- only meaningful if a
+        shunt is in the load path across VIN+/VIN-, which is unconfirmed. The
+        config register sets +/-320mV over an assumed 0.1 ohm shunt = +/-3.2A FSR."""
         if not self.available: return 0.0
         raw = self._read_reg(0x04)
         if raw > 32767: raw -= 65536
         return raw * 0.2
 
     def get_power(self):
-        """Returns Power in Milliwatts (mW)"""
+        """Power in mW. NOT CALLED -- depends on the shunt/current path being
+        real; see get_current()."""
         if not self.available: return 0.0
         raw = self._read_reg(0x03)
         # Power LSB is 20x the current LSB: 20 * 0.2mA * 1V = 4.0 mW

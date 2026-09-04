@@ -1026,13 +1026,27 @@ worker's `sorted(port_by_leg.items())` is a "dict changed size during iteration"
 Both sides are under `serial_lock` now, matching what `handle_recovery` and
 `request_stop` already did.
 
-### INA219 shunt ceiling — check against the rail it is on
+### INA219 — voltage-only for now; confirm the wiring
 
-Config `0x399F` + calibration `2048` is ±320 mV across a 0.1 Ω shunt = **±3.2 A
-full scale**. Fine on the Pi's 5 V logic rail; if the INA219 is on a servo/motor
-rail the current and power readings pin at ~3.2 A under load and the register's
-overflow bit (unchecked) sets. Ties into the open "which rail is it on" question
-for `LOW_VOLT_THRESHOLD`.
+**Needs a bench check on the actual board.** Two unknowns:
+
+1. **What VIN− senses.** `LOW_VOLT_THRESHOLD = 4.75 V` in `pi5_main` suits the
+   5 V regulated rail (warn when the buck sags). If VIN− is on the 2S pack
+   instead (~6.0–8.4 V LiPo / 6.6–8.7 V LiHV) the alarm can never fire and the
+   threshold should be ~6.2–6.6 V. There's a `TODO(hardware)` on the constant.
+2. **Whether a shunt is in the load path** across VIN+/VIN−. If the board is
+   wired as a plain voltmeter (VIN+/VIN− bridged), `get_current()` /
+   `get_power()` are meaningless.
+
+Current state: **only `get_voltage()` is used.** `sensor_hub._power_poll` no
+longer calls `get_current()` (it stores `None`), and the `pi5_main` power check
+is voltage-only. `INA219.get_current()` / `get_power()` are kept intact but
+uncalled — once the shunt path is confirmed, re-enable the one line in
+`_power_poll` and restore the current check in `pi5_main`. The config register
+(`0x399F` + cal `2048`) assumes ±320 mV / 0.1 Ω = ±3.2 A FSR, so if the INA219
+turns out to be on a motor rail that draws more, the current reading would pin
+and the (unchecked) overflow bit would set — another reason to verify before
+trusting it.
 
 ### IK clamps unreachable targets silently
 `InverseKinematics.calculate` clamps out-of-range law-of-cosines arguments and the

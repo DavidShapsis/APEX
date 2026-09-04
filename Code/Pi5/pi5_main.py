@@ -1083,10 +1083,14 @@ def main():
     # Telemetry & Audio System
     power_monitor = _bring_up("Power", lambda: INA219(bus_id=3), disp, health)
     audio_engine = _bring_up("Audio", lambda: QuadrupedAudio("30:8D:EB:5D:AC:11"), disp, health)
+    # TODO(hardware): confirm what the INA219's VIN- actually senses and set this
+    # accordingly. 4.75 suits the 5V regulated rail (warn on regulator sag). If
+    # VIN- is on the 2S pack instead (~6.0-8.4V LiPo / 6.6-8.7V LiHV) this can
+    # never fire and it should be ~6.2-6.6V. See KNOWN_ISSUES.
     LOW_VOLT_THRESHOLD = 4.75
-    # The +/-320mV shunt range across 0.1 ohm saturates at 3.2A, so anything
-    # above that can never be reached and the alarm would never fire.
-    MAX_CURRENT_MA = 3000.0
+    # Current/power are NOT checked: it is unconfirmed whether a shunt is in the
+    # load path at all (INA219 may be wired as a plain voltmeter). INA219 keeps
+    # get_current()/get_power() for when that is verified; nothing calls them.
     AUDIO_COOLDOWN = 10.0
     last_power_check = time.time()
     last_audio_warning = 0
@@ -1371,8 +1375,9 @@ def main():
                 if current_time - last_power_check > 1.0:
                     p = sensor_hub.power_snapshot()
                     if p is not None:
-                        v, c = p["voltage"], p["current"]
-                        if (v < LOW_VOLT_THRESHOLD or c > MAX_CURRENT_MA) and (current_time - last_audio_warning > AUDIO_COOLDOWN):
+                        # Voltage only -- see LOW_VOLT_THRESHOLD note. p["current"]
+                        # is None (the shunt path is unverified).
+                        if p["voltage"] < LOW_VOLT_THRESHOLD and (current_time - last_audio_warning > AUDIO_COOLDOWN):
                             if audio_engine is not None:
                                 audio_engine.play(os.path.join(WAV_DIR, "low_battery.wav"))
                             last_audio_warning = current_time
