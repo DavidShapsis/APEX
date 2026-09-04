@@ -172,11 +172,14 @@ class SensorHub:
             self._nav["t"] = now
 
     def _power_poll(self):
+        # Only voltage is read. get_current()/get_power() are left on INA219 but
+        # not called: whether a shunt is actually in the load path is unconfirmed
+        # (see KNOWN_ISSUES / power_monitor.py). Re-enable the current line here
+        # once the wiring is verified.
         v = self.power.get_voltage()
-        c = self.power.get_current()
         with self._lock:
             self._power["voltage"] = v
-            self._power["current"] = c
+            self._power["current"] = None
             self._power["t"] = time.monotonic()
 
     # -- snapshots (safe to call at any rate from any one reader) ------
@@ -205,7 +208,8 @@ class SensorHub:
         return s
 
     def power_snapshot(self, max_age=POWER_MAX_AGE):
-        """{'voltage','current'}, or None if never read or older than max_age."""
+        """{'voltage','current'}, or None if never read or older than max_age.
+        'current' is currently always None -- see _power_poll."""
         with self._lock:
             s = dict(self._power)
         if s["voltage"] is None or (time.monotonic() - s["t"]) > max_age:
