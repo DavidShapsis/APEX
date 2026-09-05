@@ -5,6 +5,21 @@ from machine import Pin, PWM
 EXTERNAL_GEAR_REDUCTION = 1
 MIN_STALL_POWER = 0.15
 
+# --- Stall detection ---------------------------------------------------------
+# kp = 0.8 saturates the output for any error above 1.25 deg, so a joint that
+# meets something it cannot move sits at 100% duty with nothing to bring it back
+# down -- no current limit, no thermal cutout. Held, that cooks the motor or the
+# BTS7960. This is the software backstop until the BTS7960 IS current-sense pins
+# are wired (see KNOWN_ISSUES).
+#
+# The discriminator is PROGRESS, not duty: a normal large move also saturates,
+# but it closes its error fast. The gait's worst legitimate case is the Stand/Go
+# ramp, whose steps are small, and a full 90 deg swing at the measured 266 deg/s
+# still completes in ~0.34 s. 1.5 s of full duty with the error refusing to fall
+# by STALL_PROGRESS_DEG is not a move in progress -- it is a jam.
+STALL_TIMEOUT_S = 1.5
+STALL_PROGRESS_DEG = 2.0
+
 # Quadrature transition table: index = (prev_state << 2) | new_state
 # where state = (A << 1) | B. Valid single-step transitions only;
 # invalid/skipped transitions (missed edges) map to 0 (ignored) rather
@@ -67,6 +82,49 @@ class JointController:
         self.integral = 0
         self.last_time = time.ticks_us()
 
+        # Stall latch. Set by move_to() when the output has been saturated for
+        # STALL_TIMEOUT_S without the error falling; pico_main polls it and
+        # raises the existing ABORTED/recovery path. Cleared only by
+        # clear_stall() or zero_at(), so it cannot silently un-latch.
+        self.stalled = False
+        self._stall_since = None
+        self._stall_ref = 0.0
+
+    def reset_pid(self):
+        """Drop accumulated PID state and restart the dt clock.
+
+        Call whenever drive has been cut for an unknown length of time (Stop, an
+        abort latch) before driving again: otherwise the next move_to() sees a dt
+        covering the whole idle period and dumps error*dt straight into the
+        integrator, saturating it in a single call.
+        """
+        self.integral = 0
+        self.prev_error = None
+        self.last_time = time.ticks_us()
+
+    def clear_stall(self):
+        self.stalled = False
+        self._stall_since = None
+        self._stall_ref = 0.0
+
+    def _update_stall(self, now, error, saturated):
+        """Latch self.stalled when the output has been pinned with no progress.
+
+        Progress resets the window, so a long legitimate move never trips it --
+        only an error that refuses to fall while the motor is at full duty.
+        """
+        if not saturated or abs(error) < 1.0:
+            self._stall_since = None
+            return
+        if self._stall_since is None:
+            self._stall_since = now
+            self._stall_ref = abs(error)
+        elif abs(error) <= self._stall_ref - STALL_PROGRESS_DEG:
+            self._stall_since = now              # still closing -- keep going
+            self._stall_ref = abs(error)
+        elif time.ticks_diff(now, self._stall_since) / 1000000.0 >= STALL_TIMEOUT_S:
+            self.stalled = True
+
     def _encoder_isr(self, pin):
         # Full quadrature decode: sample both channels, look up direction
         # from the state transition table for 4x resolution.
@@ -86,6 +144,7 @@ class JointController:
         self._steps = -raw_steps if self.reverse else raw_steps
         self.integral = 0
         self.prev_error = None
+        self.clear_stall()
 
     @property
     def current_angle(self):
@@ -121,6 +180,16 @@ class JointController:
             self.last_time = time.ticks_us()
             return
 
+        # Latched stall: hold both PWMs at zero. pico_main sees self.stalled and
+        # raises ABORTED, which cuts drive to the whole leg and asks the Pi for a
+        # recovery path; until something calls clear_stall() this joint is dead
+        # rather than grinding at full duty.
+        if self.stalled:
+            self.forward_pwm.duty_u16(0)
+            self.backward_pwm.duty_u16(0)
+            self.last_time = time.ticks_us()
+            return
+
         now = time.ticks_us()
         dt = (time.ticks_diff(now, self.last_time)) / 1000000.0
         if dt <= 0:
@@ -153,7 +222,17 @@ class JointController:
 
         # 5. Clamp power output
         pwr = max(-1.0, min(1.0, output))
-        
+
+        # Saturation is measured on the PRE-clamp output, so this asks "the PID
+        # wanted more than full duty", not "the duty happens to be 1.0".
+        self._update_stall(now, error, abs(output) >= 1.0)
+        if self.stalled:
+            self.forward_pwm.duty_u16(0)
+            self.backward_pwm.duty_u16(0)
+            self.prev_error = error
+            self.last_time = now
+            return
+
         # FIX 3: If hardware is reversed, invert the physical driving power polarity
         if self.reverse:
             pwr = -pwr

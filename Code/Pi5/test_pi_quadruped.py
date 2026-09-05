@@ -17,7 +17,8 @@ sys.modules['imu'] = MagicMock()
 
 # Now we can safely import the targets without triggering physical hardware checks
 import rclpy
-from Code.Pi5.pi5_main import PiQuadrupedController, RobotState, main
+from Code.Pi5.pi5_main import (PiQuadrupedController, RobotMode, RobotActivity,
+                               main)
 
 class TestPi5QuadrupedSoftware(unittest.TestCase):
     
@@ -49,8 +50,11 @@ class TestPi5QuadrupedSoftware(unittest.TestCase):
         self.assertEqual(controller.end_marker, b'\xFF' * 16, "The cycling end_marker is not the 16-byte 0xFF block.")
         self.assertEqual(controller.oneshot_end_marker, b'\xFE' * 16, "The one-shot end marker is not the 16-byte 0xFE block.")
         
-        # Verify initial state engine allocation
-        self.assertEqual(controller.current_state, RobotState.MANUAL)
+        # Verify initial state engine allocation. Mode (what the operator asked
+        # for) and activity (what the robot is transiently doing) are separate
+        # fields -- they used to be one, which stranded staged recoveries.
+        self.assertEqual(controller.current_mode, RobotMode.MANUAL)
+        self.assertEqual(controller.current_activity, RobotActivity.NORMAL)
         self.assertIsNotNone(controller.ik_engine)
         self.assertIsNotNone(controller.path_gen)
         
@@ -87,11 +91,15 @@ class TestPi5QuadrupedSoftware(unittest.TestCase):
         # Allow the background worker thread a brief tick to process the step queue and clear the state
         timeout = 1.0
         start_time = time.time()
-        while controller.current_state == RobotState.RECOVERY and (time.time() - start_time) < timeout:
+        while controller.current_activity == RobotActivity.RECOVERY and (time.time() - start_time) < timeout:
             time.sleep(0.01)
-            
-        # Ensure recovery reverted back to previous state tracking automatically
-        self.assertEqual(controller.current_state, RobotState.MANUAL, "The recovery routine failed to release the state machine back to MANUAL mode.")
+
+        # Recovery clears the ACTIVITY. It must leave the operating mode alone --
+        # a stumble should not silently drop the robot out of GPS navigation.
+        self.assertEqual(controller.current_activity, RobotActivity.NORMAL,
+                         "The recovery routine failed to release the activity back to NORMAL.")
+        self.assertEqual(controller.current_mode, RobotMode.MANUAL,
+                         "Recovery must not change the operating mode.")
         
         # Expected: START marker, 16-byte float packs, then the one-shot
         # terminator -- a recovery path must not be cycled by the Pico.
