@@ -13,6 +13,32 @@ Fixed items are not listed here — see git history.
 > running the new code against old firmware still cannot stand. Both are written
 > up in the first two sections below.
 
+> **🔧 TO BUILD: per-motor current sensing off the BTS7960 IS pins.**
+> **Not implemented — no code for this exists yet.**
+>
+> Every BTS7960 already has a built-in current-sense output (`R_IS` / `L_IS`, a
+> current mirror at roughly 1/8500 of load current). Feeding those into the Pico
+> means each leg can watch what its own three motors are actually drawing, and a
+> current spike = **the joint met resistance it shouldn't have** — the robot walked
+> into something, a foot jammed, a link is binding. That's the trigger to abort the
+> gait and drop into `handle_recovery` instead of grinding the motor against
+> whatever stopped it.
+>
+> The wiring fits with nothing to give up: **`GP26` / `GP27` / `GP28` (ADC0/1/2)
+> are free on every Pico** — exactly three, one per joint (roll / pitch / knee).
+> `GP20` and `GP21` are spare too. Each `IS` pin needs a sense resistor to ground
+> (~1 kΩ puts 10 A at ~1.2 V, comfortably inside the 3.3 V ADC range). Note the
+> `IS` output *also* slams high on the chip's own fault conditions (over-temp,
+> over-current), so a fault reads as a very large spike — usable, but the code has
+> to tell that apart from a mechanical stall.
+>
+> This is **not** the same thing as the INA219, which is one pack-level number for
+> the whole robot and cannot say which joint is struggling. See
+> *PLANNED — migrate ground-contact sensing from FSR to current sensing* below for
+> the design questions this has to answer (chiefly: a stall is a broader event than
+> a touchdown, and the threshold has to sit above normal swing current but below a
+> genuine jam).
+
 **Verify the whole control path without hardware:**
 
 ```bash
@@ -365,13 +391,16 @@ resistance) rather than a dedicated foot-mounted pressure sensor.
 
 **Not designed yet — flagging what the migration actually has to answer, not
 guessing at it:**
-- *Where the current gets measured.* Per-joint (at each `JointController`'s H-bridge)
-  gives the finest signal but needs a shunt + ADC per joint (12 readings across 4
-  legs) that doesn't exist yet. The existing `INA219` in `power_monitor.py` is no
-  help: even if its current path is confirmed working (it is currently read for
-  voltage only — see the INA219 entry below), it would give total *pack* current —
-  one number for the whole robot, not per-leg, so it cannot answer "which foot
-  touched down" on its own.
+- *Where the current gets measured.* **Per-joint, off the BTS7960's own `IS` pins**
+  — see the callout at the top of this file. The sense element is already in the
+  driver chip (a ~1/8500 current mirror), so this needs a sense resistor and an ADC
+  pin per joint, not a new shunt. It is also not 12 readings gathered centrally:
+  each Pico only reads its *own* three joints, and `GP26`/`GP27`/`GP28` (ADC0/1/2)
+  are free on every board for exactly that. The existing `INA219` in
+  `power_monitor.py` is no help here: even if its current path is confirmed working
+  (it is read for voltage only right now — see the INA219 entry below), it gives
+  total *pack* current — one number for the whole robot, so it cannot say which
+  joint is struggling.
 - *Stall vs. touchdown are not the same event.* A current spike means the leg met
   resistance — that's also true for hitting an obstacle mid-swing, binding at a
   joint limit, or simple stiction, not only "foot reached the ground." The FSR is
