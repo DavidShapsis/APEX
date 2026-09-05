@@ -76,7 +76,7 @@ Pi 5 (ROS 2)
 Pico (MicroPython, x4)
 ├── pico_main.py         # UART receiver, gait buffer, PID execution loop, homing/stop commands
 ├── motor_control.py     # BTS7960 PID joint controller with encoder feedback
-└── fsr.py               # Force sensitive resistor foot contact -- NOT safe to wire up yet, see KNOWN_ISSUES
+└── fsr.py               # Force sensitive resistor foot contact (set FSR_PIN per leg)
 ```
  
 ### Pi to Pico Protocol
@@ -237,10 +237,11 @@ Flash each Pico with MicroPython, then copy the contents of `Code/Pico/` to the 
  
 ### ⚠ Before powering the motors
  
-Two things to know, both written up in `KNOWN_ISSUES.md`:
+- **Re-flash all four Picos.** The stall guard and several other firmware fixes live on the Pico side; a Pi running current code against old firmware still cannot stand. See the banner in `KNOWN_ISSUES.md`.
+- **Set `FSR_PIN` in `pico_main.py`** to whichever pin carries that leg's own foot sensor before you connect the FSRs. It defaults to `16`.
+- **Set `LEG_ID`** on each board — all four currently ship as `0`.
  
-- **A physically blocked joint will hold 100% PWM indefinitely.** There is no stall timeout, current limit or thermal cutout anywhere in the firmware — `kp = 0.8` saturates the output above 1.25° of error and nothing brings it back down. Measured against the real `JointController`: full duty from 50 ms out to forever. Do not leave a jammed leg powered while you go and find a screwdriver. This is what the planned BTS7960 `IS` current sensing is for.
-- **Do not connect the FSRs yet.** The abort test is `any()` across all four foot sensors ANDed with *this* leg's swing flag, and a crawl gait always has three feet planted — so every leg would abort on its first swing step. Harmless only while the pins are unwired.
+A jammed joint is now caught in software: `JointController` latches a stall when the PID has been saturated for 1.5 s without the error falling, zeroes that joint's PWM, and raises the existing `ABORTED` path so the Pi runs its recovery. Before this the joint simply held 100% duty until something burned out.
  
 ---
  
@@ -258,9 +259,9 @@ Two things to know, both written up in `KNOWN_ISSUES.md`:
 | Recovery path | Complete |
 | Homing / Stand / Go / Stop dashboard workflow | Complete |
 | ML obstacle avoidance | Built, needs hardware tuning |
-| Motor stall / overcurrent protection | **Not started** — see the warning above |
+| Motor stall protection (software) | Complete — latches and recovers, needs a bench check |
 | Per-motor current sensing (BTS7960 `IS`) | Planned, not started |
-| FSR foot contact | Written, but the abort logic is wrong — do not wire up |
+| FSR foot contact | Complete — set `FSR_PIN` to match your wiring |
 | Mechanical build | In progress |
 | Custom PCB | In progress |
 | CAD files | In progress |

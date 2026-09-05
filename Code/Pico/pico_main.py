@@ -27,7 +27,18 @@ knee_j  = JointController(rpwm_pin=15, lpwm_pin=14, en_pin=22, enc_a_pin=12, enc
                           gear_ratio=99.5, ppr=28, reverse=False, initial_angle=0)
 print("Joint Controllers setup successful")
 
-fsrs = [FSR(16), FSR(17), FSR(18), FSR(19)]
+# Which pin carries THIS leg's own foot sensor.
+#
+# This board drives one leg, and the abort test is "MY foot touched down while I
+# should be airborne". It has to read one sensor. It used to read all four
+# (FSR(16..19)) and collapse them with any(), which is wrong by construction: the
+# crawl gait always has three feet planted, so any() is True for the whole of
+# every swing phase and the leg aborted on its first step, every cycle. It never
+# bit only because nothing is wired to these pins yet.
+#
+# Set this to the pin this leg's foot sensor is actually on before wiring them.
+FSR_PIN = 16
+foot = FSR(FSR_PIN)
 print("FSR setup successful")
 
 uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1), rxbuf=1024)
@@ -92,6 +103,9 @@ last_announce = time.ticks_ms()
 # a HOME command or a gait frame arrives. move_to() drives toward this every
 # loop regardless, so an unhomed leg just sits under light PID hold, not slack.
 current_targets = [0.0, 0.0, 0.0]
+# True while the zero-PWM branch is holding drive off, so PID state can be reset
+# once on the transition back rather than every pass.
+drive_was_cut = False
 
 while True:
     # 1. READ UART (Binary Protocol Parser)
@@ -113,6 +127,13 @@ while True:
                 gait_buffer = []
                 is_receiving = True
                 has_aborted = False
+                # A new frame is the Pi's answer to whatever went wrong, so give
+                # the joints another go. If the jam is still physical they will
+                # simply re-latch STALL_TIMEOUT_S later -- a retry every 1.5 s,
+                # not a tight loop at full duty.
+                roll_j.clear_stall()
+                pitch_j.clear_stall()
+                knee_j.clear_stall()
                 prev_byte = b''
             elif candidate == HOME_MARKER:
                 # Manual homing: the leg was positioned by hand, so "current
@@ -196,14 +217,34 @@ while True:
         uart.write("LEG,%d\n" % LEG_ID)
         last_announce = time.ticks_ms()
 
-    # 2. GROUND CHECK (The Abort Logic)
-    any_touchdown = any(f.state for f in fsrs)
+    # 2a. STALL CHECK (The Abort Logic, hardware-damage branch)
+    # A joint whose PID has been pinned at full duty without closing its error
+    # has met something it cannot move. JointController latches .stalled and has
+    # already zeroed that joint's PWM; raise the same ABORTED path the FSR uses
+    # so the Pi brings the whole robot to a safe pose instead of leaving three
+    # legs walking. Without this the joint simply held 100% duty until something
+    # burned out -- see KNOWN_ISSUES.
+    stalled_joint = None
+    for name, j in (("roll", roll_j), ("pitch", pitch_j), ("knee", knee_j)):
+        if j.stalled:
+            stalled_joint = name
+            break
+    if stalled_joint is not None and not has_aborted:
+        uart.write("STALL,%d,%s\n" % (LEG_ID, stalled_joint))
+        msg = f"ABORTED,{roll_j.current_angle},{pitch_j.current_angle},{knee_j.current_angle}\n"
+        uart.write(msg)
+        has_aborted = True
+        gait_buffer = []
+
+    # 2b. GROUND CHECK (The Abort Logic)
+    # This leg's own foot only -- see FSR_PIN.
+    own_touchdown = foot.state
 
     # 3. CHOOSE TARGETS (Every 20ms)
     # Target updates only advance through the buffer steps once receiving is complete
     if gait_buffer and not is_receiving and not has_aborted:
         current_step_swing = gait_buffer[current_step_index][3] > 0.5
-        if any_touchdown and current_step_swing:
+        if own_touchdown and current_step_swing:
             msg = f"ABORTED,{roll_j.current_angle},{pitch_j.current_angle},{knee_j.current_angle}\n"
             uart.write(msg)
             has_aborted = True
@@ -231,7 +272,17 @@ while True:
         pitch_j.backward_pwm.duty_u16(0)
         knee_j.forward_pwm.duty_u16(0)
         knee_j.backward_pwm.duty_u16(0)
+        drive_was_cut = True
     else:
+        if drive_was_cut:
+            # Drive has been off for an unknown length of time (a Stop can last
+            # minutes). Without this the first move_to() sees a dt spanning the
+            # whole gap and dumps error*dt into the integrator, saturating it in
+            # one call. Same stale-dt failure the out-of-range guard already fixes.
+            roll_j.reset_pid()
+            pitch_j.reset_pid()
+            knee_j.reset_pid()
+            drive_was_cut = False
         roll_j.move_to(current_targets[0])
         pitch_j.move_to(current_targets[1])
         knee_j.move_to(current_targets[2])
