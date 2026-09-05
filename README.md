@@ -40,7 +40,7 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 | BTS7960 43A H-Bridge | 12 | One per joint |
 | BNO085 IMU | 1 | Quaternion-based orientation |
 | HGLRC M100-5883 GPS/Compass | 1 | Outdoor autonomous nav |
-| INA219 Voltage/Current Monitor | 1 | Battery telemetry |
+| INA219 Voltage Monitor | 1 | Battery voltage; current sensing wired but unconfirmed/unused, see `KNOWN_ISSUES.md` |
 | Carbon Fiber Tube (16x12mm) | — | Lower leg structure |
 | Aluminum 6063 Tube (1in OD) | — | Upper leg structure |
 | 3S 11.1V LiPo 80C 5Ah | 1 | Motor power |
@@ -68,8 +68,9 @@ Pi 5 (ROS 2)
 ├── webcam.py            # USB camera capture
 ├── vision_obstacle.py   # Depth model, obstacle costmap, committed avoidance planner
 ├── vision_test/         # Standalone notebook for tuning the vision pipeline
-├── power_monitor.py     # INA219 voltage/current
+├── power_monitor.py     # INA219 -- voltage only is read; current/power path unconfirmed, see KNOWN_ISSUES
 ├── audio.py             # Bluetooth speaker alerts
+├── requirements.txt     # pip dependencies (ROS 2 itself is a separate apt install)
 └── single_leg_test.py   # Standalone single-leg test harness (no ROS/IMU/GPS)
  
 Pico (MicroPython, x4)
@@ -141,6 +142,8 @@ The sensor split matters: those reads are synchronous I2C/UART transactions, and
 The compass reads *true* north — `MAGNETIC_DECLINATION_DEG` in `pi5_main.py` (currently `-13` for northern NJ; change it for your area) is added to every heading, and the reading is tilt-compensated with the live IMU attitude so it doesn't wobble with each stride. Bad samples (I2C error, magnetic overflow, dead chip) return `None`; a compass that stops reading for more than 3 s makes the robot hold position under GPS nav rather than drive on a frozen bearing, and lights the degraded banner. It is **not** hard/soft-iron calibrated — absolute accuracy near the motors is poor, but the nav loop re-derives the bearing from GPS every pass so it still converges.
 
 The GPS is guarded the same way: `GPSReader` timestamps its last positional fix, and a receiver that goes quiet (fix older than 5 s) counts as *no fix* even though `has_fix` is still latched — autonomous nav then holds position instead of driving toward a frozen waypoint bearing. A camera that fails to open raises at boot (marked down, degrade banner) rather than reading as healthy while returning nothing.
+
+The INA219 is read for **voltage only** right now — whether a shunt is actually in the load path for current sensing is unconfirmed, so `get_current()`/`get_power()` are kept but unused rather than feeding a meaningless number into the low-battery alarm. `LOW_VOLT_THRESHOLD` in `pi5_main.py` also needs a bench check (see `KNOWN_ISSUES.md`) to confirm which rail it's actually measuring.
  
 ---
  
@@ -185,7 +188,7 @@ Then toggle **AVOIDANCE** on the dashboard. While it is on, the video feed is ov
  
 Open `http://<pi-ip>:5000`. Top to bottom: live camera feed, **Steering** (direction readout, LEFT / FWD / RIGHT, the −90…+90 slider), **Startup** (Home ×4 → STAND → GO → STOP), **Navigation** (collapsible GPS routing + obstacle avoidance), then **Debug** per-leg deactivation at the bottom. Each card's wordy explanation is tucked behind a small **i** button. STAND and GO stay disabled, with a warning banner, until all four legs are homed; status pills up top show homed count / standing / walking.
  
-The **Navigation** card holds two collapsible sections, both closed on load. *GPS Waypoints & Routing* has the NAV MODE master toggle, a waypoint editor (one latitude box and one longitude box per point, ▲/▼ to reorder, × to remove, **+ Add point**, **Send route** — nothing reaches the robot until pressed), and a **Start / Pause / Stop** transport row greyed out by state: Start runs the route from the first point, Pause holds position without advancing, Stop returns to manual and rewinds. NAV MODE and Start are refused until at least one waypoint has been sent — the toggle greys out and reads *add a waypoint first* — and the controller rejects the switch to autonomous the same way, so a lost or spoofed message can't put the robot in nav mode with nowhere to go. On reaching the last point the robot holds position. *Obstacle Avoidance* has the avoidance toggle and its live state readout.
+The **Navigation** card holds two collapsible sections, both closed on load. *GPS Waypoints & Routing* has the NAV MODE master toggle, a waypoint editor (one latitude box and one longitude box per point — paste a Google Maps "lat, lng" coordinate string into either box and it splits across both — ▲/▼ to reorder, × to remove, **+ Add point**, **Send route** — nothing reaches the robot until pressed), and a **Start / Pause / Stop** transport row greyed out by state: Start runs the route from the first point, Pause holds position without advancing, Stop returns to manual and rewinds. NAV MODE and Start are refused until at least one waypoint has been sent — the toggle greys out and reads *add a waypoint first* — and the controller rejects the switch to autonomous the same way, so a lost or spoofed message can't put the robot in nav mode with nowhere to go. On reaching the last point the robot holds position. *Obstacle Avoidance* has the avoidance toggle and its live state readout.
  
 The markup lives in one place — `dashboard_page.py`, a plain string with no imports — so `stream_server.py` (the real node) and `dashboard_preview.py` (a hardware-free mock for working on the UI) render the identical page. Styling is an APEX red/black theme over Bootstrap 5, and Bootstrap is **vendored** at `Code/Pi5/static/bootstrap.min.css` rather than pulled from a CDN, so the page is fully functional when the Pi is its own access point with no route to the internet.
  
