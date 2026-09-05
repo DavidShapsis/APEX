@@ -937,10 +937,11 @@ battery, 4.75 V is below fully-flat and `low_battery.wav` can never play; the
 alarm is dead code. Decide which it is and set the threshold to match (~6.4 V
 for a 2S pack, or leave 4.75 if it really is on the 5 V rail).
 
-The current side of the same alarm is already bounded correctly: the ±320 mV
-shunt range across 0.1 Ω saturates at 3.2 A and `MAX_CURRENT_MA` is 3000, so
-that half can fire. Both are on the *electronics* supply either way — nothing
-monitors the 3S motor pack, which is the one that actually gets hammered.
+There is no longer a current side to this alarm — `MAX_CURRENT_MA` was removed
+and the check is voltage-only, because it is unconfirmed whether a shunt is even
+in the load path. See *INA219 — voltage-only for now* below for the full state.
+Either way this is on the *electronics* supply — nothing monitors the 3S motor
+pack, which is the one that actually gets hammered.
 
 Verified correct while checking this, so it does not need re-deriving: config
 word `0x399F` decodes to 32 V range / ±320 mV / 12-bit / continuous, calibration
@@ -1062,6 +1063,42 @@ turns out to be on a motor rail that draws more, the current reading would pin
 and the (unchecked) overflow bit would set — another reason to verify before
 trusting it.
 
+### Two repo files are broken and will not run
+
+- **`single_leg_test.py` cannot import on the Pi.** Line 19 is
+  `from InverseKinematics.ik_and_gait import ...`, but the directory is
+  `inverse_kinematics`. Linux is case-sensitive, so this is an immediate
+  `ModuleNotFoundError` — and the README recommends this file as *the* way to
+  test without ROS. One-word fix; also note it still drives the legacy
+  `GaitPath` / `direction_angle` steering, not `body_twist_xy_path`.
+- **`test_pi_quadruped.py` tests an API that no longer exists.** It asserts on
+  `controller.current_state` and `RobotState.RECOVERY`, both removed when the
+  state machine was split into `current_mode` / `current_activity`. It fails at
+  the first assertion, so the repo's only unittest file is dead weight. Either
+  update it to the split fields or delete it — a test that cannot run is worse
+  than no test, because it looks like coverage.
+
+### Pico PID state is not reset when drive is cut
+
+`pico_main`'s `if has_aborted or not powered:` branch zeroes all six PWM
+registers but leaves each `JointController`'s `integral`, `prev_error` and
+`last_time` untouched. On resume, `dt` is the entire time drive was off.
+
+Measured: after a 120 s Stop, the first `move_to()` puts the integrator straight
+to its clamp in a single call, because `error * dt` = 20 × 120. It is bounded by
+the clamp so nothing runs away, and `zero_at()` already does the right thing on
+homing — the same three-line reset just was not applied to this branch. Worth
+fixing for the same reason the out-of-range guard was (RESOLVED, above): it is
+the identical stale-`dt` failure mode.
+
+### `fsr.py` interrupt helpers cannot both be used
+
+`on_touchdown()` and `on_liftoff()` each call `self._pin.irq(...)`, and a Pin
+holds only one handler — registering the second silently replaces the first.
+Both also pass a `lambda`, which allocates, and MicroPython forbids allocation
+inside a hard IRQ. Dead code today (`pico_main` polls `.state`), but it is a trap
+for whoever wires up interrupt-driven contact next.
+
 ### IK clamps unreachable targets silently
 `InverseKinematics.calculate` clamps out-of-range law-of-cosines arguments and the
 shoulder-to-foot distance instead of reporting that a target cannot be reached. Ask
@@ -1072,13 +1109,72 @@ Harmless for the current gait (it uses z = 31–38.5 cm, well inside the 2.47–
 annulus) but it will hide mistakes in any future terrain or body-shift work. A
 `reachable` flag on the result would fix it; not added because nothing reads it yet.
 
+### A BLOCKED LEG SITS AT 100% PWM INDEFINITELY — no stall protection
+
+**The most dangerous thing in the firmware.** Measured by running the real
+`JointController` against a frozen encoder (leg jammed at 10°, target 30°):
+
+| t | integral | I term | forward duty |
+|---|---|---|---|
+| 0.05 s | 1.0 | 0.02 | **65535 (100%)** |
+| 1.0 s | 20.1 | 0.40 | **65535 (100%)** |
+| 5.0 s | 50.0 (clamp) | 1.00 | **65535 (100%)** |
+| 10 s+ | 50.0 | 1.00 | **65535 (100%)** |
+
+The windup itself is fine — that is not the problem (see the entry below). The
+problem is `kp = 0.8`: at 20° of error the P term alone is **16.0** against an
+output range of ±1.0, so the duty pins at full and *stays* there. Nothing ever
+takes it down. There is no stall timeout, no current limit, no thermal cutout,
+and no "error stopped changing" check anywhere in `move_to()` or `pico_main`.
+
+A goBILDA 5302 at 99.5:1 stalls around 9 A. Held indefinitely, that cooks the
+motor, the BTS7960, or the pack — whichever gives first.
+
+The real fix is the BTS7960 `IS` current sensing in the callout at the top of
+this file. But a **software-only interim guard is cheap and worth having first**:
+in `JointController`, track how long `|error|` has stayed above the deadband
+without meaningfully decreasing while `|output|` is saturated, and after some
+threshold (a second or two) zero both PWMs and latch a fault the way
+`has_aborted` already does. That needs no new hardware and turns "cook the
+motor" into "stop and report".
+
+### FSR abort fires on the FIRST swing step of every leg
+
+`pico_main.py` line ~200:
+
+```python
+any_touchdown = any(f.state for f in fsrs)     # fsrs = FSR(16..19), FOUR of them
+...
+if any_touchdown and current_step_swing:       # current_step_swing is THIS leg's
+    → ABORTED
+```
+
+Each Pico drives **one** leg but reads **four** FSR pins, and `any()` collapses
+them. The gait is a crawl: whenever one leg is swinging, the other **three are
+planted by construction**. So `any_touchdown` is True for the entire duration of
+every swing phase, and the condition reduces to "abort whenever this leg swings."
+
+Leg L would abort on its first swing tick, every cycle, forever. It has not bitten
+yet only because nothing is wired to GP16–19, so the pins read low.
+
+The test is supposed to be *"my own foot touched down while I should be airborne"*
+— it needs this leg's own sensor, not `any()` of all four. Decide whether each
+board gets one FSR (its own foot) or whether the four pins are four pads on one
+foot, then fix the reduction to match. **Do not connect the FSRs before this is
+resolved** — the robot will abort out of its first step.
+
 ### PID: `kp` still needs bench tuning (windup ruled out, `kd` fixed)
 Simulated against a motor model (360 deg/s free speed, first-order response,
 stiction, and real encoder quantisation), running the actual `JointController` code:
 
-- **No windup.** The I term peaks at 0.2–2.2 against its clamp of 50 — 0.4–4%. The
-  deadband zeroes it whenever |error| < 1°, and the error changes sign every cycle,
-  so it never accumulates. Not a risk at any motor time constant tested.
+- **No windup, and it is genuinely bounded.** In normal walking the I term peaks at
+  0.2–2.2 against its clamp of 50 (0.4–4%): the deadband zeroes it whenever
+  |error| < 1° and the error changes sign every cycle. Re-measured against a
+  *stalled* leg, where the error never changes sign, the integrator does ramp —
+  but only to its clamp (I term 1.00 after ~5 s), and on overshoot the P term
+  dominates so windup never inverts the direction of travel. The anti-windup is
+  correct. What is not safe about a stall is the full-duty hold, which is the
+  separate entry above.
 - **`kd = 0.05` was provably wrong and is now 0.** The encoder resolves 0.129°, so at
   the ~2 ms loop rate a single count reads as 64.6 deg/s — times `kd = 0.05` that is
   **3.23 of output**, past full duty from one tick of quantisation. Removing it cut

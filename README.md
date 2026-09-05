@@ -25,7 +25,7 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 - **Mission Control Dashboard** — Flask web UI that walks through homing each leg, standing, and going before the robot is allowed to walk; live camera feed with a steering readout, an obstacle-avoidance toggle, and per-leg debug controls. Served entirely from the Pi (Bootstrap vendored locally, no internet needed in the field)
 - **ML Obstacle Avoidance** — pretrained monocular depth model (Depth-Anything-V2-Small, ONNX) turns the webcam feed into a forward costmap and steers around obstacles, layered on top of both manual and GPS waypoint steering. Dashboard toggle
 - **Threaded Sensor Polling** — every blocking sensor read (IMU + compass over I2C, GPS UART, INA219) runs on its own poller thread; the control loop only ever reads a lock-protected snapshot, so a stuck bus degrades to a safe default instead of stalling the gait
-- **Current Sensing Foot Detection** *(in progress)* — motor current sensing on unexpected ground contact triggers an automatic recovery routine, replacing the FSR-based approach
+- **Per-Motor Current Sensing** *(planned, not started)* — reading each BTS7960's built-in `IS` output so a joint meeting unexpected resistance (a crash, a jam) drops the robot into its recovery routine, replacing the FSR-based foot contact. No code for this exists yet; see `KNOWN_ISSUES.md`
 - **ROS 2 Integration** — inter-node communication via ROS 2 topics for direction commands, navigation mode switching, and the homing/stand/go/stop dashboard controls
 
 ---
@@ -76,7 +76,7 @@ Pi 5 (ROS 2)
 Pico (MicroPython, x4)
 ├── pico_main.py         # UART receiver, gait buffer, PID execution loop, homing/stop commands
 ├── motor_control.py     # BTS7960 PID joint controller with encoder feedback
-└── fsr.py               # Force sensitive resistor foot contact (being replaced by current sensing)
+└── fsr.py               # Force sensitive resistor foot contact -- NOT safe to wire up yet, see KNOWN_ISSUES
 ```
  
 ### Pi to Pico Protocol
@@ -235,6 +235,13 @@ python3 pi5_main.py
  
 Flash each Pico with MicroPython, then copy the contents of `Code/Pico/` to the Pico filesystem. The main loop starts automatically on boot. **The legs do not move on their own** -- each Pico just holds its power-on position under light PID until it's homed. From the web dashboard: home each leg individually, then **Stand**, then **Go**. A **Stop** control cuts motor power without losing homing.
  
+### ⚠ Before powering the motors
+ 
+Two things to know, both written up in `KNOWN_ISSUES.md`:
+ 
+- **A physically blocked joint will hold 100% PWM indefinitely.** There is no stall timeout, current limit or thermal cutout anywhere in the firmware — `kp = 0.8` saturates the output above 1.25° of error and nothing brings it back down. Measured against the real `JointController`: full duty from 50 ms out to forever. Do not leave a jammed leg powered while you go and find a screwdriver. This is what the planned BTS7960 `IS` current sensing is for.
+- **Do not connect the FSRs yet.** The abort test is `any()` across all four foot sensors ANDed with *this* leg's swing flag, and a crawl gait always has three feet planted — so every leg would abort on its first swing step. Harmless only while the pins are unwired.
+ 
 ---
  
 ## Project Status
@@ -251,7 +258,9 @@ Flash each Pico with MicroPython, then copy the contents of `Code/Pico/` to the 
 | Recovery path | Complete |
 | Homing / Stand / Go / Stop dashboard workflow | Complete |
 | ML obstacle avoidance | Built, needs hardware tuning |
-| Current sensing foot detection | In progress |
+| Motor stall / overcurrent protection | **Not started** — see the warning above |
+| Per-motor current sensing (BTS7960 `IS`) | Planned, not started |
+| FSR foot contact | Written, but the abort logic is wrong — do not wire up |
 | Mechanical build | In progress |
 | Custom PCB | In progress |
 | CAD files | In progress |

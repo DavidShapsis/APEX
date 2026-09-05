@@ -16,7 +16,7 @@ import struct
 import cv2
 from flask import Flask, Response, request, jsonify
  
-from InverseKinematics.ik_and_gait import InverseKinematics, GaitPath, GaitIK, RecoveryPath
+from inverse_kinematics.ik_and_gait import InverseKinematics, GaitPath, GaitIK, RecoveryPath
  
 # ─────────────────────────────────────────────
 # CONFIG — edit these to match your hardware

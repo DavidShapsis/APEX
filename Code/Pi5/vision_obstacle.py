@@ -219,9 +219,10 @@ MAX_STEER_DEG = 90.0
 
 
 class AvoidState:
-    """Where the planner is in a detour. Deliberately NOT part of RobotState --
-    that enum already conflates operating mode with transient activity and is
-    flagged in KNOWN_ISSUES; adding a fourth meaning would make it worse."""
+    """Where the planner is in a detour. Deliberately kept separate from the
+    controller's RobotMode / RobotActivity: those two were split apart precisely
+    because one field carrying several meanings caused a real race, and folding
+    avoidance in as a third meaning would walk straight back into it."""
     OFF = "OFF"             # disabled, or no trustworthy costmap
     CLEAR = "CLEAR"         # corridor open, navigation steers
     AVOIDING = "AVOIDING"   # obstacle ahead, committed to a side
