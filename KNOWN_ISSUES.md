@@ -23,21 +23,6 @@ Fixed items are not listed here — see git history.
 > into something, a foot jammed, a link is binding. That's the trigger to abort the
 > gait and drop into `handle_recovery` instead of grinding the motor against
 > whatever stopped it.
->
-> The wiring fits with nothing to give up: **`GP26` / `GP27` / `GP28` (ADC0/1/2)
-> are free on every Pico** — exactly three, one per joint (roll / pitch / knee).
-> `GP20` and `GP21` are spare too. Each `IS` pin needs a sense resistor to ground
-> (~1 kΩ puts 10 A at ~1.2 V, comfortably inside the 3.3 V ADC range). Note the
-> `IS` output *also* slams high on the chip's own fault conditions (over-temp,
-> over-current), so a fault reads as a very large spike — usable, but the code has
-> to tell that apart from a mechanical stall.
->
-> This is **not** the same thing as the INA219, which is one pack-level number for
-> the whole robot and cannot say which joint is struggling. See
-> *PLANNED — migrate ground-contact sensing from FSR to current sensing* below for
-> the design questions this has to answer (chiefly: a stall is a broader event than
-> a touchdown, and the threshold has to sit above normal swing current but below a
-> genuine jam).
 
 **Verify the whole control path without hardware:**
 
@@ -397,10 +382,8 @@ guessing at it:**
   pin per joint, not a new shunt. It is also not 12 readings gathered centrally:
   each Pico only reads its *own* three joints, and `GP26`/`GP27`/`GP28` (ADC0/1/2)
   are free on every board for exactly that. The existing `INA219` in
-  `power_monitor.py` is no help here: even if its current path is confirmed working
-  (it is read for voltage only right now — see the INA219 entry below), it gives
-  total *pack* current — one number for the whole robot, so it cannot say which
-  joint is struggling.
+  `power_monitor.py` reads total *pack* current only — one number for the whole
+  robot, not per-leg, so it cannot answer "which foot touched down" on its own.
 - *Stall vs. touchdown are not the same event.* A current spike means the leg met
   resistance — that's also true for hitting an obstacle mid-swing, binding at a
   joint limit, or simple stiction, not only "foot reached the ground." The FSR is
@@ -1074,7 +1057,7 @@ longer calls `get_current()` (it stores `None`), and the `pi5_main` power check
 is voltage-only. `INA219.get_current()` / `get_power()` are kept intact but
 uncalled — once the shunt path is confirmed, re-enable the one line in
 `_power_poll` and restore the current check in `pi5_main`. The config register
-(`0x399F` + cal `2048`) assumes ±320 mV / 0.1 Ω = ±3.2 A full-scale, so if the INA219
+(`0x399F` + cal `2048`) assumes ±320 mV / 0.1 Ω = ±3.2 A FSR, so if the INA219
 turns out to be on a motor rail that draws more, the current reading would pin
 and the (unchecked) overflow bit would set — another reason to verify before
 trusting it.
