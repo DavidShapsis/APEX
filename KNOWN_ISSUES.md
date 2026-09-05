@@ -367,9 +367,11 @@ resistance) rather than a dedicated foot-mounted pressure sensor.
 guessing at it:**
 - *Where the current gets measured.* Per-joint (at each `JointController`'s H-bridge)
   gives the finest signal but needs a shunt + ADC per joint (12 readings across 4
-  legs) that doesn't exist yet. The existing `INA219` in `power_monitor.py` reads
-  total *pack* current only — one number for the whole robot, not per-leg, so it
-  cannot answer "which foot touched down" on its own.
+  legs) that doesn't exist yet. The existing `INA219` in `power_monitor.py` is no
+  help: even if its current path is confirmed working (it is currently read for
+  voltage only — see the INA219 entry below), it would give total *pack* current —
+  one number for the whole robot, not per-leg, so it cannot answer "which foot
+  touched down" on its own.
 - *Stall vs. touchdown are not the same event.* A current spike means the leg met
   resistance — that's also true for hitting an obstacle mid-swing, binding at a
   joint limit, or simple stiction, not only "foot reached the ground." The FSR is
@@ -1043,7 +1045,7 @@ longer calls `get_current()` (it stores `None`), and the `pi5_main` power check
 is voltage-only. `INA219.get_current()` / `get_power()` are kept intact but
 uncalled — once the shunt path is confirmed, re-enable the one line in
 `_power_poll` and restore the current check in `pi5_main`. The config register
-(`0x399F` + cal `2048`) assumes ±320 mV / 0.1 Ω = ±3.2 A FSR, so if the INA219
+(`0x399F` + cal `2048`) assumes ±320 mV / 0.1 Ω = ±3.2 A full-scale, so if the INA219
 turns out to be on a motor rail that draws more, the current reading would pin
 and the (unchecked) overflow bit would set — another reason to verify before
 trusting it.
