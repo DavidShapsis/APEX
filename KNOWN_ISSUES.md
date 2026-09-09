@@ -1515,6 +1515,63 @@ currently `bus_id=13` is always passed, so the branch is dead.
 
 ## Structural notes from the full review (no defect, worth knowing)
 
+### The IK cannot flip the knee to the other solution — verified
+
+A 2-link arm reaching a point always has two answers, knee-forward and
+knee-back, so "does the solver ever jump between them mid-gait" is a fair
+question. It cannot. Three independent reasons, all checked in
+`scratchpad/verify_branch.py` over 141,120 foot targets (every yaw, stride,
+tilt, body-shift and leg combination):
+
+**1. The other branch is not expressible in code.** The two solutions are
+`knee = ±acos(...)` and `pitch = alpha ± beta`. `math.acos` returns the
+principal value only, in `[0, π]`, and `calculate()` takes `+acos` and
+`alpha + beta` — no `±`, no sign variable, no conditional anywhere in the
+solve. The same is true of the abductor: `roll = phi1 + phi2` with
+`phi2 = acos(a/r_xz)`, never `phi1 - phi2`. The knee-back family has no path
+through this function. At the stand point the two branches are **88.9° of pitch
+and 170.2° of knee apart**.
+
+**2. It never gets near the only place a swap is possible.** The branches merge
+only where `beta` is 0 or π — the leg fully straight or fully folded. Note the
+convention: **knee = 180° is straight** (which is why `HOME_POSE` locks it
+there) and knee = 0° is folded.
+
+| | value | gait's actual range | clearance |
+|---|---|---|---|
+| hip-to-foot distance `d` | — | 25.47 – 41.31 cm | — |
+| straight, `d = b+c` | 51.21 cm (z ≈ 52.1 cm) | max z 40.0 cm | **12.1 cm** |
+| folded, `d = \|b−c\|` | 2.47 cm (z ≈ 10.0 cm) | min z 27.2 cm | **17.3 cm** |
+| knee angle | — | 59.4° – 107.4° | 59° / 73° from either limit |
+
+Closest the two branches ever come is **68.5° apart**. And past the limit the
+`d` clamp catches it first: the solve saturates at knee 180° (or 0°) rather than
+crossing, because `acos` has nowhere else to go.
+
+**3. Nothing discontinuous happens along the way.** Over the same sweep: zero
+clamp or clip activations (`r_xz < a`, the `d` clamp, all three `_clip` calls —
+none ever fire); `z` stays ≥ 27.2 cm and `z_rel` ≥ 25.5 cm so neither `atan2`
+can wrap; largest step-to-step change is roll 9.67°, pitch 15.33°, knee 16.88°;
+and the IK→FK round-trip closes to **0.057 mm**, which confirms the angles
+actually put the foot on the commanded point via the intended branch.
+
+### What `reverse` does and does not control
+
+**`reverse` cannot set which way a knee points.** It flips one joint's motor
+polarity and encoder sign — nothing more. Knee direction is fixed in software:
+the IK always solves a knee-forward leg in that leg's local frame, and
+`LEG_SIGN_Y = -1` for `FRONT_LEGS` is what turns that into "front knees point
+aft".
+
+So the intended build — **knees facing inward, front knees back and rear knees
+forward on each side** — is exactly the geometry already modelled, and needs no
+code change. If the legs end up mounted the other way (knees facing outward),
+the fix is to invert `LEG_SIGN_Y`, *not* to touch the `reverse` flags. Getting
+`LEG_SIGN_Y` right does not tell you the `reverse` flags are right, and vice
+versa — they are independent, and each needs its own bench check.
+
+
+
 Verified correct during the review, recorded so nobody re-derives them:
 
 - **Quadrature decode table is right.** `_QUAD_TABLE` covers exactly the eight
