@@ -364,8 +364,16 @@ class GaitIK:
         self.lateral_roll_offset = lateral_roll_offset
         
     def get_gait_ik(self):
+        # None, not 0.0. This rejects a >90 deg roll discontinuity between
+        # adjacent steps by reusing the previous value -- but step 0 has no
+        # previous value, and seeding one with 0.0 invents a pose the leg is
+        # never in (measured range across 2400 gait variants: -27.1 to -6.3 deg).
+        # That made the step-0 comparison meaningless, and worse, had it ever
+        # fired it would have SUBSTITUTED 0.0 -- the guard issuing a bad command
+        # instead of blocking one, silently. None simply leaves step 0
+        # unguarded, which is correct: there is nothing to compare it against.
         gait_angles_list = []
-        last_roll = 0.0
+        last_roll = None
         for i in self.gait_path:
             # i[0] is now final_x, i[1] is final_y, i[2] is final_z, i[3] is is_swing
             # We combine the base lateral offset (like chassis width) with the step deflection
@@ -375,7 +383,7 @@ class GaitIK:
             is_swing = i[3] if len(i) > 3 else False
             
             current_roll = ik.roll
-            if abs(current_roll - last_roll) > 90:
+            if last_roll is not None and abs(current_roll - last_roll) > 90:
                 current_roll = last_roll
             
             gait_angles_list.append([current_roll, ik.pitch, ik.knee, 1.0 if is_swing else 0.0])
