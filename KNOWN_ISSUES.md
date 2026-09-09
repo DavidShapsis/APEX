@@ -23,6 +23,14 @@ Fixed items are not listed here — see git history.
 > Also **set `LEG_ID`** (all four boards currently ship as `0`) and **`FSR_PIN`**
 > before wiring the foot sensors. Each is written up in its own section below.
 
+> **⚠ VERIFY THE IMU ROLL/PITCH SIGNS BEFORE THE FIRST UNSUPPORTED WALK.** Body
+> levelling assumes right-side-down is a positive roll and nose-up a positive
+> pitch. Whether the BNO085 actually reads that way depends on how it is bolted
+> in, nothing in the code or the simulator can detect it, and if either axis is
+> inverted the correction is **positive feedback** — it grows the tilt to 8.6° of
+> self-inflicted lean against a 2.4 cm stability margin. Two-minute bench check in
+> *Will make the robot fall over → OPEN — the IMU roll/pitch signs are unverified*.
+
 > **🔧 TO BUILD: per-motor current sensing off the BTS7960 IS pins.**
 > **Not implemented — no code for this exists yet.**
 >
@@ -686,32 +694,16 @@ but the sim does not model `reverse`, so **whether the `reverse` flags compose
 correctly with a turn is a bench check** — do it on a stand, off the ground,
 before any powered turning.
 
-### Verify the IMU roll/pitch signs before the first unsupported walk
-**Not verified on hardware, and it is positive feedback if it is wrong.**
+### Verify the IMU roll/pitch signs — do this one first
+On a stand, legs off the ground, watch the `[IMU Reflex] Levelling. Roll ...
+pitch ...` line: tipping the chassis **right side down** must print a **positive
+roll**, and **nose up** must print a **positive pitch**. If either is backwards,
+flip that term's sign in `ik_and_gait.attitude_height_offsets()`.
 
-`attitude_height_offsets()` assumes **positive roll = right side down** and
-**positive pitch = nose up**, and levels by extending the legs on the low side.
-The maths is right for that convention (checked: `dz = gain * (hx*tan(r) -
-hy*tan(p))` extends the right legs for `r > 0` and shortens the front legs for
-`p > 0`, both restoring). But which way the BNO085's roll and pitch actually run
-depends on how the board is physically bolted in, and nothing in the code or the
-simulator can tell you that.
-
-If either axis is inverted, the levelling drives the tilt **the wrong way** and
-grows it until it hits `ATTITUDE_LIMIT_CM = 4.0`. Four cm of differential leg
-height across the 53 cm track is `atan(8/53) ≈ 8.6°` of *induced* roll on top of
-whatever tilt started it — enough to put the robot over.
-
-Bench check, on a stand, legs off the ground:
-
-1. Watch the `[IMU Reflex]` line while you tip the chassis by hand.
-2. Roll it **right side down**. `Roll` must print **positive**.
-3. Pitch it **nose up**. `pitch` must print **positive**.
-4. If either is backwards, flip the sign in `attitude_height_offsets()` — the
-   docstring says to fix it there rather than anywhere downstream, so that the
-   simulator and the robot keep agreeing.
-
-Do this before the robot ever carries its own weight while walking.
+Get this wrong and the levelling is positive feedback — it grows the tilt instead
+of cancelling it, up to 8.6° of self-inflicted lean against a 2.4 cm stability
+margin. Full write-up and the numbers: *Will make the robot fall over → OPEN — the
+IMU roll/pitch signs are unverified*.
 
 ### Front/rear mirroring is handled in software — verified
 The IK solves a **knee-forward** leg: at neutral stance the knee node sits at
@@ -777,6 +769,64 @@ when deactivated, it stays exactly there.
 ---
 
 ## Will make the robot fall over
+
+### OPEN — the IMU roll/pitch signs are unverified, and a wrong one is positive feedback
+
+**The only open item in this section, and the most dangerous unverified thing in
+the codebase.** Nothing in the code or the simulator can detect it; it needs two
+minutes on a stand.
+
+`attitude_height_offsets()` levels the body by making the legs on the low side
+longer and the legs on the high side shorter. To know which side is low it trusts
+a convention: **positive roll = right side down, positive pitch = nose up.** The
+maths is correct *for that convention* — `dz = gain * (hx*tan(r) - hy*tan(p))`
+extends the right legs when `r > 0` (`hx` is +26.5 cm there) and shortens the
+front legs when `p > 0` (`hy` is +33.75 cm), both restoring.
+
+But roll and pitch come out of `IMU._quat_to_pitch_roll()` in the **BNO085's own
+body frame**, and which physical direction that frame's axes point depends
+entirely on how the breakout is bolted into the chassis. Rotate the board 180°
+about its vertical axis and both signs flip. Mount it on its side and they swap.
+The quaternion maths is standard and correct — the question is not "is the
+conversion right", it is "does the board's +X actually point forward".
+
+If either axis is inverted the correction runs the wrong way, which is **positive
+feedback**: a small tilt produces a correction that increases the tilt, which
+produces a bigger correction, until it saturates at `ATTITUDE_LIMIT_CM = 4.0`.
+
+| | |
+|---|---|
+| Limit | 4.0 cm of differential leg height |
+| Track width | 53.0 cm (`BODY_WIDTH_CM`) |
+| Induced roll at the limit | `atan(8/53)` ≈ **8.6°** |
+| Worst-case stance margin | +2.38 cm (`quadruped_sim --report`) |
+
+8.6° of self-inflicted lean, added to whatever tilt started it, against a support
+triangle with 2.4 cm of margin. The robot puts itself over, and it does it faster
+the harder it tries to correct.
+
+Why it has not bitten yet: `ATTITUDE_GAIN = 0.6` and the 12-sample IMU average
+make the runaway take a second or two rather than being instant, and the robot has
+never walked unsupported. It is also completely invisible in simulation —
+`quadruped_sim` feeds `attitude_height_offsets` a *commanded* tilt, so the sign
+convention is true by construction there and the sim will report a clean margin no
+matter which way the real board is mounted.
+
+**Bench check — on a stand, legs off the ground, before the robot ever carries its
+own weight while walking:**
+
+1. Bring the Pi up and watch the `[IMU Reflex] Levelling. Roll ... pitch ...` line.
+2. Tip the chassis **right side down**. `Roll` must print **positive**.
+3. Tip it **nose up**. `pitch` must print **positive**.
+4. If either is backwards, flip that term's sign inside
+   `ik_and_gait.attitude_height_offsets()` — the docstring says to fix it there
+   and not anywhere downstream, so that `pi5_main` and `quadruped_sim` keep
+   agreeing. Re-run `quadruped_sim.py --report` afterwards.
+
+The same "we assume it, we have never measured it" gap applies to the compass axis
+signs (see *Compass* below) and to the per-joint `reverse` flags during a turn (see
+*Before you walk it*). This one is the worst of the three because its failure mode
+is divergent rather than merely wrong.
 
 ### RESOLVED — body shift, phased with the lift sequence
 The sim reported 100% "statically stable" but that was a binary in/out test hiding
