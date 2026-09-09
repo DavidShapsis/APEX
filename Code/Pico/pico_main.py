@@ -67,8 +67,33 @@ MAX_GAIT_STEPS = 48
 # exact pose the leg was physically placed in by hand before homing.
 HOME_POSE = (90.0, 0.0, 180.0)
 
+# How often the step clock is re-aligned to a frame boundary.
+#
+# Every leg's end marker lands within a millisecond or two of the others, so
+# resetting last_step_time there is a perfect cross-leg sync -- but it also
+# throws away the partially-elapsed tick, and the Pi re-sends far more often
+# than every 40 ms. Doing it on EVERY frame meant the tick never expired at all:
+# measured 0 gait steps in 20 s for any re-send faster than 69 ms (29.3 ms of
+# wire time + the 40 ms tick). The robot stood still while the Pi believed it
+# was walking.
+#
+# So sync on a timer instead. Between syncs each board free-runs on its own
+# crystal; at a worst-case 100 ppm spread that is 0.5 ms of drift over 5 s,
+# against the 40 ms tick and the one-tick guard band between each leg's swing
+# window. Cost is at most one truncated tick per 5 s, i.e. under 1% of walking
+# speed.
+RESYNC_INTERVAL_MS = 5000
+
 # --- State Management ---
 gait_buffer = []
+# Frames land HERE while a new one is arriving, and are swapped into
+# gait_buffer only once its end marker is parsed. gait_buffer used to be
+# cleared at START_MARKER and refilled in place, which meant step 3 had nothing
+# to play for the whole ~29.3 ms a frame takes on the wire -- so every steering
+# or IMU update froze the gait for the duration, on top of the step-clock reset
+# above. Staging lets the leg keep walking the previous cycle until the new one
+# is complete, which is also what makes a desynced or truncated frame harmless.
+rx_buffer = []
 is_receiving = False
 has_aborted = False
 cycle_buffer = True
@@ -90,6 +115,7 @@ powered = True
 # Lower it only after checking on the bench that the legs still track their targets.
 STEP_TICK_MS = 40
 last_step_time = time.ticks_ms()
+last_resync = time.ticks_ms()
 prev_byte = b''
 
 # --- Leg Identity Announcement ---
@@ -124,7 +150,7 @@ while True:
                 # Remember what was playing so the end-marker handler can tell a
                 # re-send of the walking cycle from a genuinely new trajectory.
                 prev_cycle_len = len(gait_buffer) if cycle_buffer else 0
-                gait_buffer = []
+                rx_buffer = []
                 is_receiving = True
                 has_aborted = False
                 # A new frame is the Pi's answer to whatever went wrong, so give
@@ -144,6 +170,7 @@ while True:
                 knee_j.zero_at(HOME_POSE[2])
                 current_targets = list(HOME_POSE)
                 gait_buffer = []
+                rx_buffer = []
                 is_receiving = False
                 has_aborted = False
                 powered = True   # a Home command means "now hold here"
@@ -166,6 +193,13 @@ while True:
             if full_payload == CYCLE_END_MARKER or full_payload == ONESHOT_END_MARKER:
                 cycle_buffer = full_payload == CYCLE_END_MARKER
                 is_receiving = False
+                # An empty frame keeps whatever was already playing rather than
+                # leaving the leg with nothing to step through.
+                same_cycle = (cycle_buffer and rx_buffer
+                              and prev_cycle_len == len(rx_buffer))
+                if rx_buffer:
+                    gait_buffer = rx_buffer
+                rx_buffer = []
 
                 # KEEP THE PHASE across a re-send of the same walking cycle.
                 # The Pi rebuilds and re-sends the whole gait whenever steering
@@ -182,16 +216,21 @@ while True:
                 # 20-step walking cycle, re-rendered". Anything else -- a
                 # one-shot ramp, or a cycle of a different length -- starts at 0,
                 # because a ramp genuinely has to run from its first entry.
-                if (cycle_buffer and gait_buffer
-                        and prev_cycle_len == len(gait_buffer)):
+                if same_cycle:
                     current_step_index = current_step_index % len(gait_buffer)
+                    # Step clock deliberately left alone -- see
+                    # RESYNC_INTERVAL_MS. Re-aligning here on every frame is
+                    # what used to freeze the gait outright.
+                    if time.ticks_diff(time.ticks_ms(), last_resync) > RESYNC_INTERVAL_MS:
+                        last_step_time = time.ticks_ms()
+                        last_resync = last_step_time
                 else:
+                    # A genuinely new trajectory (ramp, recovery, a cycle of a
+                    # different length) starts at its first entry, and that IS
+                    # the moment to re-align all four boards.
                     current_step_index = 0
-
-                # Reset regardless: all four boards receive their end marker
-                # within a few ms of each other, so this re-aligns the 40 ms
-                # tick across legs and stops them free-running apart.
-                last_step_time = time.ticks_ms()
+                    last_step_time = time.ticks_ms()
+                    last_resync = last_step_time
                 prev_byte = b''
                 identified = True   # the Pi is talking to us; stop announcing
                 powered = True      # a real frame arrived -- go drive it
@@ -203,12 +242,14 @@ while True:
                 # Drops non-finite and out-of-range angles, which a desynced
                 # stream produces and which would otherwise reach the motors.
                 if parts is not None and all(-ANGLE_LIMIT <= v <= ANGLE_LIMIT for v in parts[:3]):
-                    gait_buffer.append(parts)
-                    if len(gait_buffer) > MAX_GAIT_STEPS:
+                    rx_buffer.append(parts)
+                    if len(rx_buffer) > MAX_GAIT_STEPS:
                         # Overlong frame means the stream desynced mid-payload and
                         # the terminator is being straddled. Abandon it and rescan
-                        # rather than growing the buffer until MemoryError.
-                        gait_buffer = []
+                        # rather than growing the buffer until MemoryError. Only
+                        # the staged copy is thrown away, so the leg carries on
+                        # walking the last good cycle instead of freezing.
+                        rx_buffer = []
                         is_receiving = False
                         prev_byte = b''
 
@@ -240,9 +281,11 @@ while True:
     # This leg's own foot only -- see FSR_PIN.
     own_touchdown = foot.state
 
-    # 3. CHOOSE TARGETS (Every 20ms)
-    # Target updates only advance through the buffer steps once receiving is complete
-    if gait_buffer and not is_receiving and not has_aborted:
+    # 3. CHOOSE TARGETS (every STEP_TICK_MS)
+    # `is_receiving` is NOT a condition here any more: gait_buffer is the last
+    # COMPLETE frame (an arriving one lands in rx_buffer), so the leg keeps
+    # walking normally while the next frame is on the wire.
+    if gait_buffer and not has_aborted:
         current_step_swing = gait_buffer[current_step_index][3] > 0.5
         if own_touchdown and current_step_swing:
             msg = f"ABORTED,{roll_j.current_angle},{pitch_j.current_angle},{knee_j.current_angle}\n"
@@ -250,8 +293,19 @@ while True:
             has_aborted = True
             gait_buffer = []
         else:
-            if time.ticks_diff(time.ticks_ms(), last_step_time) > STEP_TICK_MS:
-                last_step_time = time.ticks_ms()
+            elapsed = time.ticks_diff(time.ticks_ms(), last_step_time)
+            if elapsed >= STEP_TICK_MS:
+                # Advance by exactly one tick instead of resetting to now.
+                # Resetting made the real cadence 40 ms PLUS however long the
+                # pass took (~1-2 ms of loop, more while a frame is arriving),
+                # so it tracked each board's own jitter -- tolerable while every
+                # end marker re-synced the clock, but not now that a re-sync is
+                # only every RESYNC_INTERVAL_MS. Fixed-step keeps the four legs
+                # phase-locked to their crystals alone.
+                if elapsed >= 2 * STEP_TICK_MS:
+                    last_step_time = time.ticks_ms()      # fell behind; snap
+                else:
+                    last_step_time = time.ticks_add(last_step_time, STEP_TICK_MS)
                 if cycle_buffer:
                     current_step_index = (current_step_index + 1) % len(gait_buffer)
                 elif current_step_index < len(gait_buffer) - 1:

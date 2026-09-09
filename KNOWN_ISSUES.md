@@ -6,11 +6,15 @@ Ordered by how badly they bite.
 
 Fixed items are not listed here — see git history.
 
-> **⚠ RE-FLASH THE PICOS BEFORE THE NEXT POWERED TEST.** Five firmware defects
+> **⚠ RE-FLASH THE PICOS BEFORE THE NEXT POWERED TEST.** Seven firmware defects
 > have been fixed in `Code/Pico/` and none of them reach the robot until it is
-> reflashed — a Pi running the new code against old firmware still cannot stand:
+> reflashed — a Pi running the new code against old firmware still cannot stand,
+> and still will not walk:
 >
 > - the Stand and Go ramps were silently discarded (the robot could not stand at all)
+> - **receiving a frame froze the gait — measured 0 steps in 20 s at any re-send
+>   faster than 69 ms, i.e. the robot stands still while the dashboard says WALKING**
+> - the step clock's cadence tracked loop jitter instead of being a fixed 40 ms
 > - every gait re-send restarted the cycle from step 0, slamming the feet
 > - a blocked joint held 100% PWM forever, with nothing to stop it
 > - the FSR abort would have fired on every leg's first swing step
@@ -49,6 +53,105 @@ python quadruped_sim.py               # 3D animation, needs matplotlib
 `matplotlib` is not currently installed (`pip install matplotlib`), which also means
 `gait_testing2.py` and `gait_testing3.py` cannot run as-is. `--report` works without
 it.
+
+---
+
+## RESOLVED — receiving a gait frame froze the gait (the robot would not walk)
+
+**The worst defect found so far. It stopped the robot walking at all, silently.**
+Needs a Pico reflash *and* the Pi-side change.
+
+A gait frame is `2 + 20*16 + 16 = 338` bytes; at 115200 8N1 that is **29.3 ms of
+wire time** per port. Two things then conspired on the Pico:
+
+1. `gait_buffer` was cleared at `START_MARKER` and refilled in place, and step 3
+   was gated on `not is_receiving` — so for the whole 29.3 ms the leg had nothing
+   to step through and simply held its last target;
+2. `last_step_time` was reset to *now* on **every** end marker, restarting the
+   40 ms tick from zero each time a frame landed.
+
+So a frame had to arrive, and then a further 40 ms of silence had to pass, before
+the gait advanced by one step. The Pi's re-send trigger (steering moved >5°, tilt
+>1.5°, stride >0.05) is evaluated every ~10 ms and **nothing rate-limited it** —
+during a turn, or on any ground that moves the IMU, the Pi re-sent far faster than
+that. Measured in `wire_timing.py`, replaying the real parser logic against real
+baud timing:
+
+| Pi re-sends every | gait steps in 20 s | vs. commanded |
+|---|---|---|
+| 20 ms | **0** | 0% — *and frames truncated mid-flight* |
+| 50 ms | **0** | 0% |
+| 69 ms | **0** | 0% |
+| 100 ms | 200 | 40% |
+| 250 ms | 400 | 80% |
+| never | 499 | 100% |
+
+Below ~30 ms it got worse still: the worker's own send loop is ~22 ms against
+29.3 ms of wire time, so it began the next frame while the previous was still
+draining and `reset_output_buffer()` — `tcflush(TCOFLUSH)` on POSIX — **discarded
+the tail**, end marker included. The Pico then sat in `is_receiving` forever,
+eating the next `START_MARKER` as payload, until enough garbage arrived to trip
+`MAX_GAIT_STEPS`.
+
+Three fixes, and the gait now runs at 498–499 steps / 20 s at *every* re-send rate:
+
+- **Pico — staging buffer.** Frames land in `rx_buffer` and are swapped into
+  `gait_buffer` only once their end marker is parsed. Step 3 lost its
+  `not is_receiving` condition, so the leg keeps walking the last complete cycle
+  while the next one is on the wire. A truncated or desynced frame now discards
+  only the staged copy, so it can no longer freeze a leg either.
+- **Pico — `RESYNC_INTERVAL_MS = 5000`.** The step clock is re-aligned to a frame
+  boundary at most every 5 s instead of on every frame. Between re-syncs the
+  boards free-run on their crystals: at a worst-case 100 ppm spread that is 0.5 ms
+  of drift over 5 s, against a 40 ms tick and the one-tick guard band between each
+  leg's swing window. Cost is at most one truncated tick per 5 s, under 1% of
+  walking speed. A genuinely new trajectory (ramp, recovery, a cycle of a
+  different length) still re-syncs immediately, which is the moment it matters.
+- **Pi — `MIN_GAIT_RESEND_S = 0.10` and `_drain()`.** The control loop will not
+  push frames faster than 10 Hz, and the worker now `flush()`es each port before
+  the next `reset_output_buffer()` can run, which makes the truncation race
+  impossible rather than merely unlikely. Skipping a re-send loses nothing:
+  `last_sent_*` is only updated when a frame actually goes out, so the delta stays
+  tripped and the update leaves on the next eligible pass.
+
+Also fixed alongside: the tick advanced by `last_step_time = ticks_ms()`, making
+the real cadence 40 ms *plus* however long that pass took. Harmless while every
+end marker re-synced the clock; not harmless once re-syncs are 5 s apart. It now
+advances by exactly `STEP_TICK_MS`, snapping forward only if it has fallen more
+than a full tick behind.
+
+---
+
+## RESOLVED — pressing Go yanked three planted feet sideways
+
+`engage_walking()` ramped every leg from the stand pose to `all_angles[0]`, then
+started the cyclic walk. But `_gait_serial_worker` rotates each leg's buffer by
+`phase_offsets()` — buffer index `j` for leg L is global tick `j - offset_L`,
+which is exactly what `apply_body_shift()` assumes — so leg L's first *commanded*
+frame is `all_angles[offsets[L]][L]`, not `all_angles[0][L]`.
+
+Ramping all four to index 0 put them at four different points of the cycle at
+once, a configuration the body never actually holds, and the first cyclic tick
+then snapped each leg to its real phase:
+
+| leg | phase offset | joint jump | foot moved | in one 40 ms tick |
+|---|---|---|---|---|
+| Front-Left | 0 | 0.00° | 0.00 cm | correct by luck — its offset is 0 |
+| Front-Right | 10 | 10.95° | 7.11 cm | |
+| Rear-Right | 15 | 11.42° | 6.93 cm | |
+| Rear-Left | 5 | **21.45°** | **13.15 cm** | |
+
+Normal stance travel is 0.67 cm per tick and the joint-rate budget behind
+`STEP_TICK_MS = 40` is 9.4°/tick, so this was ~20× over on both counts. All four
+feet are planted at that instant (swing is local indices 1–4, not 0), so nothing
+was airborne to absorb it — the three legs fought each other through the frame at
+full duty, either scrubbing the feet or lurching the body. This is precisely the
+slam the whole Home → Stand → Go sequence exists to prevent, and it fired on the
+first walking command every single time.
+
+`gait_entry_pose()` now returns each leg's own phase-shifted entry frame and the
+ramp targets that. Verified: worst residual jump 0.00°, and the first cyclic tick
+is 9.26° — inside budget.
 
 ---
 
@@ -582,6 +685,33 @@ maps that to physical motion. The turn *kinematics* are verified in
 but the sim does not model `reverse`, so **whether the `reverse` flags compose
 correctly with a turn is a bench check** — do it on a stand, off the ground,
 before any powered turning.
+
+### Verify the IMU roll/pitch signs before the first unsupported walk
+**Not verified on hardware, and it is positive feedback if it is wrong.**
+
+`attitude_height_offsets()` assumes **positive roll = right side down** and
+**positive pitch = nose up**, and levels by extending the legs on the low side.
+The maths is right for that convention (checked: `dz = gain * (hx*tan(r) -
+hy*tan(p))` extends the right legs for `r > 0` and shortens the front legs for
+`p > 0`, both restoring). But which way the BNO085's roll and pitch actually run
+depends on how the board is physically bolted in, and nothing in the code or the
+simulator can tell you that.
+
+If either axis is inverted, the levelling drives the tilt **the wrong way** and
+grows it until it hits `ATTITUDE_LIMIT_CM = 4.0`. Four cm of differential leg
+height across the 53 cm track is `atan(8/53) ≈ 8.6°` of *induced* roll on top of
+whatever tilt started it — enough to put the robot over.
+
+Bench check, on a stand, legs off the ground:
+
+1. Watch the `[IMU Reflex]` line while you tip the chassis by hand.
+2. Roll it **right side down**. `Roll` must print **positive**.
+3. Pitch it **nose up**. `pitch` must print **positive**.
+4. If either is backwards, flip the sign in `attitude_height_offsets()` — the
+   docstring says to fix it there rather than anywhere downstream, so that the
+   simulator and the robot keep agreeing.
+
+Do this before the robot ever carries its own weight while walking.
 
 ### Front/rear mirroring is handled in software — verified
 The IK solves a **knee-forward** leg: at neutral stance the knee node sits at
@@ -1155,8 +1285,22 @@ its normal recovery instead of leaving three legs walking. A new frame from the
 Pi clears the latch, so a jam retries every 1.5 s rather than spinning at full duty.
 
 **Progress, not duty, is the discriminator** — a legitimate large move also
-saturates, it just closes its error. Verified against a first-order motor model
-running the real controller (`scratchpad/verify_stall.py`):
+saturates, it just closes its error.
+
+**Progress is now two signals, either of which clears the window:** the error
+fell by 2°, *or* the encoder moved by 2° worth of ticks. The encoder term was
+added on re-review and is what makes a false latch structurally impossible rather
+than merely unlikely. Without it, a joint that tracks a fast swing with a
+permanent several-degree lag is saturated the whole time and its error never
+falls 2° below the ratchet floor, so the 1.5 s timer would run out mid-stride and
+abort a perfectly healthy leg into a three-legged recovery — itself a fall risk.
+A jammed motor has a stationary encoder by definition, so requiring both costs
+nothing on a real jam: it still latches at exactly 1.50 s. Re-verified with a
+joint driven at 120°/s against a target running away at 200°/s — 720° of travel,
+never latched.
+
+Verified against a first-order motor model running the real controller
+(`scratchpad/verify_stall.py`):
 
 | case | result |
 |---|---|

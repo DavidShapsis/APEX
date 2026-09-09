@@ -82,6 +82,28 @@ SWING_HEIGHT = 5.0
 # Must match Pico/pico_main.py STEP_TICK_MS -- used to time the startup ramp.
 STEP_TICK_S = 0.040
 
+# Floor on how often the control loop may push a rebuilt gait to the legs.
+#
+# A frame is 2 + 20*16 + 16 = 338 bytes; at 115200 8N1 that is 29.3 ms of wire
+# time per port. The resend trigger (steering moved >5 deg, tilt >1.5 deg,
+# stride >0.05) is evaluated every ~10 ms and nothing rate-limited it, so a
+# turn or a bit of uneven ground could queue frames faster than the wire could
+# carry them. Two failures, both measured in scratchpad/wire_timing.py:
+#
+#   * under ~30 ms the worker starts the next frame while the previous is still
+#     draining, and its reset_output_buffer() (POSIX tcflush) DISCARDS the tail
+#     -- including the end marker, which leaves the Pico stuck in is_receiving;
+#   * under ~69 ms (29.3 wire + 40 tick) the old firmware never advanced a
+#     single gait step, because it reset its step clock on every end marker:
+#     0 steps in 20 s, i.e. the robot stands still while the dashboard says
+#     WALKING.
+#
+# 100 ms keeps steering latency at 10 Hz -- 1.7 cm of travel at 16.7 cm/s -- and
+# leaves 3.4x margin over the wire time. The Pico-side staging fix removes the
+# 69 ms floor as well, but this stays as the wire-level backstop and so that
+# newer Pi code against un-reflashed firmware degrades rather than freezes.
+MIN_GAIT_RESEND_S = 0.10
+
 # Must match Pico/pico_main.py MAX_GAIT_STEPS. The Pico treats an overlong frame
 # as a desynced stream and throws the whole thing away, so a frame that exceeds
 # this does not degrade -- it silently does nothing. send_entire_gait() refuses
@@ -503,6 +525,27 @@ class PiQuadrupedController(Node):
             self.walking_enabled = False
         return True
 
+    def gait_entry_pose(self, gait):
+        """{leg_id: first frame that leg will actually be commanded} for a cyclic gait.
+
+        NOT gait[0] for every leg. _gait_serial_worker rotates each leg's buffer
+        by phase_offsets(), so leg L's Pico receives gait[offsets[L]][L] at its
+        buffer position 0 -- buffer index j for leg L is global tick j - offset_L,
+        which is exactly what apply_body_shift() assumes.
+
+        Ramping all four legs to gait[0] instead put them at four DIFFERENT
+        global ticks at once, an attitude the body never actually holds, and the
+        first cyclic tick then snapped each one to its real phase: measured 11.0,
+        11.4 and 21.5 deg at a joint for FR/RR/RL, i.e. a planted foot yanked
+        7.1, 6.9 and 13.2 cm sideways in a single 40 ms tick against 0.67 cm of
+        normal stance travel. All four feet are on the ground at that moment, so
+        the legs fight each other through the frame at full duty. FL was the only
+        leg the old ramp aimed at correctly, because its offset is 0.
+        """
+        offsets = phase_offsets(len(gait))
+        return {leg_id: gait[offsets[leg_id] % len(gait)][leg_id]
+                for leg_id in LEG_ORDER}
+
     def engage_walking(self):
         """Ramps from the stand pose into the gait's first frame, then starts
         the continuous cyclic walk. Refuses unless the robot is already
@@ -515,7 +558,7 @@ class PiQuadrupedController(Node):
             self.get_logger().error("Refusing to walk: home every leg and Stand first.")
             return False
 
-        ramp = self.build_ramp(self.stand_pose, self.all_angles[0])
+        ramp = self.build_ramp(self.stand_pose, self.gait_entry_pose(self.all_angles))
         if not self.send_entire_gait(ramp, cycle=False):
             return False
         time.sleep((len(ramp) - 1) * STEP_TICK_S + 0.2)
@@ -809,6 +852,26 @@ class PiQuadrupedController(Node):
         except Exception as e:
             self.get_logger().error(f"Error in recovery parsing: {e}")
 
+    def _drain(self, targets, deactivated=()):
+        """Block until every byte just written has actually left the UART.
+
+        The worker's own send loop is ~22 ms (20 x time.sleep(0.001)) but a
+        20-step frame is 338 bytes = 29.3 ms on the wire at 115200. Without this
+        the next frame's reset_output_buffer() -- tcflush(TCOFLUSH) on POSIX --
+        discards the ~7 ms of tail still queued, and the piece most likely to go
+        is the end marker. The Pico is then stuck in is_receiving, eats the next
+        START_MARKER as payload, and only recovers once enough garbage arrives
+        to trip MAX_GAIT_STEPS. Draining makes the worker's loop period at least
+        the wire time, which makes that race impossible rather than unlikely.
+        """
+        for leg_id, s in targets:
+            if leg_id in deactivated:
+                continue
+            try:
+                s.flush()
+            except Exception:
+                pass
+
     def _gait_serial_worker(self):
         local_gait = None
         cycle_this_gait = True
@@ -841,6 +904,7 @@ class PiQuadrupedController(Node):
                         s.write(marker)
                     except Exception as e:
                         print(f"Command failed on {LEG_NAMES.get(leg_id, leg_id)}: {e}")
+                self._drain(cmd_targets)
                 continue
 
             if recovery_job is not None:
@@ -870,6 +934,8 @@ class PiQuadrupedController(Node):
                     trigger_serial.write(self.oneshot_end_marker)
                 except Exception as e:
                     print(f"Serial transmission crash during recovery: {e}")
+
+                self._drain(other_targets + [(None, trigger_serial)])
 
                 with self.serial_lock:
                     # Clears the RECOVERY activity only. The operating mode is
@@ -970,6 +1036,8 @@ class PiQuadrupedController(Node):
                     s.write(marker)
                 except Exception:
                     pass
+
+            self._drain(targets, deactivated)
 
             # The Pico cycles the buffer on its own, so one clean frame is
             # enough. Re-broadcasting would flush this frame mid-flight on the
@@ -1151,6 +1219,9 @@ def main():
     # on the transition, rather than every pass.
     avoid_was_enabled = False
     last_oled_refresh = 0.0
+    # Wall time of the last gait frame handed to the worker -- see
+    # MIN_GAIT_RESEND_S. 0.0 lets the first update go out immediately.
+    last_gait_send = 0.0
 
     # The heading EMA below is tuned for one step per fresh compass sample. The
     # nav poller runs at ~10 Hz but this loop at ~100 Hz, so gate the filter on
@@ -1328,7 +1399,16 @@ def main():
                 # Gated on walking_enabled: home every leg, Stand, then Go from
                 # the web dashboard arms this. Before that the legs simply hold
                 # wherever homing/Stand left them.
-                if controller.walking_enabled and (dir_delta or pitch_delta or roll_delta or stride_delta):
+                #
+                # Also rate-limited: a frame costs 29.3 ms of wire time and
+                # stalls the Pico's step clock while it lands, so pushing them
+                # faster than MIN_GAIT_RESEND_S starves the gait instead of
+                # steering it. Skipping does not lose the change -- last_sent_*
+                # is only updated when a frame actually goes out, so the delta
+                # stays tripped and the update leaves on the next eligible pass.
+                resend_due = (current_time - last_gait_send) >= MIN_GAIT_RESEND_S
+                if (controller.walking_enabled and resend_due
+                        and (dir_delta or pitch_delta or roll_delta or stride_delta)):
                     if int(current_time) % 2 == 0:
                         print(f"[IMU Reflex] Levelling. Roll {roll_tilt:+.2f} deg, "
                               f"pitch {pitch_tilt:+.2f} deg")
@@ -1365,6 +1445,7 @@ def main():
                         body_shift_cm=body_shift_cm,
                     )
                     controller.send_entire_gait(new_angles)
+                    last_gait_send = current_time
 
                     with controller.serial_lock:
                         controller.last_sent_direction = chosen_direction
@@ -1394,6 +1475,22 @@ def main():
                             print(f"{LEG_NAMES.get(homed_leg, homed_leg)} homed.")
                         except (IndexError, ValueError):
                             pass
+                        continue
+                    if line.startswith("STALL,"):
+                        # Emitted just ahead of the ABORTED that actually drives
+                        # recovery, and it is the only thing that says WHICH
+                        # joint jammed and WHY the leg aborted -- an FSR
+                        # touchdown abort looks identical on the wire otherwise.
+                        # It used to fall through every branch here and vanish.
+                        parts = line.split(',')
+                        try:
+                            leg = LEG_NAMES.get(int(parts[1]), parts[1])
+                            joint = parts[2]
+                        except (IndexError, ValueError):
+                            leg, joint = s.port, '?'
+                        print(f"[STALL] {leg}: {joint} joint jammed at full duty "
+                              f"-- drive cut, recovering. Check for a mechanical "
+                              f"obstruction before walking again.")
                         continue
                     if line.startswith("ABORTED"):
                         print(f"Hardware Stall Warning on UART: {s.port}")
