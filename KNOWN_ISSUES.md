@@ -1555,6 +1555,50 @@ can wrap; largest step-to-step change is roll 9.67°, pitch 15.33°, knee 16.88�
 and the IK→FK round-trip closes to **0.057 mm**, which confirms the angles
 actually put the foot on the commanded point via the intended branch.
 
+### Gait quality — one leg up, three legs pushing; turning really does use hip roll
+
+Separate question from "does it fall over", and checked separately in
+`scratchpad/verify_gait_quality.py`.
+
+**Straight walk.** Never more than one leg airborne, with four four-feet-down
+beats per cycle and the lift order `FL → RR → FR → RL`. Every leg's hip pitch
+sweeps **16.41°** monotonically across its stance, and all four feet travel
+**−10.00 cm** fore/aft in the body frame — exactly the commanded 10 cm stride,
+so the propulsion is real and shared, not one leg dragging the others. The swing
+leg recovers **+8.10 cm** forward against that. Planted feet: **zero** ticks
+where any two moved in opposing directions, worst per-tick disagreement
+**0.100 mm** (that is the `round(x, 2)` quantisation in `body_twist_xy_path`,
+already noted above, not scrub), and **0.000 mm** of height deviation.
+
+The body sway is measured separately on purpose: it is a 2 cm lean of the whole
+body toward the supporting tripod, so it moves every planted foot together. That
+is a translation, not scrub, and folding it into the propulsion numbers hides
+the actual stroke.
+
+**Turning.** Hip roll is the only joint that can move a foot sideways —
+`x = r_xz·sin(roll − phi2)`, while pitch and knee only set `r_xz` and the
+fore/aft reach. Measured over **stance only**, where `x` and `z` are both
+constant so any roll movement is lateral placement and nothing else:
+
+| yaw cmd | fwd stride | hip-roll sweep over stance | lateral foot travel | |
+|---|---|---|---|---|
+| 0.0 | 10.0 | **0.0000°** | 0.00 cm | straight |
+| −3.3 | 6.7 | 3.09° | 1.94 cm | arc |
+| −6.7 | 3.3 | 6.28° | 3.95 cm | arc |
+| −10.0 | 0.0 | **9.33°** | 5.88 cm | spin in place |
+
+Freeze the roll joint at its mid-stroke value and re-solve the FK and the foot
+lands up to **3.20 cm off its commanded arc** — that displacement is roll's
+doing and nothing else's. Direction is right too: the feet sweep −10° about the
+body centre for a left (CCW) turn and +10° for a right, i.e. opposite the body,
+which is what yaws it.
+
+**Do not read the raw roll sweep across the whole cycle as steering.** Over a
+full cycle even straight walking shows ~2.6° of roll movement, because the swing
+lifts the foot 5 cm and the abductor offset `a = 9.65 cm` is perpendicular to the
+leg plane — shortening the leg rotates the abductor on its own. Real kinematics,
+nothing to do with turning. Stance-only is the honest measurement.
+
 ### What `reverse` does and does not control
 
 **`reverse` cannot set which way a knee points.** It flips one joint's motor
