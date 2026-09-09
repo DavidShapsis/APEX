@@ -89,6 +89,11 @@ class JointController:
         self.stalled = False
         self._stall_since = None
         self._stall_ref = 0.0
+        self._stall_steps = self._steps
+        # Encoder movement that counts as "the shaft is turning", in ticks.
+        # A jammed motor's encoder does not move; anything that does is making
+        # progress even if it cannot keep up with the target.
+        self._stall_move_ticks = max(1, int(STALL_PROGRESS_DEG * self.ticks_per_degree))
 
     def reset_pid(self):
         """Drop accumulated PID state and restart the dt clock.
@@ -106,22 +111,42 @@ class JointController:
         self.stalled = False
         self._stall_since = None
         self._stall_ref = 0.0
+        self._stall_steps = self._steps
 
     def _update_stall(self, now, error, saturated):
         """Latch self.stalled when the output has been pinned with no progress.
 
         Progress resets the window, so a long legitimate move never trips it --
         only an error that refuses to fall while the motor is at full duty.
+
+        Progress is TWO signals, either of which clears the window:
+
+          * the error fell by STALL_PROGRESS_DEG -- the joint is closing on its
+            target;
+          * the encoder moved by the same amount -- the shaft is turning, even
+            if the target is running away from it faster than the joint can go.
+
+        The encoder term is what makes a false latch structurally impossible
+        rather than merely unlikely. Without it, a joint that tracks a fast
+        swing with a persistent 1-9 deg lag is saturated the whole time and its
+        error never falls 2 deg below the ratchet floor, so the timer would run
+        out mid-stride and abort a perfectly healthy leg into a three-legged
+        recovery -- itself a fall risk. A jammed motor has a stationary encoder
+        by definition, so requiring both costs nothing on a real jam.
         """
         if not saturated or abs(error) < 1.0:
             self._stall_since = None
             return
+        steps = self._steps
         if self._stall_since is None:
             self._stall_since = now
             self._stall_ref = abs(error)
-        elif abs(error) <= self._stall_ref - STALL_PROGRESS_DEG:
-            self._stall_since = now              # still closing -- keep going
+            self._stall_steps = steps
+        elif (abs(error) <= self._stall_ref - STALL_PROGRESS_DEG
+                or abs(steps - self._stall_steps) >= self._stall_move_ticks):
+            self._stall_since = now              # still moving -- keep going
             self._stall_ref = abs(error)
+            self._stall_steps = steps
         elif time.ticks_diff(now, self._stall_since) / 1000000.0 >= STALL_TIMEOUT_S:
             self.stalled = True
 

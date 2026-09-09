@@ -237,11 +237,12 @@ Flash each Pico with MicroPython, then copy the contents of `Code/Pico/` to the 
  
 ### ⚠ Before powering the motors
  
-- **Re-flash all four Picos.** The stall guard and several other firmware fixes live on the Pico side; a Pi running current code against old firmware still cannot stand. See the banner in `KNOWN_ISSUES.md`.
+- **Re-flash all four Picos.** Seven firmware fixes live on the Pico side; a Pi running current code against old firmware still cannot stand, and still will not walk. See the banner in `KNOWN_ISSUES.md`.
 - **Set `FSR_PIN` in `pico_main.py`** to whichever pin carries that leg's own foot sensor before you connect the FSRs. It defaults to `16`.
 - **Set `LEG_ID`** on each board — all four currently ship as `0`.
+- **Check the IMU roll/pitch signs on a stand.** Levelling assumes right-side-down is positive roll and nose-up is positive pitch. If either axis is bolted in backwards the correction is positive feedback and will drive the robot over. Steps are in `KNOWN_ISSUES.md` → *Before you walk it*.
  
-A jammed joint is now caught in software: `JointController` latches a stall when the PID has been saturated for 1.5 s without the error falling, zeroes that joint's PWM, and raises the existing `ABORTED` path so the Pi runs its recovery. Before this the joint simply held 100% duty until something burned out.
+A jammed joint is now caught in software: `JointController` latches a stall when the PID has been saturated for 1.5 s with neither the error falling nor the encoder turning, zeroes that joint's PWM, and raises the existing `ABORTED` path so the Pi runs its recovery. Before this the joint simply held 100% duty until something burned out.
  
 ---
  
@@ -252,14 +253,14 @@ A jammed joint is now caught in software: `JointController` latches a stall when
 | IK / FK engine | Complete |
 | Gait generation | Complete |
 | Pico PID motor control | Complete |
-| Pi-Pico serial protocol | Complete |
-| IMU stabilization | Complete |
+| Pi-Pico serial protocol | Complete — frames stage on the Pico, re-sends rate-limited to 10 Hz |
+| IMU stabilization | Complete — **verify the roll/pitch signs on a stand first** |
 | GPS navigation | Complete |
 | Camera streaming | Complete |
 | Recovery path | Complete |
 | Homing / Stand / Go / Stop dashboard workflow | Complete |
 | ML obstacle avoidance | Built, needs hardware tuning |
-| Motor stall protection (software) | Complete — latches and recovers, needs a bench check |
+| Motor stall protection (software) | Complete — error *and* encoder must both stall; needs a bench check |
 | Per-motor current sensing (BTS7960 `IS`) | Planned, not started |
 | FSR foot contact | Complete — set `FSR_PIN` to match your wiring |
 | Mechanical build | In progress |
