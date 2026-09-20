@@ -1,4 +1,4 @@
-# Known Issues
+# Engineering Notes
 
 Defects found during a full read of the control path that were **not** fixed, with
 why they were deferred, plus the manual configuration steps the fixes introduced.
@@ -26,6 +26,7 @@ The two-minute version. Full detail is one click away on each line.
 - **[Obstacle avoidance has never run on real hardware](#obstacle-avoidance-built-and-simulated-never-run-on-hardware)** — simulated and unit-tested only; tune thresholds on the bench first.
 - **[Compass hard/soft-iron calibration still isn't done](#compass-declination-tilt-now-handled-hard-soft-iron-calibration-still-not)** — declination and tilt compensation are in, calibration against local magnetic interference is not.
 - **[Per-motor current sensing is planned, not built](#current-sensing-banner)** — the BTS7960 `IS` pins could catch a jammed joint or collision; nothing reads them yet.
+- **[Idea, not built: one generic preloaded UF2 for all 4 Picos](#planned-ship-one-generic-uf2-with-the-pico-files-preloaded)** — flash MicroPython and the default `.py` files in a single step; still editable in Thonny afterward.
 - **[Swing clearance is 4.76 cm, not the nominal 5.0](#swing-clearance-is-4-76-cm-not-the-nominal-5-0)** — small margin, worth knowing before assuming ground clearance.
 - **[Encoder zero must match `HOME_POSE`](#encoder-zero-must-match-home-pose-this-is-what-homing-top-of-doc-is-for)** — that's what the manual homing step (below) is for.
 - **[Protocol gaps accepted for now](#protocol-gaps-accepted-for-now)** — known wire-protocol rough edges that aren't worth fixing yet.
@@ -48,6 +49,7 @@ The two-minute version. Full detail is one click away on each line.
   - [Validated against real ground-robot imagery](#validated-against-real-ground-robot-imagery)
   - [First hardware session should be, in order](#first-hardware-session-should-be-in-order)
 - [PLANNED — migrate ground-contact sensing from FSR to current sensing](#planned-migrate-ground-contact-sensing-from-fsr-to-current-sensing)
+- [PLANNED — ship one generic UF2 with the Pico files preloaded](#planned-ship-one-generic-uf2-with-the-pico-files-preloaded)
 - [Homing — a manual step you have to do, before every power-on](#homing-a-manual-step-you-have-to-do-before-every-power-on)
   - [RESOLVED — Home button, one leg at a time](#resolved-home-button-one-leg-at-a-time)
   - [RESOLVED — boot no longer moves the legs](#resolved-boot-no-longer-moves-the-legs)
@@ -635,6 +637,61 @@ touching `fsr.py`, the abort/`ABORTED` protocol, or `handle_recovery` should tre
 FSR as the *current, temporary* mechanism, not a permanent architecture decision —
 don't build more FSR-specific tooling or tuning on top of it without checking
 whether this migration has since landed.
+
+---
+
+<a id="planned-ship-one-generic-uf2-with-the-pico-files-preloaded"></a>
+## PLANNED — ship one generic UF2 with the Pico files preloaded
+
+Idea, not built. Right now, setting up a Pico is two steps: flash a stock
+MicroPython `.uf2` (drag-and-drop in BOOTSEL mode), then copy `pico_main.py`
+(as `main.py`), `motor_control.py`, and `fsr.py` onto it separately (Thonny,
+`mpremote`, or similar). The second step is also where `LEG_ID`, `FSR_PIN`, and
+the per-joint `reverse` flags get set for that specific leg before copying.
+
+The idea is to collapse the first step into the second: build one combined
+`.uf2` that already contains both the MicroPython interpreter and the default
+copies of these three files, so flashing it is a single drag-and-drop and the
+Pico boots with the files already in place — as ordinary files on its real
+filesystem, not compiled in, so they're still just as editable in Thonny
+afterward. Each of the 4 boards would still need someone to open `main.py` and
+change `LEG_ID`/`reverse`/`FSR_PIN` for that leg, same as today; this only
+removes the separate copy step, not the per-board configuration.
+
+**This is not the same as freezing the code into firmware**, which was also
+considered and rejected earlier in this project for the same reason: frozen
+modules are compiled into read-only program flash, not visible or editable as
+files, so anyone tuning `LEG_ID` or a `reverse` flag would need a full firmware
+rebuild instead of an edit in Thonny. A preloaded filesystem avoids that —
+the files are real, writable files from the moment the board boots.
+
+**How it would actually work:** a `.uf2` file is a sequence of independent,
+self-addressed 512-byte blocks — each block carries its own target flash
+address, so a valid `.uf2` can be assembled by writing to different regions in
+one file. Concretely:
+
+1. Take the stock MicroPython `.uf2` for the RP2040 (interpreter only, empty
+   filesystem).
+2. Separately build a small littlefs filesystem image — MicroPython's default
+   internal filesystem format on RP2040 — containing the three files above with
+   their default values already in place.
+3. Convert that filesystem image into `.uf2` blocks targeting the flash address
+   where that specific MicroPython build expects its filesystem to live.
+4. Concatenate the firmware `.uf2` and the filesystem `.uf2` into one file.
+   Flashing the combined file performs both writes in the one BOOTSEL
+   drag-and-drop.
+
+**The real cost, and why this is parked rather than built:** the filesystem's
+flash offset in step 3 is specific to the exact MicroPython firmware build the
+combined image starts from. Pull a newer MicroPython release later and that
+offset can shift, silently landing the preloaded files in the wrong place —
+so a combined image has to be treated as a build artifact pinned to one named
+MicroPython version, not a file to hand out and forget. Given all 4 boards
+still need per-board hand-editing regardless, this buys back exactly one
+drag-and-drop step per board, at the cost of maintaining and re-verifying that
+pin every time the MicroPython version changes. Worth doing if reflashing
+boards from scratch becomes routine (a build run, new hardware); not worth it
+for the occasional reflash this project does today.
 
 ---
 

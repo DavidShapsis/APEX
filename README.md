@@ -25,7 +25,7 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 - **Mission Control Dashboard** — Flask web UI that walks through homing each leg, standing, and going before the robot is allowed to walk; live camera feed with a steering readout, an obstacle-avoidance toggle, and per-leg debug controls. Served entirely from the Pi (Bootstrap vendored locally, no internet needed in the field)
 - **ML Obstacle Avoidance** — pretrained monocular depth model (Depth-Anything-V2-Small, ONNX) turns the webcam feed into a forward costmap and steers around obstacles, layered on top of both manual and GPS waypoint steering. Dashboard toggle
 - **Threaded Sensor Polling** — every blocking sensor read (IMU + compass over I2C, GPS UART, INA219) runs on its own poller thread; the control loop only ever reads a lock-protected snapshot, so a stuck bus degrades to a safe default instead of stalling the gait
-- **Per-Motor Current Sensing** *(planned, not started)* — reading each BTS7960's built-in `IS` output so a joint meeting unexpected resistance (a crash, a jam) drops the robot into its recovery routine, replacing the FSR-based foot contact. No code for this exists yet; see `KNOWN_ISSUES.md`
+- **Per-Motor Current Sensing** *(planned, not started)* — reading each BTS7960's built-in `IS` output so a joint meeting unexpected resistance (a crash, a jam) drops the robot into its recovery routine, replacing the FSR-based foot contact. No code for this exists yet; see `ENGINEERING_NOTES.md`
 - **ROS 2 Integration** — inter-node communication via ROS 2 topics for direction commands, navigation mode switching, and the homing/stand/go/stop dashboard controls
 
 ---
@@ -40,7 +40,7 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 | BTS7960 43A H-Bridge | 12 | One per joint |
 | BNO085 IMU | 1 | Quaternion-based orientation |
 | HGLRC M100-5883 GPS/Compass | 1 | Outdoor autonomous nav |
-| INA219 Voltage Monitor | 1 | Battery voltage; current sensing wired but unconfirmed/unused, see `KNOWN_ISSUES.md` |
+| INA219 Voltage Monitor | 1 | Battery voltage; current sensing wired but unconfirmed/unused, see `ENGINEERING_NOTES.md` |
 | Carbon Fiber Tube (16x12mm) | — | Lower leg structure |
 | Aluminum 6063 Tube (1in OD) | — | Upper leg structure |
 | 3S 11.1V LiPo 80C 5Ah | 1 | Motor power |
@@ -68,7 +68,7 @@ Pi 5 (ROS 2)
 ├── webcam.py            # USB camera capture
 ├── vision_obstacle.py   # Depth model, obstacle costmap, committed avoidance planner
 ├── vision_test/         # Standalone notebook for tuning the vision pipeline
-├── power_monitor.py     # INA219 -- voltage only is read; current/power path unconfirmed, see KNOWN_ISSUES
+├── power_monitor.py     # INA219 -- voltage only is read; current/power path unconfirmed, see ENGINEERING_NOTES
 ├── audio.py             # Bluetooth speaker alerts
 ├── requirements.txt     # pip dependencies (ROS 2 itself is a separate apt install)
 └── single_leg_test.py   # Standalone single-leg test harness (no ROS/IMU/GPS)
@@ -121,7 +121,7 @@ A **body twist**, not stride differencing. `build_gait()` takes a forward stride
  
 `pi5_main` maps the turn command (+ = right; a dashboard control or the GPS heading error) to a yaw rate plus a forward stride that tapers to zero by 90°, so a ±90° command spins in place while a smaller heading error arcs and still advances. On the dashboard the **LEFT / RIGHT** buttons send ±45° (a moderate arc at about half stride) and the slider spans the full −90°…+90°, its ends being a spin in place; the slider tracks the buttons so it always shows the active command. `quadruped_sim.py --report` checks the straight gait *and* a turn sweep: a full spin is ~13°/cycle (~16°/s, a 90° turn in ~5.5 s) with the stability margin, joint rate, and one-leg-airborne crawl all holding.
  
-Before any of this runs, the robot must be homed, stood up, and started from the web dashboard -- see `KNOWN_ISSUES.md` for that flow.
+Before any of this runs, the robot must be homed, stood up, and started from the web dashboard -- see `ENGINEERING_NOTES.md` for that flow.
  
 ---
  
@@ -143,7 +143,7 @@ The compass reads *true* north — `MAGNETIC_DECLINATION_DEG` in `pi5_main.py` (
 
 The GPS is guarded the same way: `GPSReader` timestamps its last positional fix, and a receiver that goes quiet (fix older than 5 s) counts as *no fix* even though `has_fix` is still latched — autonomous nav then holds position instead of driving toward a frozen waypoint bearing. A camera that fails to open raises at boot (marked down, degrade banner) rather than reading as healthy while returning nothing.
 
-The INA219 is read for **voltage only** right now — whether a shunt is actually in the load path for current sensing is unconfirmed, so `get_current()`/`get_power()` are kept but unused rather than feeding a meaningless number into the low-battery alarm. `LOW_VOLT_THRESHOLD` in `pi5_main.py` also needs a bench check (see `KNOWN_ISSUES.md`) to confirm which rail it's actually measuring.
+The INA219 is read for **voltage only** right now — whether a shunt is actually in the load path for current sensing is unconfirmed, so `get_current()`/`get_power()` are kept but unused rather than feeding a meaningless number into the low-battery alarm. `LOW_VOLT_THRESHOLD` in `pi5_main.py` also needs a bench check (see `ENGINEERING_NOTES.md`) to confirm which rail it's actually measuring.
  
 ---
  
@@ -180,7 +180,7 @@ python3 vision_obstacle.py --live 0      # live decisions from the camera
  
 Then toggle **AVOIDANCE** on the dashboard. While it is on, the video feed is overlaid with the detection bins (red = blocked), so the thresholds can be tuned by eye. `Code/Pi5/vision_test/obstacle_avoidance_test.ipynb` is a standalone notebook for the same tuning against still images.
  
-**Not yet verified on hardware** — see `KNOWN_ISSUES.md` for what needs measuring first.
+**Not yet verified on hardware** — see `ENGINEERING_NOTES.md` for what needs measuring first.
  
 ---
  
@@ -237,10 +237,10 @@ Flash each Pico with MicroPython, then copy the contents of `Code/Pico/` to the 
  
 ### ⚠ Before powering the motors
  
-- **Re-flash all four Picos.** Seven firmware fixes live on the Pico side; a Pi running current code against old firmware still cannot stand, and still will not walk. See the banner in `KNOWN_ISSUES.md`.
+- **Re-flash all four Picos.** Seven firmware fixes live on the Pico side; a Pi running current code against old firmware still cannot stand, and still will not walk. See the banner in `ENGINEERING_NOTES.md`.
 - **Set `FSR_PIN` in `pico_main.py`** to whichever pin carries that leg's own foot sensor before you connect the FSRs. It defaults to `16`.
 - **Set `LEG_ID`** on each board — all four currently ship as `0`.
-- **Check the IMU roll/pitch signs on a stand.** Levelling assumes right-side-down is positive roll and nose-up is positive pitch. If either axis is bolted in backwards the correction is positive feedback and will drive the robot over. Steps are in `KNOWN_ISSUES.md` → *Before you walk it*.
+- **Check the IMU roll/pitch signs on a stand.** Levelling assumes right-side-down is positive roll and nose-up is positive pitch. If either axis is bolted in backwards the correction is positive feedback and will drive the robot over. Steps are in `ENGINEERING_NOTES.md` → *Before you walk it*.
  
 A jammed joint is now caught in software: `JointController` latches a stall when the PID has been saturated for 1.5 s with neither the error falling nor the encoder turning, zeroes that joint's PWM, and raises the existing `ABORTED` path so the Pi runs its recovery. Before this the joint simply held 100% duty until something burned out.
  

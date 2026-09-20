@@ -10,7 +10,7 @@ MIN_STALL_POWER = 0.15
 # meets something it cannot move sits at 100% duty with nothing to bring it back
 # down -- no current limit, no thermal cutout. Held, that cooks the motor or the
 # BTS7960. This is the software backstop until the BTS7960 IS current-sense pins
-# are wired (see KNOWN_ISSUES).
+# are wired (see ENGINEERING_NOTES).
 #
 # The discriminator is PROGRESS, not duty: a normal large move also saturates,
 # but it closes its error fast. The gait's worst legitimate case is the Stand/Go

@@ -271,7 +271,7 @@ class PiQuadrupedController(Node):
         # --- Vision obstacle avoidance ---
         # Kept in its own fields rather than as another RobotState value on
         # purpose. That enum already conflates operating mode (MANUAL/
-        # AUTONOMOUS) with transient activity (RECOVERY), which KNOWN_ISSUES
+        # AUTONOMOUS) with transient activity (RECOVERY), which ENGINEERING_NOTES
         # flags as the cause of three separate bugs -- and avoidance is
         # orthogonal to both anyway: it modifies the steering command in either
         # mode without changing which mode is active.
@@ -485,7 +485,7 @@ class PiQuadrupedController(Node):
 
         Two identical entries, not one, because the Pico skips index 0 of every
         buffer -- it advances to index 1 on the first tick (see the "stale
-        target for one tick" note in KNOWN_ISSUES).
+        target for one tick" note in ENGINEERING_NOTES).
         """
         hold = list(self.stand_pose) + [0.0]
         frame = [[list(hold) for _ in LEG_ORDER] for _ in range(2)]
@@ -1154,7 +1154,7 @@ def main():
     # TODO(hardware): confirm what the INA219's VIN- actually senses and set this
     # accordingly. 4.75 suits the 5V regulated rail (warn on regulator sag). If
     # VIN- is on the 2S pack instead (~6.0-8.4V LiPo / 6.6-8.7V LiHV) this can
-    # never fire and it should be ~6.2-6.6V. See KNOWN_ISSUES.
+    # never fire and it should be ~6.2-6.6V. See ENGINEERING_NOTES.
     LOW_VOLT_THRESHOLD = 4.75
     # Current/power are NOT checked: it is unconfirmed whether a shunt is in the
     # load path at all (INA219 may be wired as a plain voltmeter). INA219 keeps

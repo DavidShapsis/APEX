@@ -264,7 +264,7 @@ while True:
     # already zeroed that joint's PWM; raise the same ABORTED path the FSR uses
     # so the Pi brings the whole robot to a safe pose instead of leaving three
     # legs walking. Without this the joint simply held 100% duty until something
-    # burned out -- see KNOWN_ISSUES.
+    # burned out -- see ENGINEERING_NOTES.
     stalled_joint = None
     for name, j in (("roll", roll_j), ("pitch", pitch_j), ("knee", knee_j)):
         if j.stalled:
