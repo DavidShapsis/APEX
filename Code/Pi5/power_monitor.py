@@ -4,7 +4,7 @@ from smbus2 import SMBus
 # shunt resistor is actually in the load path across VIN+/VIN- is unconfirmed,
 # so get_current() / get_power() are kept but nothing calls them (sensor_hub
 # reads voltage only). Confirm the wiring, then re-enable the current line in
-# sensor_hub._power_poll and the current check in pi5_main. See KNOWN_ISSUES.
+# sensor_hub._power_poll and the current check in pi5_main. See ENGINEERING_NOTES.
 
 
 class INA219:
