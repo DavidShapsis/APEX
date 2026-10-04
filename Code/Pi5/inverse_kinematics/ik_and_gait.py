@@ -55,7 +55,7 @@ def phase_offsets(num_steps):
     """Per-leg phase offsets, indexed by leg id.
 
     Evenly spaced quarter-cycle, which walks the legs in the stable crawl order
-    FL -> RR -> FR -> RL with a four-feet-down beat between each lift.
+    FL -> RL -> FR -> RR with a four-feet-down beat between each lift.
     """
     return [0, num_steps // 2, (3 * num_steps) // 4, num_steps // 4]
 

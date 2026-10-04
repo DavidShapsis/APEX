@@ -71,12 +71,18 @@ Pi 5 (ROS 2)
 ├── power_monitor.py     # INA219 -- voltage only is read; current/power path unconfirmed, see ENGINEERING_NOTES
 ├── audio.py             # Bluetooth speaker alerts
 ├── requirements.txt     # pip dependencies (ROS 2 itself is a separate apt install)
-└── single_leg_test.py   # Standalone single-leg test harness (no ROS/IMU/GPS)
+├── single_leg_test.py   # Standalone single-leg test harness (no ROS/IMU/GPS)
+├── test_pi_quadruped.py # Unit tests for the Pi-side controller (needs ROS 2 / rclpy)
+├── stream_tester.py     # Camera/stream bench script
+├── ros_development.txt  # Developer cheat sheet for the ROS workflow
+└── inverse_kinematics/gait_testing2.py, gait_testing3.py  # Old matplotlib gait experiments
  
 Pico (MicroPython, x4)
 ├── pico_main.py         # UART receiver, gait buffer, PID execution loop, homing/stop commands
 ├── motor_control.py     # BTS7960 PID joint controller with encoder feedback
-└── fsr.py               # Force sensitive resistor foot contact (set FSR_PIN per leg)
+├── fsr.py               # Force sensitive resistor foot contact (set FSR_PIN per leg)
+├── BTS7960_Test.py      # Bench test: drive one H-bridge directly
+└── single_motor_test.py # Bench test: single motor, no PID
 ```
  
 ### Pi to Pico Protocol
@@ -86,11 +92,11 @@ The Pi sends gait data over UART to each Pico using a binary protocol:
 - **Start:** `0xAA 0xAA`
 - **Home leg:** `0xAB 0xAB` -- zero this leg's encoders to the current physical pose, no payload
 - **Stop leg:** `0xAC 0xAC` -- cut motor holding torque, keep encoder tracking, no payload
-- **Payload:** up to 20 steps (gait) or 40 (ramp) x 16 bytes each (`struct.pack('ffff', roll, pitch, knee, is_swing)`)
+- **Payload:** one frame of 16-byte steps (`struct.pack('ffff', roll, pitch, knee, is_swing)`): a 20-step gait cycle, or a 41-entry Stand/Go ramp (`RAMP_STEPS + 1`). The Pico rejects frames longer than 48 steps
 - **End (cycle):** `0xFF × 16` -- Pico loops the buffer indefinitely (the walking gait)
 - **End (one-shot):** `0xFE × 16` -- Pico holds the final step (startup/recovery ramps)
  
-Each Pico steps through the gait buffer at 40ms per step. It's a **crawl gait, one leg airborne at a time** (25% swing / 75% stance duty factor) rather than a trot -- the four legs are phase-offset by `[0, N/2, 3N/4, N/4]`, giving lift order FL → RR → FR → RL, with three feet always planted. Each Pico also announces `LEG,<id>` over UART until it's identified, and reports `HOMED,<id>` / `ABORTED,<angles>` asynchronously.
+Each Pico steps through the gait buffer at 40ms per step. It's a **crawl gait, one leg airborne at a time** (25% swing / 75% stance duty factor) rather than a trot -- the four legs are phase-offset by `[0, N/2, 3N/4, N/4]`, giving lift order FL → RL → FR → RR, with three feet always planted. Each Pico also announces `LEG,<id>` over UART until it's identified, and reports `HOMED,<id>` / `ABORTED,<angles>` asynchronously.
  
 ---
  
@@ -272,13 +278,24 @@ A jammed joint is now caught in software: `JointController` latches a stall when
 ## Repo Structure
  
 ```
-Code/
-├── Pi5/                 # Raspberry Pi 5 code
-└── Pico/                # RP2040 MicroPython firmware
+APEX/
+├── Code/
+│   ├── Pi5/             # Raspberry Pi 5 code (ROS 2 node, dashboard, sensors, vision)
+│   └── Pico/            # RP2040 MicroPython firmware (one copy runs on every leg)
+├── CAD/                 # Fusion 360 leg and body models, PCB V1 design and Gerber files
+├── Photos/              # Build photos
+├── HARDWARE.md          # Pi 5 pin allocation and the status OLED wiring
+└── ENGINEERING_NOTES.md # Open issues, bench checklists, resolved defects, planned work
 ```
  
 ---
  
+## Contact
+ 
+Questions or inquiries: [apex.quadrupedalrobot@gmail.com](mailto:apex.quadrupedalrobot@gmail.com)
+
+---
+
 ## License
  
 MIT
