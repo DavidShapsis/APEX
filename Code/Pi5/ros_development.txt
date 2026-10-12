@@ -12,7 +12,7 @@ When you want to edit your robot's logic:
           cd /root/colcon_ws/src/APEX_ROS/APEX_ROS
 
   Step 3: Modify your files (using nano, vim, etc.)
-          nano Pi5_main.py
+          nano pi5_main.py
 
 
 2. THE RECOMPILE REVOLUTION (--symlink-install)
@@ -21,7 +21,7 @@ Because the workspace was built using symlinks, the files in your
 install space point directly to your source files.
 
   DO NOT REBUILD IF:
-  ✔ You modified code logic inside an existing file (e.g., Pi5_main.py, IMU.py).
+  ✔ You modified code logic inside an existing file (e.g., pi5_main.py, IMU.py).
   ✔ You added simple print statements or adjusted tuning variables.
   * Just save the file and run it. Your changes are live immediately.
 
@@ -36,7 +36,7 @@ Since systemd is not running inside this container environment, use
 these native commands from your workspace:
 
   # Force close any accidental lingering background runs
-  pkill -f Pi5_main.py
+  pkill -f pi5_main.py
 
   # Run directly in your terminal to watch stdout:
   /bin/bash /root/start_robodog.sh

@@ -1126,7 +1126,7 @@ def main():
     # dashboard instead of killing the boot before Flask is even up. SensorHub
     # already accepts None for any sensor.
     imu = _bring_up("IMU", lambda: IMU(sda_pin="D0", scl_pin="D1", bus_id=13, window_size=12), disp, health)
-    gps = _bring_up("GPS", lambda: GPSReader(uart_path='/dev/ttyUSB0', baudrate=9600), disp, health)
+    gps = _bring_up("GPS", lambda: GPSReader(uart_path='/dev/ttyUSB0', baudrate=115200), disp, health)
     compass = _bring_up("Compass", lambda: CompassReader(
         sda_pin=2, scl_pin=3, declination_deg=MAGNETIC_DECLINATION_DEG), disp, health)
     cam = _bring_up("Camera", lambda: USBWebcam(device_index="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_Camera_SN0001-video-index0"), disp, health)
@@ -1556,7 +1556,10 @@ def main():
                     controller.publish_homing_status()
                     last_status_publish = current_time
                     if current_time - last_oled_refresh > 2.0:
-                        disp.summary(health={k.upper(): v for k, v in health.items()},
+                        # Live health (compass/GPS dropouts update it), not the
+                        # boot-time snapshot, so the panel matches the dashboard.
+                        disp.summary(health={k.upper(): v for k, v
+                                             in controller.subsystem_health.items()},
                                      extra=("STOPPED" if not controller.walking_enabled
                                             else "WALKING"))
                         last_oled_refresh = current_time

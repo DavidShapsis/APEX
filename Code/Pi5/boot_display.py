@@ -24,21 +24,27 @@ Usage from pi5_main:
 """
 
 import socket
+import subprocess
 import threading
 import time
 
-# 128x64, ~6x8 default font -> 21 chars x 8 rows. 11 px line pitch shows 5 rows
-# comfortably with the top reserved for a heading.
+# 128x64, ~6x8 default font -> 21 chars per row. Under the heading (rows start
+# at y=13, 11 px pitch, last row must start by y=56) exactly 4 rows fit:
+# 13, 24, 35, 46. Keeping 5 log lines cut off the NEWEST one.
 _WIDTH, _HEIGHT = 128, 64
 _LINE_PX = 11
-_MAX_LOG = 5
+_MAX_LOG = 4
 _CHARS = 21
 
 
 def _my_ip():
-    """Best-effort primary IP. The UDP 'connect' sends nothing -- it just asks
-    the kernel which source address a packet to that host would use -- so this
-    works offline too (returns the AP address when the Pi is its own hotspot)."""
+    """Best-effort primary IP.
+
+    The UDP 'connect' sends nothing -- it just asks the kernel which source
+    address a packet to that host would use. It needs a route, though, and a Pi
+    running as its own hotspot usually has none, so fall back to the addresses
+    actually configured on the interfaces.
+    """
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -46,8 +52,17 @@ def _my_ip():
             return s.getsockname()[0]
         finally:
             s.close()
-    except Exception:
-        return "no network"
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["hostname", "-I"], capture_output=True, text=True,
+                             timeout=1.0).stdout
+        for addr in out.split():
+            if "." in addr and not addr.startswith("127."):
+                return addr
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "no network"
 
 
 class BootDisplay:
@@ -58,6 +73,12 @@ class BootDisplay:
         self._canvas = None
         self._log = []
         self._lock = threading.Lock()
+        # Serialises the bus: boot lines paint on the caller's thread, the
+        # running status on the worker below.
+        self._dev_lock = threading.Lock()
+        self._pending = None
+        self._wake = threading.Event()
+        self._worker = None
 
         try:
             from luma.core.interface.serial import i2c
@@ -87,7 +108,7 @@ class BootDisplay:
         if self._dev is None:
             return
         try:
-            with self._canvas(self._dev) as draw:
+            with self._dev_lock, self._canvas(self._dev) as draw:
                 y = 0
                 if heading is not None:
                     draw.text((0, 0), heading[:_CHARS], font=self._font, fill="white")
@@ -129,10 +150,37 @@ class BootDisplay:
 
         health: {"IMU": True, "GPS": False, ...}. extra: optional single line
         (e.g. "NAV: waypoint 2/3").
+
+        Returns immediately: the IP lookup and the I2C repaint (a full frame is
+        on the order of 100 ms at the Pi's default 100 kHz bus) run on a
+        background thread, so the control loop never waits on the panel. If
+        calls arrive faster than the panel can paint, only the latest is drawn.
         """
+        if self._dev is None:
+            return
+        with self._lock:
+            self._pending = (ip, dict(health) if health else None, extra)
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._run, name="oled",
+                                                daemon=True)
+                self._worker.start()
+        self._wake.set()
+
+    def _run(self):
+        while True:
+            self._wake.wait()
+            self._wake.clear()
+            with self._lock:
+                job, self._pending = self._pending, None
+            if job is not None:
+                self._paint_summary(*job)
+
+    def _paint_summary(self, ip, health, extra):
         if ip is None:
             ip = _my_ip()
-        rows = ["http://%s:5000" % ip]
+        # No "http://": with it, a typical address overflows the 21-char row
+        # and the port gets cut off. ip:port is at most 20 chars.
+        rows = ["%s:5000" % ip]
         if health:
             downs = [k for k, v in health.items() if not v]
             if downs:
@@ -162,5 +210,6 @@ if __name__ == "__main__":
     d.summary(health={"IMU": True, "GPS": True, "Compass": True,
                       "Power": True, "Camera": False, "Audio": True},
               extra="NAV: idle")
+    time.sleep(0.5)   # summary paints on a background thread
     print("boot_display self-test done"
           " (no-op if no panel is attached)")
