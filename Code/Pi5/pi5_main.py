@@ -8,6 +8,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import Float32MultiArray, Int32, Int32MultiArray, Bool
 import os
+import signal
 
 WAV_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -1115,6 +1116,14 @@ def main():
     disp.line("APEX starting")
     health = {}
 
+    # pkill and `docker stop` send SIGTERM, whose default action kills Python
+    # without running `finally` -- so hardware was never released and the OLED
+    # kept the last status frame up, looking live. Route it through the same
+    # KeyboardInterrupt path as Ctrl+C.
+    def _on_sigterm(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
     # Navigation route is empty by default -- set from the dashboard. A hardcoded
     # default would send the robot toward somebody else's test coordinates the
     # moment NAV MODE is flipped on. (Previous default was two NJ test points.)
@@ -1580,6 +1589,8 @@ def main():
     except KeyboardInterrupt:
         print("\nShutting down controller hardware nodes safely...")
     finally:
+        # First, so it lands even if a later cleanup step raises.
+        disp.shutdown("stopped")
         controller.close_hardware()
         sensor_hub.stop()
         if avoider is not None:

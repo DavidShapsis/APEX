@@ -79,6 +79,7 @@ class BootDisplay:
         self._pending = None
         self._wake = threading.Event()
         self._worker = None
+        self._closed = False
 
         try:
             from luma.core.interface.serial import i2c
@@ -87,6 +88,10 @@ class BootDisplay:
             from PIL import ImageFont
 
             self._dev = sh1106(i2c(port=port, address=address))
+            # luma blanks the panel in an atexit hook unless persist is set.
+            # Keep the last frame instead: a boot crash should leave its FATAL
+            # line visible, and a normal exit paints "stopped" via shutdown().
+            self._dev.persist = True
             self._canvas = canvas
             try:
                 self._font = ImageFont.load_default()
@@ -156,7 +161,7 @@ class BootDisplay:
         background thread, so the control loop never waits on the panel. If
         calls arrive faster than the panel can paint, only the latest is drawn.
         """
-        if self._dev is None:
+        if self._dev is None or self._closed:
             return
         with self._lock:
             self._pending = (ip, dict(health) if health else None, extra)
@@ -172,7 +177,7 @@ class BootDisplay:
             self._wake.clear()
             with self._lock:
                 job, self._pending = self._pending, None
-            if job is not None:
+            if job is not None and not self._closed:
                 self._paint_summary(*job)
 
     def _paint_summary(self, ip, health, extra):
@@ -197,6 +202,14 @@ class BootDisplay:
 
     def clear(self):
         self._paint([])
+
+    def shutdown(self, reason="stopped"):
+        """Final frame, painted synchronously and left on the panel. After this
+        no status update can overwrite it, so a frozen screen never looks live."""
+        with self._lock:
+            self._closed = True
+            self._pending = None
+        self._paint([reason, time.strftime("at %H:%M:%S")], heading="APEX")
 
 
 if __name__ == "__main__":
