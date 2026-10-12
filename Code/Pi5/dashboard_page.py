@@ -151,9 +151,10 @@ _PAGE = """
 
         /* ---- buttons ------------------------------------------------------- */
         .btn-row { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; }
-        /* Fixed 2x2. These labels swap between "Deactivate FL" and the wider
-           "Reactivate FL" at runtime, which is enough to tip a flex row over
-           into an ugly 3 + 1 wrap; a grid keeps them square whatever the text. */
+        /* Fixed 2x2, for the four per-leg buttons (Home, Deactivate). Their
+           labels change at runtime ("Home FL" -> "✓ Home FL", "Deactivate" ->
+           "Reactivate"), which is enough to tip a flex row over into an ugly
+           3 + 1 wrap on a phone; a grid keeps them square whatever the text. */
         .btn-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem; }
         .btn-grid .apex-btn { min-width: 0; width: 100%; }
         .apex-btn {
@@ -323,6 +324,17 @@ _PAGE = """
         .nav-sec-body { display: none; padding: 0 .1rem .9rem; }
         .nav-sec.open .nav-sec-body { display: block; }
 
+        .gps-readout {
+            display: grid; grid-template-columns: 1fr; gap: .35rem;
+            padding: .6rem .7rem; margin-bottom: .7rem; border-radius: 8px;
+            border: 1px solid var(--apex-line); background: #131316;
+            font-family: ui-monospace, Consolas, monospace; font-size: .74rem;
+        }
+        .gps-readout > div { display: flex; justify-content: space-between; gap: .5rem; }
+        .gps-label { color: var(--apex-muted); letter-spacing: .08em; text-transform: uppercase; }
+        .gps-val { color: #f2f2f5; text-align: right; }
+        .gps-val.na { color: var(--apex-muted); }
+
         .cur-table {
             width: 100%; border-collapse: collapse; margin-top: .3rem;
             font-family: ui-monospace, Consolas, monospace; font-size: .74rem;
@@ -433,6 +445,25 @@ _PAGE = """
             });
             document.getElementById('curChip').innerText = reporting + '/4 LEGS';
         }
+        // g: {fix, sats, lat, lon, heading}; lat/lon null without a fix,
+        // heading null without a compass. Heading is true north, filtered.
+        const COMPASS_PTS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+        function renderGps(g) {
+            if (!g) return;
+            const pos = document.getElementById('gpsPos');
+            const head = document.getElementById('gpsHead');
+            const sats = document.getElementById('gpsSats');
+            const hasFix = g.fix === 1 && g.lat !== null;
+            pos.classList.toggle('na', !hasFix);
+            pos.innerText = hasFix ? g.lat.toFixed(6) + ', ' + g.lon.toFixed(6) : 'no fix';
+            const hasHead = g.heading !== null;
+            head.classList.toggle('na', !hasHead);
+            head.innerText = hasHead
+                ? g.heading.toFixed(0) + '° ' + COMPASS_PTS[Math.round(g.heading / 45) % 8]
+                : 'no compass';
+            sats.classList.toggle('na', !g.sats);
+            sats.innerText = g.sats;
+        }
         function refreshStatus() {
             fetch('/status').then(r => r.json()).then(s => {
                 const nHomed = s.homed.filter(v => v === 1).length;
@@ -454,6 +485,7 @@ _PAGE = """
                 document.getElementById('pillStand').classList.toggle('live', s.standing === 1);
                 document.getElementById('pillWalk').classList.toggle('live', s.walking === 1);
                 renderCurrents(s.currents);
+                renderGps(s.gps);
 
                 // ---- Navigation: mode, pause, route progress, transport ----
                 const navOn = s.nav_mode === 1;
@@ -702,7 +734,7 @@ _PAGE = """
                 Pressing STAND while WALKING stops the walk and settles into the stand pose
                 with the legs still powered &mdash; use that, not STOP, to halt a robot that is
                 on its feet.</div>
-            <div class="btn-row">
+            <div class="btn-grid">
                 <button id="home_FL" class="apex-btn" onclick="homeLeg(0)">Home FL</button>
                 <button id="home_FR" class="apex-btn" onclick="homeLeg(1)">Home FR</button>
                 <button id="home_RR" class="apex-btn" onclick="homeLeg(2)">Home RR</button>
@@ -725,6 +757,14 @@ _PAGE = """
                     <span class="nav-sec-chip">OFF</span>
                 </button>
                 <div class="nav-sec-body">
+                    <div class="gps-readout">
+                        <div><span class="gps-label">Position</span>
+                            <span id="gpsPos" class="gps-val na">no fix</span></div>
+                        <div><span class="gps-label">Heading</span>
+                            <span id="gpsHead" class="gps-val na">--</span></div>
+                        <div><span class="gps-label">Satellites</span>
+                            <span id="gpsSats" class="gps-val na">0</span></div>
+                    </div>
                     <div class="info" id="i_gps">Enter a route as latitude/longitude pairs in
                         decimal degrees (e.g. <code>41.0561</code>, <code>-74.1452</code>) &mdash;
                         south and west are negative. On Google Maps, right&#8209;click a spot and

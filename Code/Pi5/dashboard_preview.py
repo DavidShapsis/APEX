@@ -133,7 +133,16 @@ class MockRobot:
                 'nav_paused': 1 if self.nav_paused else 0,
                 'health': self.health,
                 'currents': self.fake_currents(),
+                'gps': self.fake_gps(),
             }
+
+    def fake_gps(self):
+        """A fix that drifts slowly, with a heading that sweeps round."""
+        t = time.time()
+        return {'fix': 1, 'sats': 9,
+                'lat': round(40.0 + 0.0001 * math.sin(t / 20), 7),
+                'lon': round(-74.0 + 0.0001 * math.cos(t / 20), 7),
+                'heading': round((t * 6) % 360, 1)}
 
     def fake_currents(self):
         """Plausible-looking mA so the Motor Currents panel has something to show:

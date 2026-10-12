@@ -209,7 +209,7 @@ class BootDisplay:
         with self._lock:
             self._closed = True
             self._pending = None
-        self._paint([reason, time.strftime("at %H:%M:%S")], heading="APEX")
+        self._paint([reason, time.strftime("at %H:%M")], heading="APEX")
 
 
 if __name__ == "__main__":

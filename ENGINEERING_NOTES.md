@@ -1853,7 +1853,7 @@ Smaller problems found on the same first boots, each confirmed on the robot.
   action exits without running `finally`, so hardware was never released and the
   last status frame stayed up. `main()` now turns SIGTERM into the same
   `KeyboardInterrupt` path as Ctrl+C, and the first cleanup step paints a final
-  `stopped / at HH:MM:SS` frame (`BootDisplay.shutdown()`), which blocks any later
+  `stopped / at HH:MM` frame (`BootDisplay.shutdown()`), which blocks any later
   repaint. The panel is set `persist` so that frame — or a boot `FATAL` line —
   stays visible after the process ends.
 

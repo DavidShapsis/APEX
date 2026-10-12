@@ -293,6 +293,12 @@ class PiQuadrupedController(Node):
         # -1 where that joint's ADC reads as dead). Dashboard display only.
         self.motor_currents = {}
 
+        # Live position/heading for the dashboard's GPS readout, refreshed by
+        # the control loop: [has_fix, satellites, lat*1e7, lon*1e7,
+        # heading*10 (true north, filtered; -1 = no compass)]. Replaced as a
+        # whole list, so a reader never sees half an update.
+        self.nav_readout = [0, 0, 0, 0, -1]
+
         # System State Tracking Management
         self.current_mode = RobotMode.MANUAL
         self.current_activity = RobotActivity.NORMAL
@@ -639,7 +645,8 @@ class PiQuadrupedController(Node):
         """Wire layout: [homed x4, standing, walking, deactivated x4,
         avoid_available, avoid_enabled, avoid_state_code, avoid_steer_deg,
         avoid_stride_pct, wp_index, wp_total, nav_mode, nav_paused,
-         health_mask, motor currents x24 (see motor_current_block)].
+         health_mask, motor currents x24 (see motor_current_block),
+         has_fix, satellites, lat*1e7, lon*1e7, heading*10 (see nav_readout)].
 
         Fields are only ever APPENDED, never inserted: stream_server reads each
         block by fixed index behind a length check, so an older dashboard against
@@ -673,7 +680,8 @@ class PiQuadrupedController(Node):
         msg.data = (homed + [standing, walking] + deactivated + avoid
                     + [int(wp_idx), int(wp_total), nav_mode, nav_paused,
                        int(health_mask)]
-                    + self.motor_current_block())
+                    + self.motor_current_block()
+                    + list(self.nav_readout))
         self.homing_status_pub.publish(msg)
 
     def swing_steps(self, height_z):
@@ -1349,6 +1357,17 @@ def main():
                 elif heading_stale and compass is not None:
                     # compass None is already reported as down at boot.
                     _log_every("compass", "[Hardware Error] No compass heading; holding last estimate")
+
+                # Dashboard readout. A stale fix reads as no fix, and no
+                # heading is shown once the compass has gone quiet.
+                fix_ok = bool(nav_s["has_fix"]) and not fix_stale
+                head_ok = compass is not None and not heading_stale
+                controller.nav_readout = [
+                    int(fix_ok), int(nav_s["satellites"]),
+                    int(round(nav_s["lat"] * 1e7)) if fix_ok else 0,
+                    int(round(nav_s["lon"] * 1e7)) if fix_ok else 0,
+                    int(round(controller.filtered_heading * 10)) if head_ok else -1,
+                ]
 
                 with controller.serial_lock:
                     snap_mode = controller.current_mode

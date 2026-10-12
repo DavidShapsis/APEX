@@ -58,6 +58,7 @@ class RobodogStreamer(Node):
             'wp_index': 0, 'wp_total': 0, 'nav_mode': 0, 'nav_paused': 0,
             'health': 0x3F,   # 6 bits, all subsystems assumed up until told otherwise
             'currents': [-1] * 24,
+            'gps': {'fix': 0, 'sats': 0, 'lat': None, 'lon': None, 'heading': None},
         }
 
         self.app.add_url_rule('/video_feed', 'video_feed', self.video_feed)
@@ -91,6 +92,7 @@ class RobodogStreamer(Node):
                 'wp_index': 0, 'wp_total': 0, 'nav_mode': 0, 'nav_paused': 0,
                 'health': 0x3F,
                 'currents': [-1] * 24,
+                'gps': {'fix': 0, 'sats': 0, 'lat': None, 'lon': None, 'heading': None},
             }
             if len(data) >= 15:
                 status.update({
@@ -118,6 +120,14 @@ class RobodogStreamer(Node):
             if len(data) >= 44:
                 # mA, [leg FL,FR,RR,RL][joint roll,pitch,knee][R,L]; -1 = no data.
                 status['currents'] = data[20:44]
+            if len(data) >= 49:
+                fix, sats, lat_e7, lon_e7, head_x10 = data[44:49]
+                status['gps'] = {
+                    'fix': fix, 'sats': sats,
+                    'lat': lat_e7 / 1e7 if fix else None,
+                    'lon': lon_e7 / 1e7 if fix else None,
+                    'heading': head_x10 / 10 if head_x10 >= 0 else None,
+                }
             self.homing_status = status
 
     def index(self):
@@ -287,8 +297,24 @@ class RobodogStreamer(Node):
     def video_feed(self):
         return Response(self.generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+    # Also served on plain HTTP port 80, so the dashboard opens at
+    # http://apex.local with no ":5000" to remember (apex.local is announced on
+    # the hotspot by the host -- see HARDWARE.md). Best effort: binding 80 needs
+    # root, which the robot's container has; anywhere else it is skipped.
+    EXTRA_PORTS = (80,)
+
     def run(self):
         flask_thread = threading.Thread(target=lambda: self.app.run(
             host=self.host, port=self.port, debug=False, threaded=True, use_reloader=False
         ), daemon=True)
         flask_thread.start()
+
+        from werkzeug.serving import make_server
+        for port in self.EXTRA_PORTS:
+            try:
+                server = make_server(self.host, port, self.app, threaded=True)
+            except (OSError, SystemExit) as e:
+                print(f"[DASH] not also serving on port {port}: {e}")
+                continue
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            print(f"[DASH] also serving on port {port}")
