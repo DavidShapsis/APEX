@@ -33,37 +33,67 @@ pip install luma.oled        # pulls in luma.core + pillow
 
 ## What's already used on the header
 
-Derived from the code (`CompassReader`, `INA219`, `IMU`, `pi5_main.pico_ports`).
-Buses other than I2C1 and UART0 are enabled by `dtoverlay=` lines you added to
-`/boot/firmware/config.txt` — check that file for the exact GPIOs if anything
-below doesn't match your board.
+Each I2C device has a bus of its own except the compass and INA219, which share
+I2C3 (no address clash). Derived from the code (`IMU`, `CompassReader`,
+`INA219`, `BootDisplay`, `pi5_main.pico_ports`).
 
-| Bus / signal | Device | Addr | Header pins (BCM GPIO) | Notes |
+| Bus / signal | Device | Addr | Header pins (BCM GPIO) | Code |
 |---|---|---|---|---|
-| **I2C1** | SH1106 OLED | `0x3C` | 3 (GPIO2 SDA), 5 (GPIO3 SCL) | The Pi's primary I2C. Always enabled via `dtparam=i2c_arm=on`. Kept to the OLED alone for now. |
-| **I2C3** (`/dev/i2c-3`) | QMC5883L compass (inside the HGLRC M100 GPS) | `0x0D` | 15 (GPIO22 SDA), 16 (GPIO23 SCL) | `dtoverlay=i2c3,pins_22_23`. `CompassReader(explicit_bus_id=3)`. The M100 runs on 5 V but its SDA/SCL pull up to 3.3 V (measured), so no level shifter. |
-| **I2C3** (`/dev/i2c-3`) | INA219 power monitor (not fitted yet) | `0x40` | 15, 16 — in parallel with the compass | `INA219(bus_id=3)` |
-| **I2C0** (`/dev/i2c-0`) | BNO085 IMU | `0x4A`/`0x4B` | 27 (GPIO0 SDA), 28 (GPIO1 SCL) | `IMU(bus_id=0)`. Needs `dtparam=i2c0=on` and **no** `dtoverlay=uart1` (same pins). Not `/dev/i2c-13`: on the Pi 5 that is the HDMI0 DDC bus, not on the header. |
-| **UART0** (`/dev/ttyAMA0`) | Leg Pico | — | 8 (GPIO14 TX), 10 (GPIO15 RX) | |
-| **UART2** (`/dev/ttyAMA2`) | Leg Pico | — | 7 (GPIO4 TX), 29 (GPIO5 RX) | |
-| **UART3** (`/dev/ttyAMA3`) | Leg Pico | — | 24 (GPIO8 TX), 21 (GPIO9 RX) | |
-| **UART4** (`/dev/ttyAMA4`) | Leg Pico | — | 32 (GPIO12 TX), 33 (GPIO13 RX) | |
+| **I2C0** (`/dev/i2c-0`) | BNO085 IMU | `0x4A`/`0x4B` | 27 (GPIO0 SDA), 28 (GPIO1 SCL) | `IMU(bus_id=0)` |
+| **I2C1** (`/dev/i2c-1`) | SH1106 OLED | `0x3C` | 3 (GPIO2 SDA), 5 (GPIO3 SCL) | `BootDisplay(port=1)` |
+| **I2C3** (`/dev/i2c-3`) | QMC5883L compass (built into the HGLRC M100 GPS) | `0x0D` | 15 (GPIO22 SDA), 16 (GPIO23 SCL) | `CompassReader(explicit_bus_id=3)` |
+| **I2C3** (`/dev/i2c-3`) | INA219 power monitor | `0x40` | 15, 16 — in parallel with the compass | `INA219(bus_id=3)` |
+| **UART0** (`/dev/ttyAMA0`) | Leg Pico | — | 8 (GPIO14 TX), 10 (GPIO15 RX) | `pico_ports` |
+| **UART2** (`/dev/ttyAMA2`) | Leg Pico | — | 7 (GPIO4 TX), 29 (GPIO5 RX) | `pico_ports` |
+| **UART3** (`/dev/ttyAMA3`) | Leg Pico | — | 24 (GPIO8 TX), 21 (GPIO9 RX) | `pico_ports` |
+| **UART4** (`/dev/ttyAMA4`) | Leg Pico | — | 32 (GPIO12 TX), 33 (GPIO13 RX) | `pico_ports` |
+| USB (`/dev/ttyUSB0`) | HGLRC M100 GPS via USB‑TTL adapter, 115200 baud | — | — | `GPSReader` |
+| USB (`/dev/video*`) | USB webcam | — | — | `USBWebcam()` auto‑detects |
 | Power | — | — | 1 or 17 (3.3 V), 2 or 4 (5 V) | |
 | Ground | — | — | 6, 9, 14, 20, 25, 30, 34, 39 | |
 
-Nothing else in the code touches GPIO directly (motors and encoders are on the
-Picos, not the Pi).
+Power the IMU and OLED from **3.3 V**. The M100 takes 5 V (from the USB‑TTL
+adapter), but its SDA/SCL pull up to its own 3.3 V regulator, so it connects to
+the Pi directly with no level shifter — measure SDA/SCL to GND before wiring a
+different GPS module, since a 5 V pull‑up would damage the Pi's GPIO.
 
-**No I2C device currently answers at 0x3C**, so the OLED can share any of the
-I2C buses above without an address clash.
+Each Pico talks on its GP0 (TX) / GP1 (RX); cross them (Pi TX → Pico RX) and
+share a ground. Which corner a Pico drives comes from its `LEG_ID` announcement,
+not from which UART it is on.
+
+### `/boot/firmware/config.txt` (on the Pi host, not in the container)
+
+```ini
+dtparam=i2c_arm=on            # I2C1  — OLED
+dtparam=i2c0=on               # I2C0  — IMU, GPIO0/1
+dtoverlay=i2c3,pins_22_23     # I2C3  — compass + INA219
+dtparam=uart0=on              # ttyAMA0
+dtoverlay=uart2               # ttyAMA2
+dtoverlay=uart3               # ttyAMA3
+dtoverlay=uart4               # ttyAMA4
+```
+
+There must be **no** `dtoverlay=uart1`: UART1 claims GPIO0/1 too, and with it
+present `/dev/i2c-0` never appears. Nothing uses UART1.
+
+`/dev/i2c-13` and `/dev/i2c-14` also exist on a Pi 5, but they are the HDMI
+ports' DDC buses, not header pins — the IMU used to be pointed at `i2c-13`,
+which is why it never answered.
+
+Check with `i2cdetect -l` (buses 0, 1, 3 should be listed) and then:
+
+```bash
+i2cdetect -y 0     # 4a  (IMU)
+i2cdetect -y 1     # 3c  (OLED)
+i2cdetect -y 3     # 0d  (compass), 40 (INA219)
+```
+
+A device that does not answer is reported as FAIL at boot and as down on the
+dashboard and OLED; the robot still boots.
 
 ---
 
-## Recommended wiring — hang it on I2C1 with the compass
-
-I2C is a bus: extra devices wire **in parallel** on the same two lines. Putting
-the OLED on **I2C1** (pins 3 & 5) needs **zero config changes** — that bus is
-already up and proven by the compass — and 0x3C ≠ 0x0D, so they coexist.
+## OLED wiring
 
 | OLED pin | → Pi 5 header pin | Signal |
 |---|---|---|
@@ -84,56 +114,9 @@ already up and proven by the compass — and 0x3C ≠ 0x0D, so they coexist.
    OLED:  VCC→1   SDA→3   SCL→5   GND→9
 ```
 
-Pins 3 and 5 already carry the compass. If the compass is on a breakout with
-pass‑through pads, tap those. Otherwise use a 2‑into‑1 Dupont splitter or solder
-both leads to pins 3/5.
-
-Then in `Code/Pi5/boot_display.py` the default `BootDisplay(port=1, address=0x3C)`
-is already correct — nothing to change.
-
-### Verify
-
-```bash
-sudo apt install -y i2c-tools      # once
-i2cdetect -y 1
-```
-
-Expect `0d` (compass) **and** `3c` (OLED):
-
-```
-     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
-00:                         -- -- -- -- 0d -- --
-30: -- -- -- -- -- -- -- -- -- -- -- -- 3c -- -- --
-40: 40 -- -- -- ...
-```
-
-Then:
-
-```bash
-python3 Code/Pi5/boot_display.py     # marches a fake boot sequence across the panel
-```
-
----
-
-## Alternative — a dedicated bus (electrical isolation from the compass)
-
-If you'd rather the OLED not share the compass bus (a wedged OLED could add
-`Remote I/O error`s to compass reads — `SensorHub` already tolerates those by
-holding the last heading, but still), add a software I2C bus on two free pins.
-Append to `/boot/firmware/config.txt`:
-
-```
-dtoverlay=i2c-gpio,bus=7,i2c_gpio_sda=16,i2c_gpio_scl=26
-```
-
-That puts a new `/dev/i2c-7` on **GPIO16 (pin 36)** and **GPIO26 (pin 37)** —
-both unused above, but confirm against your own config.txt first. Reboot, then:
-
-```python
-BootDisplay(port=7, address=0x3C)   # in pi5_main.main()
-```
-
-Wiring becomes VCC→pin 1, GND→pin 34, SDA→pin 36, SCL→pin 37.
+The default `BootDisplay(port=1, address=0x3C)` is already correct. Check with
+`i2cdetect -y 1` (expect `3c`), then `python3 Code/Pi5/boot_display.py`, which
+marches a fake boot sequence across the panel.
 
 ---
 
@@ -241,4 +224,5 @@ next to `pi5_main.py` and fill it in.
 | Panel lights but shows garbage / shifted 2 px | SSD1306 driver in use — must be **SH1106** |
 | `[OLED] not available (No module named 'luma')` | `pip install luma.oled` on the Pi |
 | Works standalone, blank when `pi5_main` runs | address or port wrong in `BootDisplay(...)`, or another process holds the bus |
-| Compass reads get flaky after adding the OLED | move the OLED to a dedicated bus (section above) |
+| `IMU init failed: OSError(121 ...)` | IMU not on I2C0 pins 27/28, or `dtoverlay=uart1` still in config.txt (no `/dev/i2c-0`) |
+| A bus shows on the host but not in the container | the container was started before the bus existed; restart it |

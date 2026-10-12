@@ -30,6 +30,19 @@ def _load_env_file(path):
 
 _load_env_file(os.path.join(WAV_DIR, '.env'))
 
+
+_last_logged = {}
+
+
+def _log_every(key, msg, every_s=2.0):
+    """Print msg at most once per every_s seconds per key. The control loop
+    runs at ~100 Hz, so the old `int(time) % 2 == 0` gate printed every pass
+    for the whole even second -- ~100 copies of each warning."""
+    now = time.monotonic()
+    if now - _last_logged.get(key, -1e9) >= every_s:
+        _last_logged[key] = now
+        print(msg)
+
 # Core hardware and engine imports
 from power_monitor import INA219
 from inverse_kinematics.ik_and_gait import (
@@ -1333,8 +1346,9 @@ def main():
                     # crosses north (filtered=359, raw=1 would give 305).
                     head_delta = (raw_head - controller.filtered_heading + 180.0) % 360.0 - 180.0
                     controller.filtered_heading = (controller.filtered_heading + 0.15 * head_delta) % 360.0
-                elif heading_stale and int(current_time) % 2 == 0:
-                    print("[Hardware Error] No compass heading; holding last estimate")
+                elif heading_stale and compass is not None:
+                    # compass None is already reported as down at boot.
+                    _log_every("compass", "[Hardware Error] No compass heading; holding last estimate")
 
                 with controller.serial_lock:
                     snap_mode = controller.current_mode
@@ -1356,15 +1370,14 @@ def main():
                     pitch_tilt = imu_s["pitch"]
                 else:
                     roll_tilt, pitch_tilt = 0.0, 0.0
-                    if int(current_time) % 2 == 0:
-                        print("[Hardware Error] IMU read stale/failed; stabilization disabled")
+                    if imu is not None:
+                        _log_every("imu", "[Hardware Error] IMU read stale/failed; stabilization disabled")
 
                 # Levelling is differential leg height, computed per leg inside
                 # build_gait via attitude_height_offsets -- there is no common
                 # X/Y correction any more, because that only translated the body.
                 if abs(roll_tilt) > 8.0 or abs(pitch_tilt) > 8.0:
-                    if int(current_time) % 2 == 0:
-                        print(f"[IMU Warning] Large Tilt! Roll: {roll_tilt:.2f}, Pitch: {pitch_tilt:.2f}")
+                    _log_every("tilt", f"[IMU Warning] Large Tilt! Roll: {roll_tilt:.2f}, Pitch: {pitch_tilt:.2f}")
 
                 chosen_direction = snap_target_dir
                 # 1.0 unless something below decides the robot should not be
@@ -1377,8 +1390,7 @@ def main():
                     # march-in-place command as mission end.
                     chosen_direction = 0
                     stride_scale = 0.0
-                    if int(current_time) % 2 == 0:
-                        print("[NAV] Paused; holding position")
+                    _log_every("nav", "[NAV] Paused; holding position")
                 elif snap_mode == RobotMode.AUTONOMOUS:
                     if not nav_s["has_fix"] or nav_s["age"] > 5.0 or fix_stale:
                         # Without a fix lat/lon are 0.0, which would produce a
@@ -1390,16 +1402,14 @@ def main():
                         # would walk the robot off blindly at full stride.
                         chosen_direction = 0
                         stride_scale = 0.0
-                        if int(current_time) % 2 == 0:
-                            print("[NAV] No usable GPS fix; holding position")
+                        _log_every("nav", "[NAV] No usable GPS fix; holding position")
                     elif heading_stale:
                         # filtered_heading is frozen at its last value. Driving
                         # on it curves the robot off course while calculate_nav
                         # still reports a shrinking turn error -- so hold.
                         chosen_direction = 0
                         stride_scale = 0.0
-                        if int(current_time) % 2 == 0:
-                            print("[NAV] Compass heading stale; holding position")
+                        _log_every("nav", "[NAV] Compass heading stale; holding position")
                     else:
                         nav_data = nav_engine.calculate_nav(nav_s["lat"], nav_s["lon"], controller.filtered_heading)
                         if nav_data is not None:
@@ -1413,8 +1423,7 @@ def main():
                             # the dashboard is still the way to end the walk.
                             chosen_direction = 0
                             stride_scale = 0.0
-                            if int(current_time) % 2 == 0:
-                                print("[NAV] Route complete; holding position")
+                            _log_every("nav", "[NAV] Route complete; holding position")
 
                 # --- VISION OBSTACLE AVOIDANCE ---------------------------------
                 # Layered on top of whichever steering source is active, in both
@@ -1443,8 +1452,8 @@ def main():
                             controller.avoid_state_code = AvoidState.CODES.get(decision.state, 0)
                             controller.avoid_steer = decision.steer_deg
                             controller.avoid_stride_scale = decision.stride_scale
-                        if decision.overriding and int(current_time) % 2 == 0:
-                            print(f"[AVOID] {decision.state}: {decision.reason} "
+                        if decision.overriding:
+                            _log_every("avoid", f"[AVOID] {decision.state}: {decision.reason} "
                                   f"-> steer {decision.steer_deg:+.0f} deg, "
                                   f"stride x{decision.stride_scale:.2f}")
                     elif avoid_was_enabled:
@@ -1479,9 +1488,8 @@ def main():
                 resend_due = (current_time - last_gait_send) >= MIN_GAIT_RESEND_S
                 if (controller.walking_enabled and resend_due
                         and (dir_delta or pitch_delta or roll_delta or stride_delta)):
-                    if int(current_time) % 2 == 0:
-                        print(f"[IMU Reflex] Levelling. Roll {roll_tilt:+.2f} deg, "
-                              f"pitch {pitch_tilt:+.2f} deg")
+                    _log_every("reflex", f"[IMU Reflex] Levelling. Roll {roll_tilt:+.2f} deg, "
+                                         f"pitch {pitch_tilt:+.2f} deg")
 
                     # --- BODY-TWIST STEERING ---
                     # chosen_direction is + for a right turn: RIGHT on the
@@ -1604,8 +1612,8 @@ def main():
                     # above already keep the robot walking; this just surfaces
                     # which bus is the problem.
                     down = [n for n, ok in sensor_hub.health(timeout=2.0).items() if not ok]
-                    if down and int(current_time) % 5 == 0:
-                        print(f"[SENSOR] poller(s) stalled: {', '.join(down)}")
+                    if down:
+                        _log_every("stalled", f"[SENSOR] poller(s) stalled: {', '.join(down)}", every_s=5.0)
 
                 time.sleep(0.01)
             except Exception as loop_err:

@@ -53,7 +53,9 @@ pip install -r Code/Pi5/requirements.txt
 ROS 2 (Humble or later) is a separate apt install, needed only for `pi5_main.py`. To test without ROS, use `single_leg_test.py`.
 
 - **Optional pieces:** obstacle avoidance (`onnxruntime` + the depth model) and the status OLED (`luma.oled`). If either is missing, everything else still runs.
-- **Missing hardware is OK:** a dead IMU, GPS, camera or power monitor won't stop the boot. The dashboard shows an amber "running degraded" banner instead.
+- **Missing hardware is OK:** a dead IMU, GPS, compass, camera, power monitor or speaker won't stop the boot. It shows as FAIL in the boot log and on the OLED, and the dashboard shows an amber "running degraded" banner.
+- **Private settings:** copy `Code/Pi5/.env.example` to `Code/Pi5/.env` and fill it in (currently the Bluetooth speaker's MAC). `.env` is gitignored.
+- **Wiring and `/boot/firmware/config.txt`:** every I2C bus, UART and header pin is in [HARDWARE.md](HARDWARE.md).
  
 ### Running the single-leg test
  
@@ -121,7 +123,7 @@ APEX/
 ├── Photos/              # Build photos
 ├── README.md            # This file
 ├── TECHNICAL.md         # How it works: architecture, protocol, gait, control loop, vision, dashboard
-├── HARDWARE.md          # Pi 5 pin allocation and the status OLED wiring
+├── HARDWARE.md          # Pi 5 buses and pins, config.txt, OLED, Pico boards, speaker
 └── ENGINEERING_NOTES.md # Open issues, bench checklists, resolved defects, planned work
 ```
  

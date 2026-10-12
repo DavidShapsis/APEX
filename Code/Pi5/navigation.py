@@ -112,8 +112,11 @@ class CompassReader:
             # 0x1D = OSR 512 | RNG 8G | ODR 200Hz | continuous
             self.bus.write_byte_data(self.addr, 0x09, 0x1D)
             self.configured = True
-        except OSError:
-            print(f"Compass not found on Bus {self.bus_id}")
+        except OSError as e:
+            # Raise, don't just print: pi5_main's _bring_up() turns this into
+            # Compass FAIL and a 'down' subsystem. Swallowing it reported OK.
+            self.bus.close()
+            raise OSError(f"compass not found on bus {self.bus_id}") from e
 
     def get_heading(self, roll_deg=0.0, pitch_deg=0.0):
         """True-north heading in degrees, or None if the read failed or the

@@ -93,6 +93,7 @@ The two-minute version. Full detail is one click away on each line.
   - [Minor: stale target for one tick](#minor-stale-target-for-one-tick)
 - [Verify on hardware](#verify-on-hardware)
   - [RESOLVED — BNO085 constant names, and boot no longer dies on a bad hardware init](#resolved-bno085-constant-names-and-boot-no-longer-dies-on-a-bad-hardware-init)
+  - [RESOLVED — the IMU was on the HDMI bus, and absent sensors reported OK](#resolved-the-imu-was-on-the-hdmi-bus-and-absent-sensors-reported-ok)
   - [RESOLVED — BTS7960 dual enable confirmed tied together on the PCB](#resolved-bts7960-dual-enable-confirmed-tied-together-on-the-pcb)
   - [Encoder zero must match HOME_POSE — this is what homing (top of doc) is for](#encoder-zero-must-match-home-pose-this-is-what-homing-top-of-doc-is-for)
   - [Dead branch in `imu.py`](#dead-branch-in-imu-py)
@@ -1761,15 +1762,67 @@ The degraded state is surfaced:
   dashboard URL and the down-list once running. If `luma.oled` or the panel is
   absent every call is a no-op that echoes to stdout, so the error display can
   never itself become a boot blocker. Wiring and the one-line install are in
-  `HARDWARE.md` at the repo root — it hangs on the existing I2C1 bus at 0x3C,
-  no config change.
+  `HARDWARE.md` at the repo root — it has I2C1 (pins 3/5, 0x3C) to itself.
 
-Still worth a bench check: that the BNO085 actually responds on `/dev/i2c-0`
-(pins 27/28; moved from `/dev/i2c-13`, which on the Pi 5 is the HDMI0 DDC bus
-and never reaches the header -- `dtoverlay=uart1` also had to go, it claims
-GPIO0/1 and kept I2C0 from coming up) and that the axis/sign conventions match (see the IMU-levelling entry above) —
-but a wrong answer there now degrades to "IMU down, flat-footed walking", not a
-dead boot.
+Still worth a bench check: that the IMU axis/sign conventions match (see the
+IMU-levelling entry above) — but a wrong answer there degrades to "IMU down,
+flat-footed walking", not a dead boot. The bus itself is now confirmed; see the
+next entry.
+
+<a id="resolved-the-imu-was-on-the-hdmi-bus-and-absent-sensors-reported-ok"></a>
+### RESOLVED — the IMU was on the HDMI bus, and absent sensors reported OK
+
+Found on the first boot with the OLED fitted. Several separate problems, all
+showing up as a boot log that said OK for hardware that was not answering.
+
+**I2C bus layout.** `IMU(bus_id=13)` could never work: on the Pi 5,
+`/dev/i2c-13` and `i2c-14` are the HDMI ports' DDC buses, not header pins
+(`i2cdetect -l` labels them `107d508200.i2c` / `107d508280.i2c`). config.txt
+meant the IMU for I2C0 (`dtparam=i2c0=on`, GPIO0/1, pins 27/28), but it also
+had `dtoverlay=uart1`, which claims the same two pins, so `/dev/i2c-0` never
+appeared. Nothing uses UART1 (the Picos are on ttyAMA0/2/3/4), so that line was
+removed. The bus map is now one device per bus, apart from the two that share:
+
+| Bus | Pins | Device |
+|---|---|---|
+| I2C0 | 27 / 28 | BNO085 IMU (`bus_id=0`) |
+| I2C1 | 3 / 5 | OLED |
+| I2C3 | 15 / 16 | compass (`explicit_bus_id=3`) + INA219 |
+
+The compass is the QMC5883L built into the HGLRC M100 GPS (its SDA/SCL leads;
+the GPS itself stays on TX/RX through the USB‑TTL adapter). It used to be
+pointed at I2C1 by inference from `sda_pin=2`. Full pin table and the
+config.txt lines are in `HARDWARE.md`.
+
+**False OKs at boot.** `_bring_up()` only reports FAIL when the constructor
+raises, and three constructors swallowed their errors:
+
+- `CompassReader` printed "Compass not found" and returned normally.
+- `INA219` printed the error and set `available = False`, after which
+  `get_voltage()` returned a made-up 5.0 V — so the low-voltage alarm could
+  never fire, and the dashboard showed power as healthy.
+- `QuadrupedAudio` called `bluetoothctl connect`, which does not exist inside
+  the container, so `connected` was always False and every `play()` was
+  silently dropped — while boot said Audio OK.
+
+All three now raise, so each shows as FAIL at boot, `DOWN:` on the OLED and in
+the dashboard's degraded banner.
+
+**Audio from the container.** The container is privileged with host
+networking but has no bind mounts, so it cannot see the host's PipeWire socket
+or D-Bus. Rather than recreate it, `audio.py` points SDL at the host's
+pulse-compatible server over local TCP (`PULSE_SERVER=tcp:127.0.0.1:4713`,
+enabled once on the host). The Bluetooth link is the host's job: the speaker is
+trusted there, so bluez reconnects it. `QuadrupedAudio` now checks that
+`pactl get-default-sink` is that speaker and raises if not. Setup is in
+`HARDWARE.md` → *Speaker*. The speaker's MAC is read from `APEX_SPEAKER_MAC` in
+the gitignored `Code/Pi5/.env` (template: `.env.example`), not hardcoded.
+
+**Log flood.** Main-loop warnings were gated on `int(current_time) % 2 == 0`,
+which is true for the *whole* even second; at ~100 Hz that printed each warning
+~100 times a second (the compass one filled the terminal). They now go through
+`_log_every(key, msg)`, a real once-per-2-s limiter, and warnings for a sensor
+that already failed at boot are not repeated.
 
 <a id="resolved-bts7960-dual-enable-confirmed-tied-together-on-the-pcb"></a>
 ### RESOLVED — BTS7960 dual enable confirmed tied together on the PCB
@@ -1797,7 +1850,7 @@ before Stand/Go accept it (see "Still open" in the Homing section).
 ### Dead branch in `imu.py`
 The `bus_id is None` path calls `busio.I2C(scl_pin, sda_pin, ...)` with the string
 pin names `"D1"` / `"D0"` rather than board pin objects. It would fail if used;
-currently `bus_id=13` is always passed, so the branch is dead.
+currently `bus_id=0` is always passed, so the branch is dead.
 
 ---
 

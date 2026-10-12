@@ -9,17 +9,20 @@ from smbus2 import SMBus
 
 class INA219:
     def __init__(self, bus_id=1, addr=0x40):
+        """Raises if the chip does not answer, so pi5_main's _bring_up() reports
+        Power FAIL. It used to swallow the error and report OK, then hand out a
+        made-up 5.0 V that could never trip the low-battery warning."""
+        self.bus = SMBus(bus_id)
+        self.addr = addr
         try:
-            self.bus = SMBus(bus_id)
-            self.addr = addr
             # Configuration: 32V range, +/-320mV shunt range, 12-bit ADC
-            self._write_reg(0x00, 0x399F) 
+            self._write_reg(0x00, 0x399F)
 
             self._write_reg(0x05, 2048)
-            self.available = True
-        except Exception as e:
-            print(f"INA219 initialization failed: {e}")
-            self.available = False
+        except OSError as e:
+            self.bus.close()
+            raise OSError(f"INA219 not found on bus {bus_id} @ 0x{addr:02X}") from e
+        self.available = True
 
     def _write_reg(self, reg, val):
         # Pi 5 Big-Endian handling for 16-bit registers
