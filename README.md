@@ -2,202 +2,42 @@
  
 ---
  
-# APEX — Autonomous Precision Exploration
+# A.P.E.X. — **A**utonomous **P**recision **Ex**ploration
  
 A fully custom-built quadruped robot dog designed and coded from scratch.
 
-APEX is designed to walk across varied outdoor terrain using real-time inverse kinematics, stay balanced using an IMU, navigate to GPS waypoints autonomously, and stream live camera footage back to any device over WiFi. The long-term goal is onboard ML-based obstacle avoidance for fully autonomous terrain exploration.
+APEX is designed to walk across varied outdoor terrain using real-time inverse kinematics, stay balanced using an IMU, navigate to GPS waypoints autonomously, and stream live camera footage back to any device over WiFi. Onboard ML-based obstacle avoidance is built and awaiting tuning on the hardware, for fully autonomous terrain exploration.
  
 ![Status](https://img.shields.io/badge/status-in%20progress-yellow)
 ![Platform](https://img.shields.io/badge/brain-Raspberry%20Pi%205-red)
 ![Firmware](https://img.shields.io/badge/legs-RP2040%20%C3%974-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
+
+![APEX render in the field](Photos/APEX_in_field.png)
  
 ---
- 
+
 ## Features
- 
-- **Inverse Kinematics** — custom 3-link IK engine with forward kinematics for recovery, computing joint angles in real time for all four legs
-- **Body-Twist Steering** — each foot arcs about the body centre so the robot yaws in place or blends yaw with forward travel into an arc, recruiting the hip-roll joint into the turn (not tank-style stride differencing)
-- **IMU Stabilization** — BNO085 quaternion-based roll/pitch feeds a per-leg differential foot-height correction, so the body actually levels instead of just translating
-- **GPS Navigation** — autonomous waypoint following using bearing and distance calculations from a HGLRC M100 GPS module; the route is entered and reordered live from the dashboard, and the robot holds position (marching in place) once the last point is reached
-- **Live Video Streaming** — USB webcam feed served over Flask to any device on the same network
-- **Mission Control Dashboard** — Flask web UI that walks through homing each leg, standing, and going before the robot is allowed to walk; live camera feed with a steering readout, an obstacle-avoidance toggle, and per-leg debug controls. Served entirely from the Pi (Bootstrap vendored locally, no internet needed in the field)
-- **ML Obstacle Avoidance** — pretrained monocular depth model (Depth-Anything-V2-Small, ONNX) turns the webcam feed into a forward costmap and steers around obstacles, layered on top of both manual and GPS waypoint steering. Dashboard toggle
-- **Threaded Sensor Polling** — every blocking sensor read (IMU + compass over I2C, GPS UART, INA219) runs on its own poller thread; the control loop only ever reads a lock-protected snapshot, so a stuck bus degrades to a safe default instead of stalling the gait
-- **Per-Motor Current Sensing** *(planned, not started)* — reading each BTS7960's built-in `IS` output so a joint meeting unexpected resistance (a crash, a jam) drops the robot into its recovery routine, replacing the FSR-based foot contact. No code for this exists yet; see `ENGINEERING_NOTES.md`
-- **ROS 2 Integration** — inter-node communication via ROS 2 topics for direction commands, navigation mode switching, and the homing/stand/go/stop dashboard controls
+
+- **Inverse Kinematics** — custom 3-link IK/FK engine computing joint angles for all four legs in real time
+- **Body-Twist Steering** — the body yaws in place or arcs while walking, instead of tank-style steering
+- **IMU Stabilization** — per-leg height correction keeps the body level on uneven ground
+- **GPS Navigation** — follows waypoints entered live from the dashboard, then holds position at the end
+- **ML Obstacle Avoidance** — a pretrained depth model turns the webcam feed into steering around obstacles
+- **Live Video Streaming** — webcam feed to any device on the same network
+- **Mission Control Dashboard** — web UI for homing, standing, walking, steering and navigation; works with no internet
+- **Fault-Tolerant Sensors** — every sensor runs on its own thread, so a dead one degrades safely instead of freezing the robot
+- **ROS 2 Integration** — dashboard and controller talk over ROS 2 topics
+- **Per-Motor Current Sensing** — every motor driver's current is read and shown live on the dashboard; a mid-swing spike is treated as an early foot touchdown and triggers recovery
+
+For how all of this works, see **[TECHNICAL.md](TECHNICAL.md)**.
 
 ---
  
 ## BOM
  
-| Component | Qty | Notes |
-|---|---|---|
-| Raspberry Pi 5 | 1 | Main brain |
-| Raspberry Pi Pico (RP2040) | 4 | One per leg, runs MicroPython |
-| GoBilda 5302 Yellow Jacket Motor (99.5:1, 60 RPM) | 12 | 3 per leg |
-| BTS7960 43A H-Bridge | 12 | One per joint |
-| BNO085 IMU | 1 | Quaternion-based orientation |
-| HGLRC M100-5883 GPS/Compass | 1 | Outdoor autonomous nav |
-| INA219 Voltage Monitor | 1 | Battery voltage; current sensing wired but unconfirmed/unused, see `ENGINEERING_NOTES.md` |
-| Carbon Fiber Tube (16x12mm) | — | Lower leg structure |
-| Aluminum 6063 Tube (1in OD) | — | Upper leg structure |
-| 3S 11.1V LiPo 80C 5Ah | 1 | Motor power |
-| 2S 7.6V LiHV 3.5Ah | 1 | Electronics power |
-| Custom PCB | 1 | High-current motor control, in progress |
- *BOM subject to change. For the most recent BOM go to [APEX BOM on Google Sheets](https://docs.google.com/spreadsheets/d/1m-T2-i6hj74-5jb7eDYWLMdHvXfgs2ABYw7gbwLl6ZI/edit?usp=sharing)*
----
- 
-## Software Architecture
- 
-```
-Pi 5 (ROS 2)
-├── pi5_main.py          # Main control loop, gait generation, homing/stand/go/stop state
-├── inverse_kinematics/
-│   ├── ik_and_gait.py   # IK, FK, GaitPath, GaitIK, RecoveryPath, shared leg/body geometry
-│   └── quadruped_sim.py # PC-only 4-leg gait simulator (no ROS) -- --report and 3D animation modes
-├── sensor_hub.py        # Per-sensor poller threads -- keeps blocking I2C/UART off the control loop
-├── boot_display.py      # Optional SH1106 OLED: boot progress + status (no-op if absent)
-├── imu.py               # BNO085 quaternion → roll/pitch
-├── navigation.py        # GPS parsing, compass, waypoint navigation
-├── stream_server.py     # Flask dashboard node -- ROS wiring, routes, /status plumbing
-├── dashboard_page.py    # The dashboard HTML/CSS/JS (shared string, zero deps)
-├── dashboard_preview.py # Throwaway standalone dashboard mock (Flask only, no hardware)
-├── static/              # Vendored assets served at /static/ (bootstrap.min.css)
-├── webcam.py            # USB camera capture
-├── vision_obstacle.py   # Depth model, obstacle costmap, committed avoidance planner
-├── vision_test/         # Standalone notebook for tuning the vision pipeline
-├── power_monitor.py     # INA219 -- voltage only is read; current/power path unconfirmed, see ENGINEERING_NOTES
-├── audio.py             # Bluetooth speaker alerts
-├── requirements.txt     # pip dependencies (ROS 2 itself is a separate apt install)
-├── single_leg_test.py   # Standalone single-leg test harness (no ROS/IMU/GPS)
-├── test_pi_quadruped.py # Unit tests for the Pi-side controller (needs ROS 2 / rclpy)
-├── stream_tester.py     # Camera/stream bench script
-├── ros_development.txt  # Developer cheat sheet for the ROS workflow
-└── inverse_kinematics/gait_testing2.py, gait_testing3.py  # Old matplotlib gait experiments
- 
-Pico (MicroPython, x4)
-├── pico_main.py         # UART receiver, gait buffer, PID execution loop, homing/stop commands
-├── motor_control.py     # BTS7960 PID joint controller with encoder feedback
-├── fsr.py               # Force sensitive resistor foot contact (set FSR_PIN per leg)
-├── BTS7960_Test.py      # Bench test: drive one H-bridge directly
-└── single_motor_test.py # Bench test: single motor, no PID
-```
- 
-### Pi to Pico Protocol
- 
-The Pi sends gait data over UART to each Pico using a binary protocol:
- 
-- **Start:** `0xAA 0xAA`
-- **Home leg:** `0xAB 0xAB` -- zero this leg's encoders to the current physical pose, no payload
-- **Stop leg:** `0xAC 0xAC` -- cut motor holding torque, keep encoder tracking, no payload
-- **Payload:** one frame of 16-byte steps (`struct.pack('ffff', roll, pitch, knee, is_swing)`): a 20-step gait cycle, or a 41-entry Stand/Go ramp (`RAMP_STEPS + 1`). The Pico rejects frames longer than 48 steps
-- **End (cycle):** `0xFF × 16` -- Pico loops the buffer indefinitely (the walking gait)
-- **End (one-shot):** `0xFE × 16` -- Pico holds the final step (startup/recovery ramps)
- 
-Each Pico steps through the gait buffer at 40ms per step. It's a **crawl gait, one leg airborne at a time** (25% swing / 75% stance duty factor) rather than a trot -- the four legs are phase-offset by `[0, N/2, 3N/4, N/4]`, giving lift order FL → RL → FR → RR, with three feet always planted. Each Pico also announces `LEG,<id>` over UART until it's identified, and reports `HOMED,<id>` / `ABORTED,<angles>` asynchronously.
- 
----
- 
-## Kinematics
- 
-The IK engine uses a 3-link chain (hip abductor, thigh, shin) solving for roll, pitch, and knee angles given a target foot position in (X, Y, Z):
- 
-1. **Roll** — solved in the X-Z plane using `atan2` + `acos` geometry on the abductor link
-2. **Pitch/Knee** — solved in the virtual leg plane using law of cosines
-Forward kinematics is used for the recovery path, reconstructing foot position from joint angles to interpolate back to home stance.
- 
-Segment lengths (cm): `a = 9.65` (abductor), `b = 26.84` (thigh), `c = 24.37` (shin)
- 
----
- 
-## Gait
- 
-The gait path is a 20-step cycle, one leg airborne at a time (25% of the cycle) so three feet are always planted:
- 
-- **Swing phase** (first 25% of the cycle): a true half-ellipse -- the foot sweeps forward and up together as matched cos/sin of the same angle, easing into liftoff and touchdown instead of slamming into them
-- **Stance phase** (remaining 75%): the foot travels backward at constant velocity (deliberately linear, not elliptical, so all three planted feet move at the same rate and don't scrub against the ground)
-- **Body shift**: the body leans toward the diagonally-opposite hip just before each lift, to keep the centre of mass off the edge of the support triangle (ramped from 2 cm to 4 cm as a turn tightens)
-- **IMU levelling**: differential per-leg foot-height correction from roll/pitch, not a common offset
- 
-### Steering
- 
-A **body twist**, not stride differencing. `build_gait()` takes a forward stride and a yaw-per-cycle; each planted foot arcs about the body centre (`body_twist_xy_path`), its neutral hip position rotated `± yaw/2` across the stroke, so the four feet phased together rotate the body -- the hip-roll joint carrying the lateral part of each arc. `yaw == 0` is the straight gait, unchanged term for term.
- 
-`pi5_main` maps the turn command (+ = right; a dashboard control or the GPS heading error) to a yaw rate plus a forward stride that tapers to zero by 90°, so a ±90° command spins in place while a smaller heading error arcs and still advances. On the dashboard the **LEFT / RIGHT** buttons send ±45° (a moderate arc at about half stride) and the slider spans the full −90°…+90°, its ends being a spin in place; the slider tracks the buttons so it always shows the active command. `quadruped_sim.py --report` checks the straight gait *and* a turn sweep: a full spin is ~13°/cycle (~16°/s, a 90° turn in ~5.5 s) with the stability margin, joint rate, and one-leg-airborne crawl all holding.
- 
-Before any of this runs, the robot must be homed, stood up, and started from the web dashboard -- see `ENGINEERING_NOTES.md` for that flow.
- 
----
- 
-## Control Loop
- 
-`pi5_main.py` runs a ~100 Hz loop that fuses heading, chooses a steering command (manual, GPS, or the avoidance override), and rebuilds the gait only when the command or attitude actually changes. Everything that could block it is pushed onto its own thread:
- 
-| Thread | Job |
-|---|---|
-| Control loop | Steering decision, gait rebuild, Pico ack/recovery handling, status publish |
-| Gait serial worker | The single writer to the four Pico UARTs -- gait frames, home/stop commands, recovery |
-| `SensorHub` pollers | One each for IMU (50 Hz), GPS + compass (10 Hz), INA219 (1 Hz) |
-| Vision worker | Depth inference + costmap, 1-3 fps; not started if the ONNX model isn't installed |
-| Flask / ROS executor | Dashboard requests and ROS 2 callbacks |
- 
-The sensor split matters: those reads are synchronous I2C/UART transactions, and a NAKing or wedged bus blocks the kernel for its timeout. Inline, that used to stall steering and the IMU reflex with it. Now each poller owns its device and publishes a timestamped snapshot; the loop reads the snapshot with a staleness cutoff, so a dead sensor degrades to a safe default (flat attitude, hold last heading, skip the battery check) and a watchdog logs which poller is stuck. `python3 sensor_hub.py` runs a self-test with fake sensors, including a hung-bus case.
+For the full, up-to-date bill of materials, see the [APEX BOM on Google Sheets](https://docs.google.com/spreadsheets/d/1m-T2-i6hj74-5jb7eDYWLMdHvXfgs2ABYw7gbwLl6ZI/edit?usp=sharing).
 
-The compass reads *true* north — `MAGNETIC_DECLINATION_DEG` in `pi5_main.py` (currently `-13` for northern NJ; change it for your area) is added to every heading, and the reading is tilt-compensated with the live IMU attitude so it doesn't wobble with each stride. Bad samples (I2C error, magnetic overflow, dead chip) return `None`; a compass that stops reading for more than 3 s makes the robot hold position under GPS nav rather than drive on a frozen bearing, and lights the degraded banner. It is **not** hard/soft-iron calibrated — absolute accuracy near the motors is poor, but the nav loop re-derives the bearing from GPS every pass so it still converges.
-
-The GPS is guarded the same way: `GPSReader` timestamps its last positional fix, and a receiver that goes quiet (fix older than 5 s) counts as *no fix* even though `has_fix` is still latched — autonomous nav then holds position instead of driving toward a frozen waypoint bearing. A camera that fails to open raises at boot (marked down, degrade banner) rather than reading as healthy while returning nothing.
-
-The INA219 is read for **voltage only** right now — whether a shunt is actually in the load path for current sensing is unconfirmed, so `get_current()`/`get_power()` are kept but unused rather than feeding a meaningless number into the low-battery alarm. `LOW_VOLT_THRESHOLD` in `pi5_main.py` also needs a bench check (see `ENGINEERING_NOTES.md`) to confirm which rail it's actually measuring.
- 
----
- 
-## Obstacle Avoidance
- 
-Camera-only, using a **pretrained** monocular depth model (Depth-Anything-V2-Small, ONNX) — nothing is trained here. Each frame becomes a relative depth map; a band in front of the feet is sliced into 9 angular bins, and each bin is scored by how much of it reads **nearer than the ground does at that image row**. The planner then takes whatever direction the robot wants to travel and returns the nearest one that is actually passable.
- 
-That row-relative comparison is the important detail. On flat ground the distance to the ground at image row `r` goes as `1/(r - horizon)`, so depth ramps smoothly from far at the top of the frame to near at the bottom — a single absolute threshold flags the ground itself as an obstacle. An upright object instead occupies rows that would otherwise show ground far away, so it stands out sharply against its own row. A uniform slope shifts a whole row together and is correctly ignored.
- 
-It runs on its own worker thread at 1–3 fps on the Pi 5 CPU, which is ample — the crawl gait only moves at ~16.7 cm/s. No AI accelerator needed.
- 
-The planner is a committed state machine, not a per-frame reaction:
- 
-| State | Behaviour |
-|---|---|
-| `CLEAR` | Corridor open. Navigation steers, full stride |
-| `AVOIDING` | Obstacle ahead. Committed to one side, steering to the passable heading nearest the goal, 0.6x stride |
-| `CLEARING` | Corridor reopened. Keeps turning while the obstacle is still in frame, then drives straight until the body is past |
-| `BLOCKED` | No gap anywhere. Stride drops to zero — the robot **marches in place**, still standing (unlike STOP, which cuts torque) |
-| `ESCAPE` | Still blocked. Slow committed arc toward the least-obstructed side |
- 
-**Why commitment matters:** the naive version oscillates. Steer away from an obstacle, it leaves the field of view, GPS points straight back at it, repeat forever. Latching a side until the detour completes is what prevents that.
- 
-**Getting back on track is automatic** — `Navigator.calculate_nav` recomputes the bearing from the live GPS fix every pass, so there is no route line to rejoin. Within a detour the planner always picks the passable heading *closest to the goal bearing*, so it drifts back toward the waypoint as soon as the geometry allows.
- 
-Verified in simulation against the real `Navigator`: obstacles struck by 0.95 m with avoidance off were cleared by 0.25–0.50 m with it on, with zero steering oscillations, at a 3–19% cost in route time.
- 
-```bash
-cd Code/Pi5
-python3 vision_obstacle.py --download    # fetch the ~100MB depth model, once
-python3 vision_obstacle.py               # planner self-test, no camera needed
-python3 vision_obstacle.py --live 0      # live decisions from the camera
-```
- 
-Then toggle **AVOIDANCE** on the dashboard. While it is on, the video feed is overlaid with the detection bins (red = blocked), so the thresholds can be tuned by eye. `Code/Pi5/vision_test/obstacle_avoidance_test.ipynb` is a standalone notebook for the same tuning against still images.
- 
-**Not yet verified on hardware** — see `ENGINEERING_NOTES.md` for what needs measuring first.
- 
----
- 
-## Dashboard
- 
-Open `http://<pi-ip>:5000`. Top to bottom: live camera feed, **Steering** (direction readout, LEFT / FWD / RIGHT, the −90…+90 slider), **Startup** (Home ×4 → STAND → GO → STOP), **Navigation** (collapsible GPS routing + obstacle avoidance), then **Debug** per-leg deactivation at the bottom. Each card's wordy explanation is tucked behind a small **i** button. STAND and GO stay disabled, with a warning banner, until all four legs are homed; status pills up top show homed count / standing / walking.
- 
-The **Navigation** card holds two collapsible sections, both closed on load. *GPS Waypoints & Routing* has the NAV MODE master toggle, a waypoint editor (one latitude box and one longitude box per point — paste a Google Maps "lat, lng" coordinate string into either box and it splits across both — ▲/▼ to reorder, × to remove, **+ Add point**, **Send route** — nothing reaches the robot until pressed), and a **Start / Pause / Stop** transport row greyed out by state: Start runs the route from the first point, Pause holds position without advancing, Stop returns to manual and rewinds. NAV MODE and Start are refused until at least one waypoint has been sent — the toggle greys out and reads *add a waypoint first* — and the controller rejects the switch to autonomous the same way, so a lost or spoofed message can't put the robot in nav mode with nowhere to go. On reaching the last point the robot holds position. *Obstacle Avoidance* has the avoidance toggle and its live state readout.
- 
-The markup lives in one place — `dashboard_page.py`, a plain string with no imports — so `stream_server.py` (the real node) and `dashboard_preview.py` (a hardware-free mock for working on the UI) render the identical page. Styling is an APEX red/black theme over Bootstrap 5, and Bootstrap is **vendored** at `Code/Pi5/static/bootstrap.min.css` rather than pulled from a CDN, so the page is fully functional when the Pi is its own access point with no route to the internet.
- 
 ---
  
 ## Getting Started
@@ -210,15 +50,10 @@ The markup lives in one place — `dashboard_page.py`, a plain string with no im
 pip install -r Code/Pi5/requirements.txt
 ```
 
-`onnxruntime` / `numpy` (obstacle avoidance) and `luma.oled` (boot OLED) are in
-there but optional — the code runs without them. ROS 2 (Humble or later) is a
-separate apt install and is only needed for `pi5_main.py`.
+ROS 2 (Humble or later) is a separate apt install, needed only for `pi5_main.py`. To test without ROS, use `single_leg_test.py`.
 
-Obstacle avoidance is optional at runtime — if `onnxruntime` or the model file is missing, the import is caught, the dashboard shows `AVOIDANCE: NO MODEL`, and everything else runs unchanged.
-
-Hardware init is non-fatal: a missing IMU, dead GPS, unplugged camera or absent power monitor each leave that subsystem reporting *down* — an amber "running degraded" banner on the dashboard, and a line on the optional SH1106 OLED (`boot_display.py`, wired per `HARDWARE.md`) — rather than stopping the boot. Only the Flask dashboard itself is required. `pip install luma.oled` enables the OLED; without it the same progress goes to stdout.
- 
-ROS 2 (Humble or later) required for `pi5_main.py`. For testing without ROS, use `single_leg_test.py` — it has no ROS dependency, runs a single leg, and serves the camera stream.
+- **Optional pieces:** obstacle avoidance (`onnxruntime` + the depth model) and the status OLED (`luma.oled`). If either is missing, everything else still runs.
+- **Missing hardware is OK:** a dead IMU, GPS, camera or power monitor won't stop the boot. The dashboard shows an amber "running degraded" banner instead.
  
 ### Running the single-leg test
  
@@ -244,11 +79,10 @@ Flash each Pico with MicroPython, then copy the contents of `Code/Pico/` to the 
 ### ⚠ Before powering the motors
  
 - **Re-flash all four Picos.** Seven firmware fixes live on the Pico side; a Pi running current code against old firmware still cannot stand, and still will not walk. See the banner in `ENGINEERING_NOTES.md`.
-- **Set `FSR_PIN` in `pico_main.py`** to whichever pin carries that leg's own foot sensor before you connect the FSRs. It defaults to `16`.
+- **Copy every file in `Code/Pico/`** to each board, including `mcp3208.py`, `current_sense.py` and `contact_detect.py`.
+- **Calibrate `TOUCHDOWN_AMPS` in `pico_main.py`.** The touchdown abort ships with uncalibrated 3.0 A placeholders. See `ENGINEERING_NOTES.md` → *Ground contact — current sensing replaced the FSR*.
 - **Set `LEG_ID`** on each board — all four currently ship as `0`.
 - **Check the IMU roll/pitch signs on a stand.** Levelling assumes right-side-down is positive roll and nose-up is positive pitch. If either axis is bolted in backwards the correction is positive feedback and will drive the robot over. Steps are in `ENGINEERING_NOTES.md` → *Before you walk it*.
- 
-A jammed joint is now caught in software: `JointController` latches a stall when the PID has been saturated for 1.5 s with neither the error falling nor the encoder turning, zeroes that joint's PWM, and raises the existing `ABORTED` path so the Pi runs its recovery. Before this the joint simply held 100% duty until something burned out.
  
 ---
  
@@ -267,8 +101,9 @@ A jammed joint is now caught in software: `JointController` latches a stall when
 | Homing / Stand / Go / Stop dashboard workflow | Complete |
 | ML obstacle avoidance | Built, needs hardware tuning |
 | Motor stall protection (software) | Complete — error *and* encoder must both stall; needs a bench check |
-| Per-motor current sensing (BTS7960 `IS`) | Planned, not started |
-| FSR foot contact | Complete — set `FSR_PIN` to match your wiring |
+| Per-motor current sensing (BTS7960 `IS`, MCP3208) | Built, not yet run on hardware |
+| Foot-contact abort (current-based, replaces FSR) | Built — thresholds need bench calibration |
+| Motor Currents dashboard panel | Complete |
 | Mechanical build | In progress |
 | Custom PCB | In progress |
 | CAD files | In progress |
@@ -284,6 +119,8 @@ APEX/
 │   └── Pico/            # RP2040 MicroPython firmware (one copy runs on every leg)
 ├── CAD/                 # Fusion 360 leg and body models, PCB V1 design and Gerber files
 ├── Photos/              # Build photos
+├── README.md            # This file
+├── TECHNICAL.md         # How it works: architecture, protocol, gait, control loop, vision, dashboard
 ├── HARDWARE.md          # Pi 5 pin allocation and the status OLED wiring
 └── ENGINEERING_NOTES.md # Open issues, bench checklists, resolved defects, planned work
 ```
@@ -293,6 +130,8 @@ APEX/
 ## Contact
  
 Questions or inquiries: [apex.quadrupedalrobot@gmail.com](mailto:apex.quadrupedalrobot@gmail.com)
+
+**Want your own APEX?** Whether it's for educational, personal, commercial, or any other use, email [apex.quadrupedalrobot@gmail.com](mailto:apex.quadrupedalrobot@gmail.com) to purchase one.
 
 ---
 

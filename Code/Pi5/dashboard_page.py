@@ -323,6 +323,18 @@ _PAGE = """
         .nav-sec-body { display: none; padding: 0 .1rem .9rem; }
         .nav-sec.open .nav-sec-body { display: block; }
 
+        .cur-table {
+            width: 100%; border-collapse: collapse; margin-top: .3rem;
+            font-family: ui-monospace, Consolas, monospace; font-size: .74rem;
+        }
+        .cur-table th, .cur-table td {
+            padding: .4rem .2rem; border-bottom: 1px solid var(--apex-line);
+            text-align: right; white-space: nowrap;
+        }
+        .cur-table th { color: var(--apex-muted); font-weight: 600; letter-spacing: .06em; }
+        .cur-table th:first-child, .cur-table td:first-child { text-align: left; }
+        .cur-table .na { color: var(--apex-muted); }
+
         .transport-row { display: flex; gap: .5rem; margin-top: .6rem; }
         .transport-row .apex-btn { flex: 1 1 0; min-width: 0; padding: .7rem .3rem; }
         .apex-btn.go   { background: #0c2a16; border-color: #1c7a3e; color: #7ff0a8; }
@@ -401,6 +413,26 @@ _PAGE = """
             5: ['ESCAPE',   '#ff3b30', 'arcing to find a way out']
         };
         const LEG_NAMES = ['FL', 'FR', 'RR', 'RL'];
+        const JOINT_NAMES = ['roll', 'pitch', 'knee'];
+        // c: 24 mA values, [leg][joint][R, L]; -1 means no data for that joint.
+        function renderCurrents(c) {
+            if (!c || c.length < 24) return;
+            const fmt = v => (v / 1000).toFixed(2) + 'A';
+            let reporting = 0;
+            LEG_NAMES.forEach((name, leg) => {
+                let legOk = false;
+                JOINT_NAMES.forEach((joint, j) => {
+                    const r = c[leg * 6 + j * 2], l = c[leg * 6 + j * 2 + 1];
+                    const cell = document.getElementById('cur_' + name + '_' + joint);
+                    const ok = r >= 0 && l >= 0;
+                    cell.classList.toggle('na', !ok);
+                    cell.innerText = ok ? fmt(r) + '/' + fmt(l) : '--';
+                    legOk = legOk || ok;
+                });
+                if (legOk) reporting++;
+            });
+            document.getElementById('curChip').innerText = reporting + '/4 LEGS';
+        }
         function refreshStatus() {
             fetch('/status').then(r => r.json()).then(s => {
                 const nHomed = s.homed.filter(v => v === 1).length;
@@ -421,6 +453,7 @@ _PAGE = """
                 document.getElementById('pillHomed').classList.toggle('live', allHomed);
                 document.getElementById('pillStand').classList.toggle('live', s.standing === 1);
                 document.getElementById('pillWalk').classList.toggle('live', s.walking === 1);
+                renderCurrents(s.currents);
 
                 // ---- Navigation: mode, pause, route progress, transport ----
                 const navOn = s.nav_mode === 1;
@@ -751,6 +784,33 @@ _PAGE = """
                 <button id="deact_FR" class="apex-btn" onclick="toggleLeg(1, false)">Deactivate FR</button>
                 <button id="deact_RR" class="apex-btn" onclick="toggleLeg(2, false)">Deactivate RR</button>
                 <button id="deact_RL" class="apex-btn" onclick="toggleLeg(3, false)">Deactivate RL</button>
+            </div>
+        </div>
+
+        <div class="apex-card">
+            <div class="nav-sec" id="sec_current">
+                <button class="nav-sec-head" onclick="toggleSection('sec_current')">
+                    <span class="nav-sec-chevron">&#9654;</span>
+                    <span class="nav-sec-title">Motor Currents</span>
+                    <span class="nav-sec-chip" id="curChip">0/4 LEGS</span>
+                </button>
+                <div class="nav-sec-body">
+                    <div class="info" id="i_current">Live current per motor, read from each
+                        BTS7960's current-sense outputs, shown as
+                        <b>right&nbsp;side&nbsp;/&nbsp;left&nbsp;side</b> of the driver (RPWM /
+                        LPWM). Only the side that is driving reports, so one value is normally
+                        near zero. Updates about once a second. <b>--</b> means that leg is not
+                        reporting or its ADC reads as dead.</div>
+                    <button class="info-btn" onclick="toggleInfo('i_current')"
+                            style="align-self:flex-start;margin-bottom:.5rem;">i</button>
+                    <table class="cur-table">
+                        <tr><th>Leg</th><th>roll R/L</th><th>pitch R/L</th><th>knee R/L</th></tr>
+                        <tr><td>FL</td><td id="cur_FL_roll">--</td><td id="cur_FL_pitch">--</td><td id="cur_FL_knee">--</td></tr>
+                        <tr><td>FR</td><td id="cur_FR_roll">--</td><td id="cur_FR_pitch">--</td><td id="cur_FR_knee">--</td></tr>
+                        <tr><td>RR</td><td id="cur_RR_roll">--</td><td id="cur_RR_pitch">--</td><td id="cur_RR_knee">--</td></tr>
+                        <tr><td>RL</td><td id="cur_RL_roll">--</td><td id="cur_RL_pitch">--</td><td id="cur_RL_knee">--</td></tr>
+                    </table>
+                </div>
             </div>
         </div>
 

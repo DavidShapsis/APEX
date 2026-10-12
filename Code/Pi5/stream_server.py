@@ -57,6 +57,7 @@ class RobodogStreamer(Node):
             'avoid_steer': 0, 'avoid_stride': 100,
             'wp_index': 0, 'wp_total': 0, 'nav_mode': 0, 'nav_paused': 0,
             'health': 0x3F,   # 6 bits, all subsystems assumed up until told otherwise
+            'currents': [-1] * 24,
         }
 
         self.app.add_url_rule('/video_feed', 'video_feed', self.video_feed)
@@ -89,6 +90,7 @@ class RobodogStreamer(Node):
                 'avoid_steer': 0, 'avoid_stride': 100,
                 'wp_index': 0, 'wp_total': 0, 'nav_mode': 0, 'nav_paused': 0,
                 'health': 0x3F,
+                'currents': [-1] * 24,
             }
             if len(data) >= 15:
                 status.update({
@@ -113,6 +115,9 @@ class RobodogStreamer(Node):
                 self.nav_mode = bool(data[17])
             if len(data) >= 20:
                 status['health'] = data[19]
+            if len(data) >= 44:
+                # mA, [leg FL,FR,RR,RL][joint roll,pitch,knee][R,L]; -1 = no data.
+                status['currents'] = data[20:44]
             self.homing_status = status
 
     def index(self):

@@ -18,14 +18,14 @@ The two-minute version. Full detail is one click away on each line.
   in `Code/Pico/` and none of them exist on the robot until it's reflashed.
 - **[Set `LEG_ID` on each Pico](#set-leg-id-on-each-pico)** — all four boards
   currently ship as `0`.
-- **[Set `FSR_PIN` before wiring the foot sensors](#resolved-fsr-abort-fired-on-the-first-swing-step-of-every-leg)** — defaults to 16, must match each leg's actual wiring.
+- **[Calibrate `TOUCHDOWN_AMPS`](#ground-contact-current-sensing-replaced-the-fsr)** — the current-based touchdown abort ships with 3.0 A placeholders; too low aborts mid-walk, too high misses touchdowns.
 - **[Verify the `reverse` flags during an actual turn](#set-the-left-right-reverse-flags-now-matters-for-turning-verify-it)** — wrong polarity here now steers the wrong way, not just at boot.
 - **[PID `kp = 0.8` still needs bench tuning](#pid-kp-still-needs-bench-tuning-windup-ruled-out-kd-fixed)** — simulation favors a softer gain, but the sim has no gravity or load to fight.
 - **[Confirm which rail the INA219 is on](#low-voltage-alarm-threshold-may-be-unreachable-check-which-rail-the-ina219-is-on)** — the low-voltage alarm may be watching a rail that never drops.
 - **[IK clamps unreachable targets silently](#ik-clamps-unreachable-targets-silently)** — a bad command doesn't error, it just quietly clips.
 - **[Obstacle avoidance has never run on real hardware](#obstacle-avoidance-built-and-simulated-never-run-on-hardware)** — simulated and unit-tested only; tune thresholds on the bench first.
 - **[Compass hard/soft-iron calibration still isn't done](#compass-declination-tilt-now-handled-hard-soft-iron-calibration-still-not)** — declination and tilt compensation are in, calibration against local magnetic interference is not.
-- **[Per-motor current sensing is planned, not built](#current-sensing-banner)** — the BTS7960 `IS` pins could catch a jammed joint or collision; nothing reads them yet.
+- **[Current-sensing hardware assumptions are unconfirmed](#current-sensing-banner)** — joint-to-ADC-channel mapping, MCP3208 VREF = 3.3 V, and whether the driver boards carry their own 10 kΩ on `IS`.
 - **[Idea, not built: one generic preloaded UF2 for all 4 Picos](#planned-ship-one-generic-uf2-with-the-pico-files-preloaded)** — flash MicroPython and the default `.py` files in a single step; still editable in Thonny afterward.
 - **[Swing clearance is 4.76 cm, not the nominal 5.0](#swing-clearance-is-4-76-cm-not-the-nominal-5-0)** — small margin, worth knowing before assuming ground clearance.
 - **[Encoder zero must match `HOME_POSE`](#encoder-zero-must-match-home-pose-this-is-what-homing-top-of-doc-is-for)** — that's what the manual homing step (below) is for.
@@ -48,7 +48,7 @@ The two-minute version. Full detail is one click away on each line.
   - [Known limits of the approach itself](#known-limits-of-the-approach-itself)
   - [Validated against real ground-robot imagery](#validated-against-real-ground-robot-imagery)
   - [First hardware session should be, in order](#first-hardware-session-should-be-in-order)
-- [PLANNED — migrate ground-contact sensing from FSR to current sensing](#planned-migrate-ground-contact-sensing-from-fsr-to-current-sensing)
+- [Ground contact — current sensing replaced the FSR](#ground-contact-current-sensing-replaced-the-fsr)
 - [PLANNED — ship one generic UF2 with the Pico files preloaded](#planned-ship-one-generic-uf2-with-the-pico-files-preloaded)
 - [Homing — a manual step you have to do, before every power-on](#homing-a-manual-step-you-have-to-do-before-every-power-on)
   - [RESOLVED — Home button, one leg at a time](#resolved-home-button-one-leg-at-a-time)
@@ -118,11 +118,13 @@ The two-minute version. Full detail is one click away on each line.
 > - the step clock's cadence tracked loop jitter instead of being a fixed 40 ms
 > - every gait re-send restarted the cycle from step 0, slamming the feet
 > - a blocked joint held 100% PWM forever, with nothing to stop it
-> - the FSR abort would have fired on every leg's first swing step
+> - the FSR abort would have fired on every leg's first swing step (since
+>   superseded: the FSR is gone, current sensing replaced it)
 > - PID state survived a Stop, saturating the integrator on resume
 >
-> Also **set `LEG_ID`** (all four boards currently ship as `0`) and **`FSR_PIN`**
-> before wiring the foot sensors. Each is written up in its own section below.
+> Also **set `LEG_ID`** (all four boards currently ship as `0`), and copy the new
+> `mcp3208.py`, `current_sense.py` and `contact_detect.py` onto every board along
+> with `pico_main.py`. Each is written up in its own section below.
 
 <a id="imu-banner"></a>
 > **VERIFY THE IMU ROLL/PITCH SIGNS BEFORE THE FIRST UNSUPPORTED WALK.** Body
@@ -134,16 +136,21 @@ The two-minute version. Full detail is one click away on each line.
 > *Will make the robot fall over → OPEN — the IMU roll/pitch signs are unverified*.
 
 <a id="current-sensing-banner"></a>
-> **TO BUILD: per-motor current sensing off the BTS7960 IS pins.**
-> **Not implemented — no code for this exists yet.**
+> **BUILT, NOT YET RUN ON HARDWARE: per-motor current sensing replaced the FSR.**
 >
-> Every BTS7960 already has a built-in current-sense output (`R_IS` / `L_IS`, a
-> current mirror at roughly 1/8500 of load current). Feeding those into the Pico
-> means each leg can watch what its own three motors are actually drawing, and a
-> current spike = **the joint met resistance it shouldn't have** — the robot walked
-> into something, a foot jammed, a link is binding. That's the trigger to abort the
-> gait and drop into `handle_recovery` instead of grinding the motor against
-> whatever stopped it.
+> Each Pico reads all six BTS7960 `IS` outputs of its leg through an MCP3208 and
+> aborts on a sustained mid-swing current spike, read as an early touchdown.
+> Before trusting it, confirm on the bench:
+>
+> - `TOUCHDOWN_AMPS` — 3.0 A placeholders; set from logged readings
+> - joint-to-channel map (`channels=` in `pico_main.py`), and which of each pair is
+>   `R_IS` vs `L_IS`
+> - MCP3208 VREF really is 3.3 V (`MCP3208(vref=...)`); a 5 V supply would also put
+>   5 V on GP16
+> - whether the driver boards have their own `IS`-to-GND 10 kΩ (`DRIVER_IS_OHMS`)
+>
+> Full write-up: [Ground contact — current sensing replaced the
+> FSR](#ground-contact-current-sensing-replaced-the-fsr).
 
 **Verify the whole control path without hardware:**
 
@@ -528,8 +535,8 @@ pipeline — the two had already diverged once.
 - **Drop-offs and holes read as *farther* than the ground, never nearer, so the
   detector cannot flag them at all.** This is inherent to the method, not a
   tuning problem: the test asks "is anything closer than the ground should be",
-  and a hole is the opposite. The FSR / `ABORTED` recovery path is the only
-  backstop, and it only fires on contact.
+  and a hole is the opposite. The current-sensing touchdown / `ABORTED` recovery
+  path is the only backstop, and it only fires on contact.
 - **Body width is handled by a fixed angle, but the correct angle depends on
   range.** What has to fit through a gap is ~72 cm (53 cm hip spacing plus the
   abductor sticking out ~9.65 cm each side — *not* the 53 cm `BODY_WIDTH_CM`).
@@ -597,46 +604,102 @@ frame — rather than scenic stills. Two results are worth carrying forward:
 
 ---
 
-<a id="planned-migrate-ground-contact-sensing-from-fsr-to-current-sensing"></a>
-## PLANNED — migrate ground-contact sensing from FSR to current sensing
+<a id="ground-contact-current-sensing-replaced-the-fsr"></a>
+## Ground contact — current sensing replaced the FSR
 
-Decided direction, not yet implemented. Ground contact (used only for the abort
-check — a foot touching down early, mid-swing, triggers `handle_recovery`) currently
-comes from four digital FSR pins in `Pico/fsr.py`, one per leg, read as a plain
-GPIO high/low through a physical pull-down resistor: `fsrs = [FSR(16), FSR(17),
-FSR(18), FSR(19))]`, and `any_touchdown = any(f.state for f in fsrs)` in
-`pico_main.py`. The plan is to replace this with current sensing on the joint
-motors instead — detecting a stall/current spike (the leg meeting unexpected
-resistance) rather than a dedicated foot-mounted pressure sensor.
+Built and simulated, **not yet run on hardware**. Motor current now drives the
+early-touchdown abort (a foot touching down mid-swing triggers `handle_recovery`)
+and the dashboard's Motor Currents panel. The FSR is gone: its pin, GP16, is now
+the ADC's data line.
 
-**Not designed yet — flagging what the migration actually has to answer, not
-guessing at it:**
-- *Where the current gets measured.* **Per-joint, off the BTS7960's own `IS` pins**
-  — see the callout at the top of this file. The sense element is already in the
-  driver chip (a ~1/8500 current mirror), so this needs a sense resistor and an ADC
-  pin per joint, not a new shunt. It is also not 12 readings gathered centrally:
-  each Pico only reads its *own* three joints, and `GP26`/`GP27`/`GP28` (ADC0/1/2)
-  are free on every board for exactly that. The existing `INA219` in
-  `power_monitor.py` reads total *pack* current only — one number for the whole
-  robot, not per-leg, so it cannot answer "which foot touched down" on its own.
-- *Stall vs. touchdown are not the same event.* A current spike means the leg met
-  resistance — that's also true for hitting an obstacle mid-swing, binding at a
-  joint limit, or simple stiction, not only "foot reached the ground." The FSR is
-  specific to ground contact; current sensing is a broader "something stopped this
-  joint" signal and will need its own logic to distinguish the cases (or the
-  abort logic needs to become "the leg stalled," a real semantic change, not just a
-  sensor swap).
-- *Threshold tuning is different, not simpler.* FSR threshold is a fixed digital
-  high/low against a known resistor. A current threshold has to sit above normal
-  swing-phase motor current (which itself varies with `kp`/duty cycle, bench-tuning
-  which is already an open item above) and below a stall — those two need to be far
-  enough apart under real load to have a safe midpoint.
+**Hardware, per leg board:**
 
-**Keep this in mind for other work, not just this entry:** any future change
-touching `fsr.py`, the abort/`ABORTED` protocol, or `handle_recovery` should treat
-FSR as the *current, temporary* mechanism, not a permanent architecture decision —
-don't build more FSR-specific tooling or tuning on top of it without checking
-whether this migration has since landed.
+- MCP3208 12-bit ADC on SPI0: DOUT → GP16, CS → GP17, CLK → GP18, DIN → GP19.
+  VREF assumed 3.3 V.
+- CH0–CH5 carry the three BTS7960s' `R_IS` / `L_IS` pairs (roll 0/1, pitch 2/3,
+  knee 4/5 — **unconfirmed**). CH6/CH7 are not connected.
+- Each of the 24 `IS` lines: `IS` → 680 Ω to GND → 5.1 kΩ → ADC input → 10 kΩ to GND.
+
+**Why the 680 Ω is required.** `IS` is a current source, not a voltage output
+(BTS7960 datasheet §4.4.4: "the maximum voltage at the IS pin is determined by the
+choice of the external resistor and the supply voltage"; rated to 45 V). With only
+the 15.1 kΩ divider to ground, the ADC input passes the MCP3208's VDD + 0.6 V
+absolute maximum at about 3.3 A of motor current, and a fault drives it toward
+the battery voltage. With the 680 Ω in parallel:
+
+| Case | `IS` current | ADC input |
+|---|---|---|
+| 9.5 A motor (max), typical ratio 8500 | 1.12 mA | 0.48 V |
+| 9.5 A motor, worst-case ratio ~3000 | ~3.2 mA | 1.37 V |
+| Fault current, max 7 mA (§4.4.7) | 7 mA | 3.02 V |
+
+Resolution is about 16 mA of motor current per ADC count. Keep the resistor at or
+below ~700 Ω or a fault clips at full scale. The sense ratio is only guaranteed
+to 3000–14000 at 5 A, so absolute amps are indicative; thresholds come from
+measured readings. If the driver boards carry their own `IS`-to-GND resistor
+(IBT-2 boards usually have a 10 kΩ "103"), set `DRIVER_IS_OHMS`; it shifts the
+scale ~6%.
+
+**Code:**
+
+- `Pico/mcp3208.py` — `MCP3208`, SPI driver only: `read_raw(ch)`, `read_voltage(ch)`.
+- `Pico/current_sense.py` — `CurrentSense`, one joint: zero-load offset taken at
+  boot (`tare()`, all PWMs still 0), per-side smoothed amps in `channel_amps`,
+  their sum in `amps`, and `valid = False` when a channel reads full scale (a dead
+  or unpowered ADC, which no real current can produce with the 680 Ω).
+- `Pico/contact_detect.py` — `TouchdownDetector`. Assumes a normal gait, upright:
+  a joint current above its threshold mid-swing is the foot touching down early.
+  It does not try to tell a touchdown from walking into something. Ignores the
+  first 40 ms after liftoff (the leg is still pushing off) and needs the spike to
+  last 10 ms. Swing is 4 flagged steps × 40 ms = 160 ms, so 120 ms of each swing
+  is checked.
+- `Pico/pico_main.py` — resistor values and `TOUCHDOWN_AMPS` at the top. On a trip
+  it sends `CONTACT,<leg>,<joint>` then the usual `ABORTED,...`. Sends
+  `ADCFAULT,<leg>` once if the ADC reads dead (that leg then has no touchdown
+  check, but keeps walking), and `CUR,<leg>,<6 × mA>` every 200 ms for the
+  dashboard. `CURRENT_LOG = True` also prints readings to Thonny over USB; leave it
+  off for real runs, since a USB host holding the port without reading can block
+  `print()`.
+- Pi side — `pi5_main.py` logs `CONTACT` / `ADCFAULT` and appends the 24 currents
+  (mA, `-1` = no report in 1 s) to the status message at indices 20–43;
+  `stream_server.py` exposes them as `currents`, shown in the dashboard's
+  collapsible **Motor Currents** card.
+
+**Carried over from the FSR:** the abort's meaning and its whole path (`ABORTED`,
+drive cut, `handle_recovery`, re-arm on the next frame), and the gait's `is_swing`
+flag, which already leaves the liftoff and touchdown instants unflagged. Nothing
+else from the FSR needed migrating; `fsr.py` and the FSR code in `pico_main.py`
+have been deleted.
+
+**Calibrating `TOUCHDOWN_AMPS`** (3.0 A placeholders, uncalibrated): set
+`CURRENT_LOG = True`, watch Thonny, and record each joint through free swing,
+loaded stance, a hand pressed on the foot mid-swing, and a held joint. The
+threshold has to sit clearly between "free swing" and "foot hit something". Too
+low aborts the leg mid-walk; too high misses touchdowns.
+
+**Open:**
+
+- No IMU gating. The detector assumes the robot is upright; whether it should only
+  fire when the IMU reads near-level is undecided (it would have to be the Pi's
+  call, since the IMU isn't on the Picos).
+- `tare()` runs with the motors off, so it can't remove `IS` leakage with the high
+  side on: up to 200 µA by the datasheet (§4.4.9), typically 1 µA. Worst case that
+  reads as ~1.7 A of phantom current; calibration will show whether it matters.
+- Smoothing is per loop pass, so its time constant shifts slightly when a gait
+  frame arrives. The filter capacitor below would make this moot.
+
+**Undecided (PCB still in CAD): a filter capacitor on each ADC input.** Each of
+the 24 `IS` lines runs `IS` → 680 Ω to GND → 5.1 kΩ → ADC node → 10 kΩ to GND.
+A 1 µF cap from each ADC node to GND (24 total, 0603/0805) would:
+
+- average the `IS` signal, which pulses at the 1 kHz PWM rate because `IS` only
+  reports while the high side conducts. Time constant is ~3.6 ms (≈3.65 kΩ
+  Thévenin × 1 µF), fast next to the 40 ms gait tick;
+- give the MCP3208 a low-impedance source at its sample instant, which its
+  datasheet recommends (§4.1, §6.3) — the divider alone is ~3.6 kΩ.
+
+Cost of skipping it: noisier readings, smoothed only by `SMOOTHING` in
+`current_sense.py`. No code change either way.
 
 ---
 
@@ -645,17 +708,18 @@ whether this migration has since landed.
 
 Idea, not built. Right now, setting up a Pico is two steps: flash a stock
 MicroPython `.uf2` (drag-and-drop in BOOTSEL mode), then copy `pico_main.py`
-(as `main.py`), `motor_control.py`, and `fsr.py` onto it separately (Thonny,
-`mpremote`, or similar). The second step is also where `LEG_ID`, `FSR_PIN`, and
-the per-joint `reverse` flags get set for that specific leg before copying.
+(as `main.py`), `motor_control.py`, `mcp3208.py`, `current_sense.py` and
+`contact_detect.py` onto it separately (Thonny, `mpremote`, or similar). The second
+step is also where `LEG_ID` and the per-joint `reverse` flags get set for that
+specific leg before copying.
 
 The idea is to collapse the first step into the second: build one combined
 `.uf2` that already contains both the MicroPython interpreter and the default
-copies of these three files, so flashing it is a single drag-and-drop and the
+copies of these files, so flashing it is a single drag-and-drop and the
 Pico boots with the files already in place — as ordinary files on its real
 filesystem, not compiled in, so they're still just as editable in Thonny
 afterward. Each of the 4 boards would still need someone to open `main.py` and
-change `LEG_ID`/`reverse`/`FSR_PIN` for that leg, same as today; this only
+change `LEG_ID`/`reverse` for that leg, same as today; this only
 removes the separate copy step, not the per-board configuration.
 
 **This is not the same as freezing the code into firmware**, which was also
@@ -1049,7 +1113,8 @@ Three feet are planted at different points in the stance phase, so a nonzero
 `height2` commanded them to depths spanning 2.17 cm — on flat rigid ground they
 cannot all be there, and it becomes body bob or lost contact. `STANCE_PUSH` is now
 `0.0` in `pi5_main.py`, `quadruped_sim.py`, and `single_leg_test.py`. Downward reach
-for uneven terrain would need closed-loop FSR contact to do properly, not a fixed
+for uneven terrain would need closed-loop foot contact (the current sensing could
+supply it) to do properly, not a fixed
 per-step push — left for later, deliberately not brought back as a blind default.
 
 <a id="resolved-step-tick-ms-raised-20-40-ms"></a>
@@ -1499,8 +1564,9 @@ inside a hard IRQ, so the handler could fail at the worst possible moment.
 
 Replaced with a single `on_edge(callback, rising=, falling=)` that registers one
 bound method (`_on_irq`, no allocation) and reports which edge fired via
-`callback(is_touchdown)`. Still unused — `pico_main` polls `.state` — but it is
-no longer a trap for whoever wires up interrupt-driven contact next.
+`callback(is_touchdown)`. Moot now: the FSR has been replaced by current sensing
+and `fsr.py` has been deleted (see [Ground contact — current sensing replaced the
+FSR](#ground-contact-current-sensing-replaced-the-fsr)).
 
 <a id="ik-clamps-unreachable-targets-silently"></a>
 ### IK clamps unreachable targets silently
@@ -1571,9 +1637,10 @@ Verified against a first-order motor model running the real controller
 | 2°/s creep toward target | never latches |
 | jam cleared + `clear_stall()` | drives normally again |
 
-The BTS7960 `IS` current sensing in the callout at the top is still worth doing —
-it detects a jam in milliseconds rather than 1.5 s, and can tell a jam from a
-joint that is merely loaded. This guard is the backstop, not the replacement.
+The BTS7960 `IS` current sensing now exists (see the callout at the top), but it
+only drives the touchdown abort so far. Using it for jams too would catch one in
+milliseconds rather than 1.5 s, and tell a jam from a joint that is merely loaded.
+This guard stays as the backstop either way.
 
 <a id="resolved-fsr-abort-fired-on-the-first-swing-step-of-every-leg"></a>
 ### RESOLVED — FSR abort fired on the FIRST swing step of every leg
@@ -1599,9 +1666,9 @@ bit only because nothing is wired to GP16–19, so the pins read low.
 `own_touchdown` — which is what *"my own foot touched down while I should be
 airborne"* actually means. `FSR_PIN` is a documented constant next to `LEG_ID`.
 
-**Set `FSR_PIN` to match your wiring before connecting the sensors.** It
-defaults to 16. If each board instead gets all four signals, set it to whichever
-pin carries *this* leg's foot.
+**Superseded:** the FSR has since been replaced by current sensing, and
+`FSR_PIN` is gone (GP16 is now the MCP3208's data line). The lesson
+carried over: `TouchdownDetector` reads only this board's own three joints.
 
 <a id="pid-kp-still-needs-bench-tuning-windup-ruled-out-kd-fixed"></a>
 ### PID: `kp` still needs bench tuning (windup ruled out, `kd` fixed)

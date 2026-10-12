@@ -24,6 +24,7 @@ flow behaves the way the robot does, including STAND-while-walking settling
 rather than being refused. Delete this file when you are done looking at it.
 """
 
+import math
 import threading
 import time
 
@@ -131,7 +132,23 @@ class MockRobot:
                 'nav_mode': 1 if self.nav_mode else 0,
                 'nav_paused': 1 if self.nav_paused else 0,
                 'health': self.health,
+                'currents': self.fake_currents(),
             }
+
+    def fake_currents(self):
+        """Plausible-looking mA so the Motor Currents panel has something to show:
+        one side of each driver conducts, more while walking, RL reporting none."""
+        t = time.time()
+        out = []
+        for leg in range(4):
+            for joint in range(3):
+                if leg == 3:
+                    out.extend([-1, -1])
+                    continue
+                base = 900 if self.walking else 150
+                ma = int(base * (1 + 0.5 * math.sin(t * 3 + leg + joint)))
+                out.extend([ma, 0] if (int(t) + joint) % 2 else [0, ma])
+        return out
 
     def set_waypoints(self, pairs):
         with self.lock:

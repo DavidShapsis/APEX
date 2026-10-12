@@ -36,3 +36,9 @@ onnxruntime>=1.16        # Depth-Anything-V2-Small inference
 # SH1106 128x64 panel on I2C1 - see HARDWARE.md. Without it, boot_display.py
 # echoes the same progress to stdout and the robot is unaffected.
 luma.oled>=3.12          # pulls in luma.core + pillow
+
+# --- dev / desktop tools (not needed on the robot) --------------------
+# Used by inverse_kinematics/gait_testing*.py, quadruped_sim.py's plot mode
+# and vision_test/obstacle_avoidance_test.ipynb (which also needs Jupyter).
+# Uncomment on a dev machine.
+# matplotlib>=3.6

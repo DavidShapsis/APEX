@@ -179,6 +179,8 @@ HEADING_MAX_AGE_S = 3.0
 # with a frozen lat/lon, so bearing-to-waypoint stops changing. GGA is 1 Hz;
 # allow a few missed sentences before treating the fix as stale.
 GPS_FIX_MAX_AGE_S = 5.0
+# Picos report currents every 200 ms; older than this shows as "no data".
+MOTOR_CURRENT_MAX_AGE_S = 1.0
 
 class PiQuadrupedController(Node):
     def __init__(self):
@@ -253,6 +255,11 @@ class PiQuadrupedController(Node):
         # the resulting wire signal, so it holds whatever it was last told
         # while the other three keep walking normally.
         self.deactivated_legs = set()
+
+        # Latest motor currents per leg, from each Pico's CUR line: leg_id ->
+        # (monotonic time, [roll R, roll L, pitch R, pitch L, knee R, knee L] mA,
+        # -1 where that joint's ADC reads as dead). Dashboard display only.
+        self.motor_currents = {}
 
         # System State Tracking Management
         self.current_mode = RobotMode.MANUAL
@@ -569,11 +576,38 @@ class PiQuadrupedController(Node):
             self.walking_enabled = True
         return True
 
+    def record_motor_currents(self, line):
+        """Stores a 'CUR,<leg>,<6 x mA>' line. True if the line was consumed."""
+        if not line.startswith("CUR,"):
+            return False
+        try:
+            parts = [int(p) for p in line.split(',')[1:]]
+        except ValueError:
+            return True
+        if len(parts) == 7 and parts[0] in LEG_NAMES:
+            with self.serial_lock:
+                self.motor_currents[parts[0]] = (time.monotonic(), parts[1:])
+        return True
+
+    def motor_current_block(self):
+        """24 ints for the status message: LEG_ORDER x (roll, pitch, knee) x
+        (R, L), in mA. -1 for a leg with no report in the last second."""
+        now = time.monotonic()
+        out = []
+        with self.serial_lock:
+            for leg_id in LEG_ORDER:
+                entry = self.motor_currents.get(leg_id)
+                if entry is None or now - entry[0] > MOTOR_CURRENT_MAX_AGE_S:
+                    out.extend([-1] * 6)
+                else:
+                    out.extend(entry[1])
+        return out
+
     def publish_homing_status(self):
         """Wire layout: [homed x4, standing, walking, deactivated x4,
         avoid_available, avoid_enabled, avoid_state_code, avoid_steer_deg,
         avoid_stride_pct, wp_index, wp_total, nav_mode, nav_paused,
-         health_mask].
+         health_mask, motor currents x24 (see motor_current_block)].
 
         Fields are only ever APPENDED, never inserted: stream_server reads each
         block by fixed index behind a length check, so an older dashboard against
@@ -606,7 +640,8 @@ class PiQuadrupedController(Node):
         msg = Int32MultiArray()
         msg.data = (homed + [standing, walking] + deactivated + avoid
                     + [int(wp_idx), int(wp_total), nav_mode, nav_paused,
-                       int(health_mask)])
+                       int(health_mask)]
+                    + self.motor_current_block())
         self.homing_status_pub.publish(msg)
 
     def swing_steps(self, height_z):
@@ -1467,6 +1502,25 @@ def main():
                 for s, line in controller.read_pico_lines():
                     if controller.register_leg_announcement(s, line):
                         continue
+                    if controller.record_motor_currents(line):
+                        continue
+                    if line.startswith("CONTACT,"):
+                        # Emitted just ahead of the ABORTED it causes: the
+                        # Pico read a swing-phase current spike as its foot
+                        # touching down early.
+                        parts = line.split(',')
+                        try:
+                            leg = LEG_NAMES.get(int(parts[1]), parts[1])
+                            joint = parts[2]
+                        except (IndexError, ValueError):
+                            leg, joint = s.port, '?'
+                        print(f"[CONTACT] {leg}: early touchdown ({joint} current "
+                              f"spike mid-swing) -- recovering.")
+                        continue
+                    if line.startswith("ADCFAULT,"):
+                        print(f"[ADC] {s.port}: current-sense ADC reads as dead -- "
+                              f"that leg has no touchdown abort until it recovers.")
+                        continue
                     if line.startswith("HOMED,"):
                         try:
                             homed_leg = int(line.split(',')[1])
@@ -1479,8 +1533,8 @@ def main():
                     if line.startswith("STALL,"):
                         # Emitted just ahead of the ABORTED that actually drives
                         # recovery, and it is the only thing that says WHICH
-                        # joint jammed and WHY the leg aborted -- an FSR
-                        # touchdown abort looks identical on the wire otherwise.
+                        # joint jammed and WHY the leg aborted -- CONTACT
+                        # marks the other abort cause, an early touchdown.
                         # It used to fall through every branch here and vanish.
                         parts = line.split(',')
                         try:

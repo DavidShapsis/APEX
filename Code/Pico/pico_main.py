@@ -1,8 +1,10 @@
 import time
 import struct 
 from machine import UART, Pin
-from fsr import FSR
 from motor_control import JointController
+from mcp3208 import MCP3208
+from current_sense import CurrentSense
+from contact_detect import TouchdownDetector
 
 # ==============================================================================
 # LEG IDENTITY -- SET THIS BEFORE FLASHING. EVERY BOARD NEEDS A DIFFERENT VALUE.
@@ -27,19 +29,58 @@ knee_j  = JointController(rpwm_pin=15, lpwm_pin=14, en_pin=22, enc_a_pin=12, enc
                           gear_ratio=99.5, ppr=28, reverse=False, initial_angle=0)
 print("Joint Controllers setup successful")
 
-# Which pin carries THIS leg's own foot sensor.
-#
-# This board drives one leg, and the abort test is "MY foot touched down while I
-# should be airborne". It has to read one sensor. It used to read all four
-# (FSR(16..19)) and collapse them with any(), which is wrong by construction: the
-# crawl gait always has three feet planted, so any() is True for the whole of
-# every swing phase and the leg aborted on its first step, every cycle. It never
-# bit only because nothing is wired to these pins yet.
-#
-# Set this to the pin this leg's foot sensor is actually on before wiring them.
-FSR_PIN = 16
-foot = FSR(FSR_PIN)
-print("FSR setup successful")
+# --- Motor current sensing (BTS7960 IS pins, via this leg's MCP3208) ---
+# The early-touchdown signal (step 2b in the main loop), and reported to the Pi
+# for the dashboard.
+adc = MCP3208()            # SPI0: DOUT GP16, CS GP17, CLK GP18, DIN GP19
+# Each IS pin -> 5.1k -> ADC node -> 10k -> GND, bringing the 5 V-side signal
+# down to the ADC's 3.3 V (x0.662).
+DIV_TOP_OHMS = 5100
+DIV_BOTTOM_OHMS = 10000
+DIVIDER_RATIO = DIV_BOTTOM_OHMS / (DIV_TOP_OHMS + DIV_BOTTOM_OHMS)
+# IS is a current source, so its voltage is set by everything from IS to GND,
+# all in parallel. The 680R is what keeps it in range: without it the divider
+# alone lets IS climb toward the battery voltage. With it, a 9.5 A motor reads
+# ~0.48 V at the ADC and even the 7 mA worst-case fault current only ~3.0 V.
+IS_GND_OHMS = 680
+# The driver module's own IS-to-GND resistor, or None. IBT-2 boards usually
+# carry a 10k ("103") here -- UNCONFIRMED on ours; it shifts the scale ~6%.
+DRIVER_IS_OHMS = None
+_loads = [IS_GND_OHMS, DIV_TOP_OHMS + DIV_BOTTOM_OHMS]
+if DRIVER_IS_OHMS is not None:
+    _loads.append(DRIVER_IS_OHMS)
+SENSE_OHMS = 1 / sum(1 / r for r in _loads)
+# (R_IS, L_IS) channel pair per joint's BTS7960. CH6/CH7 are not connected.
+# Joint-to-pair mapping is unconfirmed: command one joint to move and see
+# which reading jumps in the log, then fix these if needed.
+roll_i  = CurrentSense(adc, channels=(0, 1), load_ohms=SENSE_OHMS, divider_ratio=DIVIDER_RATIO)
+pitch_i = CurrentSense(adc, channels=(2, 3), load_ohms=SENSE_OHMS, divider_ratio=DIVIDER_RATIO)
+knee_i  = CurrentSense(adc, channels=(4, 5), load_ohms=SENSE_OHMS, divider_ratio=DIVIDER_RATIO)
+# Every PWM is still 0 here, so this is the true zero-load offset.
+for s in (roll_i, pitch_i, knee_i):
+    s.tare()
+
+# Early-touchdown abort: a joint whose current stays above its threshold
+# mid-swing means the foot met the ground early (see contact_detect.py for the
+# assumptions). UNCALIBRATED PLACEHOLDERS -- set these from logged free-swing vs
+# foot-pressed readings. None leaves a joint out of the check.
+TOUCHDOWN_AMPS = {"roll": 3.0, "pitch": 3.0, "knee": 3.0}
+touchdown = TouchdownDetector(
+    sensors={"roll": roll_i, "pitch": pitch_i, "knee": knee_i},
+    thresholds_amps=TOUCHDOWN_AMPS)
+
+# Current report to the Pi (dashboard), over the gait UART:
+#   CUR,<leg>,<roll R>,<roll L>,<pitch R>,<pitch L>,<knee R>,<knee L>   in mA,
+# -1 for a joint whose ADC reads as dead.
+CURRENT_REPORT_MS = 200
+last_current_report = time.ticks_ms()
+# Same readings to USB (Thonny) for bench calibration. Off for real runs: a USB
+# host that holds the port open without reading can block print().
+CURRENT_LOG = False
+CURRENT_LOG_MS = 100
+last_current_log = time.ticks_ms()
+adc_fault_reported = False
+print("Current sense setup successful")
 
 uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1), rxbuf=1024)
 print("UART setup successful")
@@ -153,6 +194,7 @@ while True:
                 rx_buffer = []
                 is_receiving = True
                 has_aborted = False
+                touchdown.reset()
                 # A new frame is the Pi's answer to whatever went wrong, so give
                 # the joints another go. If the jam is still physical they will
                 # simply re-latch STALL_TIMEOUT_S later -- a retry every 1.5 s,
@@ -261,7 +303,7 @@ while True:
     # 2a. STALL CHECK (The Abort Logic, hardware-damage branch)
     # A joint whose PID has been pinned at full duty without closing its error
     # has met something it cannot move. JointController latches .stalled and has
-    # already zeroed that joint's PWM; raise the same ABORTED path the FSR uses
+    # already zeroed that joint's PWM; raise the same ABORTED path the touchdown check uses
     # so the Pi brings the whole robot to a safe pose instead of leaving three
     # legs walking. Without this the joint simply held 100% duty until something
     # burned out -- see ENGINEERING_NOTES.
@@ -278,8 +320,19 @@ while True:
         gait_buffer = []
 
     # 2b. GROUND CHECK (The Abort Logic)
-    # This leg's own foot only -- see FSR_PIN.
-    own_touchdown = foot.state
+    # A sustained motor-current spike while this leg should be airborne is read
+    # as its foot touching down early (see contact_detect.py). Sampled first
+    # so the check sees this pass's reading.
+    roll_i.update()
+    pitch_i.update()
+    knee_i.update()
+    adc_ok = roll_i.valid and pitch_i.valid and knee_i.valid
+    if not adc_ok and not adc_fault_reported:
+        # Not an abort: the leg still walks, it just has no touchdown check.
+        uart.write("ADCFAULT,%d\n" % LEG_ID)
+        adc_fault_reported = True
+    elif adc_ok:
+        adc_fault_reported = False
 
     # 3. CHOOSE TARGETS (every STEP_TICK_MS)
     # `is_receiving` is NOT a condition here any more: gait_buffer is the last
@@ -287,31 +340,33 @@ while True:
     # walking normally while the next frame is on the wire.
     if gait_buffer and not has_aborted:
         current_step_swing = gait_buffer[current_step_index][3] > 0.5
-        if own_touchdown and current_step_swing:
+        contact_joint = touchdown.update(current_step_swing)
+        if contact_joint is not None:
+            uart.write("CONTACT,%d,%s\n" % (LEG_ID, contact_joint))
             msg = f"ABORTED,{roll_j.current_angle},{pitch_j.current_angle},{knee_j.current_angle}\n"
             uart.write(msg)
             has_aborted = True
             gait_buffer = []
-        else:
-            elapsed = time.ticks_diff(time.ticks_ms(), last_step_time)
-            if elapsed >= STEP_TICK_MS:
-                # Advance by exactly one tick instead of resetting to now.
-                # Resetting made the real cadence 40 ms PLUS however long the
-                # pass took (~1-2 ms of loop, more while a frame is arriving),
-                # so it tracked each board's own jitter -- tolerable while every
-                # end marker re-synced the clock, but not now that a re-sync is
-                # only every RESYNC_INTERVAL_MS. Fixed-step keeps the four legs
-                # phase-locked to their crystals alone.
-                if elapsed >= 2 * STEP_TICK_MS:
-                    last_step_time = time.ticks_ms()      # fell behind; snap
-                else:
-                    last_step_time = time.ticks_add(last_step_time, STEP_TICK_MS)
-                if cycle_buffer:
-                    current_step_index = (current_step_index + 1) % len(gait_buffer)
-                elif current_step_index < len(gait_buffer) - 1:
-                    # One-shot trajectory (recovery): advance to the end, then hold.
-                    current_step_index += 1
-                current_targets = gait_buffer[current_step_index]
+    if gait_buffer and not has_aborted:
+        elapsed = time.ticks_diff(time.ticks_ms(), last_step_time)
+        if elapsed >= STEP_TICK_MS:
+            # Advance by exactly one tick instead of resetting to now.
+            # Resetting made the real cadence 40 ms PLUS however long the
+            # pass took (~1-2 ms of loop, more while a frame is arriving),
+            # so it tracked each board's own jitter -- tolerable while every
+            # end marker re-synced the clock, but not now that a re-sync is
+            # only every RESYNC_INTERVAL_MS. Fixed-step keeps the four legs
+            # phase-locked to their crystals alone.
+            if elapsed >= 2 * STEP_TICK_MS:
+                last_step_time = time.ticks_ms()      # fell behind; snap
+            else:
+                last_step_time = time.ticks_add(last_step_time, STEP_TICK_MS)
+            if cycle_buffer:
+                current_step_index = (current_step_index + 1) % len(gait_buffer)
+            elif current_step_index < len(gait_buffer) - 1:
+                # One-shot trajectory (recovery): advance to the end, then hold.
+                current_step_index += 1
+            current_targets = gait_buffer[current_step_index]
 
     # 4. EXECUTE CLOSED LOOP PID UPDATES
     # FIX: Run loop if we aren't aborted, regardless of incoming background updates.
@@ -340,5 +395,20 @@ while True:
         roll_j.move_to(current_targets[0])
         pitch_j.move_to(current_targets[1])
         knee_j.move_to(current_targets[2])
+
+    # 5. REPORT MOTOR CURRENT (dashboard, and Thonny when CURRENT_LOG is on)
+    if time.ticks_diff(time.ticks_ms(), last_current_report) >= CURRENT_REPORT_MS:
+        last_current_report = time.ticks_ms()
+        vals = []
+        for s in (roll_i, pitch_i, knee_i):
+            for a in s.channel_amps:
+                vals.append(int(a * 1000) if s.valid else -1)
+        uart.write("CUR,%d,%d,%d,%d,%d,%d,%d\n" % (LEG_ID, vals[0], vals[1],
+                                                     vals[2], vals[3], vals[4], vals[5]))
+    if CURRENT_LOG and time.ticks_diff(time.ticks_ms(), last_current_log) >= CURRENT_LOG_MS:
+        last_current_log = time.ticks_ms()
+        swing = len(current_targets) > 3 and current_targets[3] > 0.5
+        print("I swing=%d roll=%.2f pitch=%.2f knee=%.2f" % (
+            swing, roll_i.amps, pitch_i.amps, knee_i.amps))
 
     time.sleep_ms(1)

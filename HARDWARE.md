@@ -1,7 +1,8 @@
-# APEX — Pi 5 pin allocation & the status OLED
+# APEX — pin allocation, the status OLED & current sensing
 
-Where every wire on the Raspberry Pi 5 40‑pin header goes, and how to add the
-1.3" SH1106 OLED that `Code/Pi5/boot_display.py` drives.
+Where every wire on the Raspberry Pi 5 40‑pin header goes, how to add the
+1.3" SH1106 OLED that `Code/Pi5/boot_display.py` drives, and how each leg's
+Pico reads its motor currents ([Leg boards](#leg-boards-pico-pins-and-current-sensing)).
 
 > The OLED is **optional**. `boot_display.py` degrades to stdout if the panel or
 > the `luma.oled` library is missing, so nothing here is required to run the
@@ -130,6 +131,72 @@ BootDisplay(port=7, address=0x3C)   # in pi5_main.main()
 ```
 
 Wiring becomes VCC→pin 1, GND→pin 34, SDA→pin 36, SCL→pin 37.
+
+---
+
+## Leg boards: Pico pins and current sensing
+
+Every leg board is identical: one Pico, three BTS7960 drivers (roll, pitch, knee)
+and one MCP3208 ADC. Pins from `Code/Pico/pico_main.py`:
+
+| Pico GPIO | Signal |
+|---|---|
+| GP0 / GP1 | UART0 TX / RX to the Pi |
+| GP3 / GP2, GP6 | roll RPWM / LPWM, EN |
+| GP4 / GP5 | roll encoder A / B |
+| GP11 / GP10, GP7 | pitch RPWM / LPWM, EN |
+| GP8 / GP9 | pitch encoder A / B |
+| GP15 / GP14, GP22 | knee RPWM / LPWM, EN |
+| GP12 / GP13 | knee encoder A / B |
+| GP16 | MCP3208 DOUT (SPI0 RX) |
+| GP17 | MCP3208 CS |
+| GP18 | MCP3208 CLK (SPI0 SCK) |
+| GP19 | MCP3208 DIN (SPI0 TX) |
+
+GP16 used to be the FSR foot sensor; the FSR is gone.
+
+### MCP3208 channels
+
+| Channel | Signal |
+|---|---|
+| CH0 / CH1 | roll driver `R_IS` / `L_IS` |
+| CH2 / CH3 | pitch driver `R_IS` / `L_IS` |
+| CH4 / CH5 | knee driver `R_IS` / `L_IS` |
+| CH6 / CH7 | not connected |
+
+The joint-to-pair mapping and the R/L order within each pair are
+**unconfirmed**. Command one joint to move and see which reading moves (enable
+`CURRENT_LOG` or open the dashboard's Motor Currents panel), then fix `channels=`
+in `pico_main.py` if needed.
+
+Power the MCP3208 (VDD and VREF) from **3.3 V**. The code assumes VREF = 3.3 V,
+and a 5 V supply would also drive GP16 at 5 V, which the Pico can't take.
+
+### Each `IS` line (24 total, 6 per leg)
+
+```
+IS pin ──┬── 5.1k ──┬── MCP3208 CHx
+         │          │
+       680Ω        10k
+         │          │
+        GND        GND
+```
+
+`IS` is a current source, so the **680 Ω is required**: it sets the scale and
+keeps every case, including the BTS7960's 7 mA fault current, inside the ADC's
+range (full numbers in `ENGINEERING_NOTES.md` → *Ground contact — current
+sensing replaced the FSR*). Keep it at or below ~700 Ω.
+
+Optional: a 1 µF capacitor from each MCP3208 input to GND smooths the 1 kHz PWM
+ripple (undecided; see `ENGINEERING_NOTES.md`).
+
+### Verify before connecting the ADC
+
+- With power off, each `IS` line to GND should measure **~650 Ω**, or ~610 Ω if
+  the driver board has its own 10 kΩ on `IS`. If it does, set `DRIVER_IS_OHMS =
+  10000` in `pico_main.py`.
+- Powered, with the motors idle, every MCP3208 input should sit near 0 V and
+  never above 3.3 V.
 
 ---
 
