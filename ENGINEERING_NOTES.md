@@ -1842,10 +1842,10 @@ Smaller problems found on the same first boots, each confirmed on the robot.
 - **OLED.** Four display bugs in `boot_display.py`:
   - 5 log rows were kept but only 4 fit under the heading, so the *newest* line
     was cut off — now `_MAX_LOG = 4`;
-  - `http://` pushed the port off the 21-character row — the summary now shows
-    `ip:5000`;
-  - with no default route (the Pi as its own hotspot) the IP lookup failed —
-    it now falls back to `hostname -I`;
+  - the dashboard address was looked up from the default route, which fails
+    with the Pi as its own hotspot, and `http://ip:5000` overflowed the
+    21-character row — the summary now just shows `apex.local`, the name the
+    host announces on the hotspot (the dashboard also answers on port 80);
   - a full repaint is ~100 ms on a 100 kHz bus and ran on the control loop —
     `summary()` now returns at once and a worker thread paints the latest frame.
 - **Screen left looking live after exit.** luma blanks the panel in an atexit

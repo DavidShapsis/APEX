@@ -8,9 +8,9 @@ its entire purpose.
 
 Hardware: a 1.3" I2C OLED with the **SH1106** controller (NOT SSD1306 -- the
 SSD1306 driver leaves a 2-pixel column offset on these panels). 4-pin module,
-address 0x3C, wired to the Pi's primary I2C bus (``/dev/i2c-1``, GPIO2/GPIO3),
-sharing it with the compass at 0x0D -- no address clash. Full pinout and the
-one-line install are in ``HARDWARE.md`` at the repo root.
+address 0x3C, on the Pi's primary I2C bus (``/dev/i2c-1``, GPIO2/GPIO3), which
+it has to itself. Full pinout and the one-line install are in ``HARDWARE.md``
+at the repo root.
 
     pip install luma.oled        # pulls luma.core + pillow
 
@@ -20,11 +20,9 @@ Usage from pi5_main:
     disp.step("IMU")                     # "IMU ..."
     disp.ok("IMU")                       # "IMU            OK"
     disp.fail("Camera")                  # "Camera         FAIL"
-    disp.summary(ip, {"IMU": True, ...}) # full status screen, call periodically
+    disp.summary({"IMU": True, ...})     # full status screen, call periodically
 """
 
-import socket
-import subprocess
 import threading
 import time
 
@@ -37,32 +35,10 @@ _MAX_LOG = 4
 _CHARS = 21
 
 
-def _my_ip():
-    """Best-effort primary IP.
-
-    The UDP 'connect' sends nothing -- it just asks the kernel which source
-    address a packet to that host would use. It needs a route, though, and a Pi
-    running as its own hotspot usually has none, so fall back to the addresses
-    actually configured on the interfaces.
-    """
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-        finally:
-            s.close()
-    except OSError:
-        pass
-    try:
-        out = subprocess.run(["hostname", "-I"], capture_output=True, text=True,
-                             timeout=1.0).stdout
-        for addr in out.split():
-            if "." in addr and not addr.startswith("127."):
-                return addr
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return "no network"
+# What the status screen tells you to type. The host announces this name on
+# the APEX hotspot (apex-mdns, see HARDWARE.md) and the dashboard also answers
+# on port 80, so no IP or port to remember.
+DASHBOARD_URL = "apex.local"
 
 
 class BootDisplay:
@@ -125,7 +101,7 @@ class BootDisplay:
                     draw.text((0, y), str(row)[:_CHARS], font=self._font, fill="white")
                     y += _LINE_PX
         except Exception:
-            # A bus glitch on a shared line must not take down the caller.
+            # A bus glitch must not take down the caller.
             pass
 
     # -- boot log --------------------------------------------------------
@@ -150,21 +126,20 @@ class BootDisplay:
 
     # -- running status -------------------------------------------------
 
-    def summary(self, ip=None, health=None, extra=None):
+    def summary(self, health=None, extra=None):
         """Full status screen. Call every couple of seconds from the main loop.
 
         health: {"IMU": True, "GPS": False, ...}. extra: optional single line
         (e.g. "NAV: waypoint 2/3").
 
-        Returns immediately: the IP lookup and the I2C repaint (a full frame is
-        on the order of 100 ms at the Pi's default 100 kHz bus) run on a
-        background thread, so the control loop never waits on the panel. If
+        Returns immediately: the I2C repaint (a full frame is on the order of
+        100 ms at the Pi's default 100 kHz bus) runs on a background thread, so the control loop never waits on the panel. If
         calls arrive faster than the panel can paint, only the latest is drawn.
         """
         if self._dev is None or self._closed:
             return
         with self._lock:
-            self._pending = (ip, dict(health) if health else None, extra)
+            self._pending = (dict(health) if health else None, extra)
             if self._worker is None:
                 self._worker = threading.Thread(target=self._run, name="oled",
                                                 daemon=True)
@@ -180,12 +155,8 @@ class BootDisplay:
             if job is not None and not self._closed:
                 self._paint_summary(*job)
 
-    def _paint_summary(self, ip, health, extra):
-        if ip is None:
-            ip = _my_ip()
-        # No "http://": with it, a typical address overflows the 21-char row
-        # and the port gets cut off. ip:port is at most 20 chars.
-        rows = ["%s:5000" % ip]
+    def _paint_summary(self, health, extra):
+        rows = [DASHBOARD_URL]
         if health:
             downs = [k for k, v in health.items() if not v]
             if downs:
