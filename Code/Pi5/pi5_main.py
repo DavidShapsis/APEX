@@ -12,6 +12,24 @@ import signal
 
 WAV_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def _load_env_file(path):
+    """KEY=VALUE lines from a gitignored .env into os.environ, for per-robot
+    private settings (see .env.example). Variables already set win."""
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"\''))
+    except FileNotFoundError:
+        pass
+
+
+_load_env_file(os.path.join(WAV_DIR, '.env'))
+
 # Core hardware and engine imports
 from power_monitor import INA219
 from inverse_kinematics.ik_and_gait import (
@@ -1134,11 +1152,17 @@ def main():
     # unplugged camera etc. leaves that subsystem reporting 'down' on the
     # dashboard instead of killing the boot before Flask is even up. SensorHub
     # already accepts None for any sensor.
-    imu = _bring_up("IMU", lambda: IMU(sda_pin="D0", scl_pin="D1", bus_id=13, window_size=12), disp, health)
+    # I2C-0 (header pins 27/28), the IMU's own bus -- needs dtparam=i2c0=on and
+    # no dtoverlay=uart1, which claims the same GPIO0/1. (i2c-13 is the Pi 5's
+    # HDMI0 DDC bus, not the header.)
+    imu = _bring_up("IMU", lambda: IMU(sda_pin=None, scl_pin=None, bus_id=0, window_size=12), disp, health)
     gps = _bring_up("GPS", lambda: GPSReader(uart_path='/dev/ttyUSB0', baudrate=115200), disp, health)
+    # QMC5883L inside the HGLRC M100 GPS, on I2C-3 (pins 15/16) -- its own bus
+    # for now; the INA219 (0x40) joins it there once fitted.
     compass = _bring_up("Compass", lambda: CompassReader(
-        sda_pin=2, scl_pin=3, declination_deg=MAGNETIC_DECLINATION_DEG), disp, health)
-    cam = _bring_up("Camera", lambda: USBWebcam(device_index="/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_Camera_SN0001-video-index0"), disp, health)
+        sda_pin=None, scl_pin=None, explicit_bus_id=3,
+        declination_deg=MAGNETIC_DECLINATION_DEG), disp, health)
+    cam = _bring_up("Camera", lambda: USBWebcam(), disp, health)
 
     # The dashboard is the one genuinely required subsystem -- without it there
     # is no way to home the legs. If it will not start, say so on the OLED and
@@ -1194,7 +1218,9 @@ def main():
 
     # Telemetry & Audio System
     power_monitor = _bring_up("Power", lambda: INA219(bus_id=3), disp, health)
-    audio_engine = _bring_up("Audio", lambda: QuadrupedAudio("30:8D:EB:5D:AC:11"), disp, health)
+    # Speaker MAC comes from the gitignored .env (see .env.example) so a
+    # personal device address never lands in a public file.
+    audio_engine = _bring_up("Audio", lambda: QuadrupedAudio(os.environ["APEX_SPEAKER_MAC"]), disp, health)
     # TODO(hardware): confirm what the INA219's VIN- actually senses and set this
     # accordingly. 4.75 suits the 5V regulated rail (warn on regulator sag). If
     # VIN- is on the 2S pack instead (~6.0-8.4V LiPo / 6.6-8.7V LiHV) this can

@@ -40,11 +40,14 @@ below doesn't match your board.
 
 | Bus / signal | Device | Addr | Header pins (BCM GPIO) | Notes |
 |---|---|---|---|---|
-| **I2C1** | QMC5883 compass | `0x0D` | 3 (GPIO2 SDA), 5 (GPIO3 SCL) | The Pi's primary I2C. Always enabled via `dtparam=i2c_arm=on`. |
-| **I2C3** (`/dev/i2c-3`) | INA219 power monitor | `0x40` | GPIO4 / GPIO5 by default on Pi 5 (`dtoverlay=i2c3`) — **verify in config.txt** | |
-| **I2C‑13** (`/dev/i2c-13`) | BNO085 IMU | `0x4A`/`0x4B` | non‑standard bus you enabled — **check config.txt** | `IMU(bus_id=13)`; the `sda_pin`/`scl_pin` args are unused on this path |
-| **UART0** (`/dev/ttyAMA0`) | Leg Pico #0 | — | 8 (GPIO14 TX), 10 (GPIO15 RX) | |
-| **UART2/3/4** (`ttyAMA2‑4`) | Leg Picos #1‑3 | — | per your `dtoverlay=uart2/3/4` lines — **check config.txt** | Pi 5 defaults: uart2 = GPIO4/5, uart3 = GPIO8/9, uart4 = GPIO12/13 |
+| **I2C1** | SH1106 OLED | `0x3C` | 3 (GPIO2 SDA), 5 (GPIO3 SCL) | The Pi's primary I2C. Always enabled via `dtparam=i2c_arm=on`. Kept to the OLED alone for now. |
+| **I2C3** (`/dev/i2c-3`) | QMC5883L compass (inside the HGLRC M100 GPS) | `0x0D` | 15 (GPIO22 SDA), 16 (GPIO23 SCL) | `dtoverlay=i2c3,pins_22_23`. `CompassReader(explicit_bus_id=3)`. The M100 runs on 5 V but its SDA/SCL pull up to 3.3 V (measured), so no level shifter. |
+| **I2C3** (`/dev/i2c-3`) | INA219 power monitor (not fitted yet) | `0x40` | 15, 16 — in parallel with the compass | `INA219(bus_id=3)` |
+| **I2C0** (`/dev/i2c-0`) | BNO085 IMU | `0x4A`/`0x4B` | 27 (GPIO0 SDA), 28 (GPIO1 SCL) | `IMU(bus_id=0)`. Needs `dtparam=i2c0=on` and **no** `dtoverlay=uart1` (same pins). Not `/dev/i2c-13`: on the Pi 5 that is the HDMI0 DDC bus, not on the header. |
+| **UART0** (`/dev/ttyAMA0`) | Leg Pico | — | 8 (GPIO14 TX), 10 (GPIO15 RX) | |
+| **UART2** (`/dev/ttyAMA2`) | Leg Pico | — | 7 (GPIO4 TX), 29 (GPIO5 RX) | |
+| **UART3** (`/dev/ttyAMA3`) | Leg Pico | — | 24 (GPIO8 TX), 21 (GPIO9 RX) | |
+| **UART4** (`/dev/ttyAMA4`) | Leg Pico | — | 32 (GPIO12 TX), 33 (GPIO13 RX) | |
 | Power | — | — | 1 or 17 (3.3 V), 2 or 4 (5 V) | |
 | Ground | — | — | 6, 9, 14, 20, 25, 30, 34, 39 | |
 
@@ -197,6 +200,36 @@ ripple (undecided; see `ENGINEERING_NOTES.md`).
   10000` in `pico_main.py`.
 - Powered, with the motors idle, every MCP3208 input should sit near 0 V and
   never above 3.3 V.
+
+---
+
+## Speaker (Bluetooth)
+
+The host owns the Bluetooth link; the container only plays audio. The container
+has no host audio socket or D-Bus mounted, but it shares the host network, so
+`audio.py` sends sound to the host's PipeWire over local TCP
+(`PULSE_SERVER=tcp:127.0.0.1:4713`).
+
+One-time setup on the **host**:
+
+```bash
+bluetoothctl trust <speaker MAC>          # bluez reconnects it on its own
+mkdir -p ~/.config/pipewire/pipewire-pulse.conf.d
+cat > ~/.config/pipewire/pipewire-pulse.conf.d/tcp.conf <<'EOF'
+pulse.properties = {
+    server.address = [ "unix:native" "tcp:127.0.0.1:4713" ]
+}
+EOF
+systemctl --user restart pipewire-pulse
+```
+
+In the **container**: `apt install -y libpulse0 pulseaudio-utils`. Check with
+`PULSE_SERVER=tcp:127.0.0.1:4713 pactl get-default-sink` -- it should print
+`bluez_output.<MAC with underscores>.1`. Boot reports Audio FAIL if it does not.
+
+The MAC is not in the repo: `pi5_main` reads `APEX_SPEAKER_MAC` from
+`Code/Pi5/.env`, which is gitignored. Copy `Code/Pi5/.env.example` to `.env`
+next to `pi5_main.py` and fill it in.
 
 ---
 

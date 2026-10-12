@@ -17,7 +17,11 @@ sys.modules['imu'] = MagicMock()
 
 # Now we can safely import the targets without triggering physical hardware checks
 import rclpy
-from Code.Pi5.pi5_main import (PiQuadrupedController, RobotMode, RobotActivity,
+try:
+    from Code.Pi5.pi5_main import (PiQuadrupedController, RobotMode, RobotActivity,
+                                   main)
+except:
+    from pi5_main import (PiQuadrupedController, RobotMode, RobotActivity,
                                main)
 
 class TestPi5QuadrupedSoftware(unittest.TestCase):

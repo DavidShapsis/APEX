@@ -1764,8 +1764,10 @@ The degraded state is surfaced:
   `HARDWARE.md` at the repo root — it hangs on the existing I2C1 bus at 0x3C,
   no config change.
 
-Still worth a bench check: that the BNO085 actually responds on `/dev/i2c-13`
-and that the axis/sign conventions match (see the IMU-levelling entry above) —
+Still worth a bench check: that the BNO085 actually responds on `/dev/i2c-0`
+(pins 27/28; moved from `/dev/i2c-13`, which on the Pi 5 is the HDMI0 DDC bus
+and never reaches the header -- `dtoverlay=uart1` also had to go, it claims
+GPIO0/1 and kept I2C0 from coming up) and that the axis/sign conventions match (see the IMU-levelling entry above) —
 but a wrong answer there now degrades to "IMU down, flat-footed walking", not a
 dead boot.
 
