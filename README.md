@@ -9,8 +9,8 @@ A fully custom-built quadruped robot dog designed and coded from scratch.
 APEX is designed to walk across varied outdoor terrain using real-time inverse kinematics, stay balanced using an IMU, navigate to GPS waypoints autonomously, and stream live camera footage back to any device over WiFi. Onboard ML-based obstacle avoidance is built and awaiting tuning on the hardware, for fully autonomous terrain exploration.
  
 ![Status](https://img.shields.io/badge/status-in%20progress-yellow)
-![Platform](https://img.shields.io/badge/brain-Raspberry%20Pi%205-red)
-![Firmware](https://img.shields.io/badge/legs-RP2040%20%C3%974-blue)
+![Platform](https://img.shields.io/badge/SBC-Raspberry%20Pi%205-red)
+![Firmware](https://img.shields.io/badge/MCU-RP2040%20%C3%974-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ![APEX render in the field](Photos/APEX_in_field.png)
