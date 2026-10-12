@@ -116,7 +116,9 @@ dashboard and OLED; the robot still boots.
 
 The default `BootDisplay(port=1, address=0x3C)` is already correct. Check with
 `i2cdetect -y 1` (expect `3c`), then `python3 Code/Pi5/boot_display.py`, which
-marches a fake boot sequence across the panel.
+marches a fake boot sequence across the panel. When `pi5_main` exits (Ctrl+C,
+`pkill`, `docker stop`) the panel is left showing `stopped` and the time, so a
+frozen status frame is never mistaken for a live one.
 
 ---
 

@@ -70,9 +70,11 @@ Then open `http://<pi-ip>:5000` in a browser for the control panel and live came
  
 ```bash
 cd Code/Pi5
-source /opt/ros/humble/setup.bash
+source /opt/ros/<distro>/setup.bash      # e.g. humble, jazzy, lyrical
 python3 pi5_main.py
 ```
+
+On the robot this runs inside a ROS 2 Docker container (privileged, host networking) with a Python venv for the pip packages. Stop it with Ctrl+C or `pkill -f pi5_main`; either way it shuts down cleanly and leaves "stopped" on the OLED.
  
 ### Pico Firmware
  

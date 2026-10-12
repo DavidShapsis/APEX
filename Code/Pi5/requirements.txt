@@ -24,7 +24,8 @@ flask>=2.2
 opencv-python>=4.6       # `cv2` - webcam capture and MJPEG streaming
 
 # --- audio ---------------------------------------------------------------
-pygame>=2.1              # WAV playback; also shells out to `bluetoothctl`
+pygame>=2.1              # WAV playback through the host's PipeWire (see HARDWARE.md -> Speaker;
+                         # needs `apt install libpulse0 pulseaudio-utils` for pactl)
 
 # --- obstacle avoidance (optional) -------------------------------------
 # If these or the ONNX model file are missing, vision_obstacle catches the

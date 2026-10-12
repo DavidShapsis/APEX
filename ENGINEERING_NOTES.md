@@ -94,6 +94,7 @@ The two-minute version. Full detail is one click away on each line.
 - [Verify on hardware](#verify-on-hardware)
   - [RESOLVED — BNO085 constant names, and boot no longer dies on a bad hardware init](#resolved-bno085-constant-names-and-boot-no-longer-dies-on-a-bad-hardware-init)
   - [RESOLVED — the IMU was on the HDMI bus, and absent sensors reported OK](#resolved-the-imu-was-on-the-hdmi-bus-and-absent-sensors-reported-ok)
+  - [RESOLVED — first-boot fixes: camera, GPS, OLED, shutdown](#resolved-first-boot-fixes-camera-gps-oled-shutdown)
   - [RESOLVED — BTS7960 dual enable confirmed tied together on the PCB](#resolved-bts7960-dual-enable-confirmed-tied-together-on-the-pcb)
   - [Encoder zero must match HOME_POSE — this is what homing (top of doc) is for](#encoder-zero-must-match-home-pose-this-is-what-homing-top-of-doc-is-for)
   - [Dead branch in `imu.py`](#dead-branch-in-imu-py)
@@ -1823,6 +1824,38 @@ which is true for the *whole* even second; at ~100 Hz that printed each warning
 ~100 times a second (the compass one filled the terminal). They now go through
 `_log_every(key, msg)`, a real once-per-2-s limiter, and warnings for a sensor
 that already failed at boot are not repeated.
+
+<a id="resolved-first-boot-fixes-camera-gps-oled-shutdown"></a>
+### RESOLVED — first-boot fixes: camera, GPS, OLED, shutdown
+
+Smaller problems found on the same first boots, each confirmed on the robot.
+
+- **Camera index.** `USBWebcam()` opened index 0, but the Pi 5 registers ~17
+  `/dev/video*` nodes of its own (ISP, decoder), so 0 is not reliably the
+  webcam, and `/dev/v4l/by-id` is made by udev on the host and does not exist in
+  the container. `webcam.find_usb_camera()` scans `/sys/class/video4linux` (visible
+  in both) for the first node on the USB bus with `index` 0 — the picture node;
+  index 1 is the camera's metadata node. `USBWebcam()` with no argument uses it
+  and raises "no USB camera found" if there is none.
+- **GPS baud.** `GPSReader` was opened at 9600; the M100 talks 115200 (at 9600
+  it reads as garbage). `pi5_main` now passes 115200.
+- **OLED.** Four display bugs in `boot_display.py`:
+  - 5 log rows were kept but only 4 fit under the heading, so the *newest* line
+    was cut off — now `_MAX_LOG = 4`;
+  - `http://` pushed the port off the 21-character row — the summary now shows
+    `ip:5000`;
+  - with no default route (the Pi as its own hotspot) the IP lookup failed —
+    it now falls back to `hostname -I`;
+  - a full repaint is ~100 ms on a 100 kHz bus and ran on the control loop —
+    `summary()` now returns at once and a worker thread paints the latest frame.
+- **Screen left looking live after exit.** luma blanks the panel in an atexit
+  hook, which never ran on `pkill` / `docker stop`: Python's default SIGTERM
+  action exits without running `finally`, so hardware was never released and the
+  last status frame stayed up. `main()` now turns SIGTERM into the same
+  `KeyboardInterrupt` path as Ctrl+C, and the first cleanup step paints a final
+  `stopped / at HH:MM:SS` frame (`BootDisplay.shutdown()`), which blocks any later
+  repaint. The panel is set `persist` so that frame — or a boot `FATAL` line —
+  stays visible after the process ends.
 
 <a id="resolved-bts7960-dual-enable-confirmed-tied-together-on-the-pcb"></a>
 ### RESOLVED — BTS7960 dual enable confirmed tied together on the PCB
