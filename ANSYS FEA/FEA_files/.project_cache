@@ -17,6 +17,16 @@ dp0/SYS-1/MECH/MatML.xml
 dp0/SYS-1/MECH/solve.out
 dp0/SYS-2/DM/SYS-2.dsco
 dp0/SYS-2/ENGD/EngineeringData.xml
+dp0/SYS-2/MECH/CAERep.xml
+dp0/SYS-2/MECH/ds.dat
+dp0/SYS-2/MECH/file.aapresults
+dp0/SYS-2/MECH/file.cnd
+dp0/SYS-2/MECH/file.mntr
+dp0/SYS-2/MECH/file.rst
+dp0/SYS-2/MECH/file0.err
+dp0/SYS-2/MECH/file0.PCS
+dp0/SYS-2/MECH/MatML.xml
+dp0/SYS-2/MECH/solve.out
 dp0/act.dat
 dp0/act1.dat
 dp0/designPoint.wbdp
