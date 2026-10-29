@@ -1,0 +1,13 @@
+# encoding: utf-8
+# 2026 R1
+SetScriptVersion(Version="26.1.174")
+template1 = GetTemplate(
+    TemplateName="Static Structural",
+    Solver="ANSYS")
+system1 = template1.CreateSystem()
+Save(Overwrite=True)
+geometry1 = system1.GetContainer(ComponentName="Geometry")
+geometry1.SetFile(FilePath="C:/Users/david/Desktop/APEX/ANSYS FEA/HipRollMountInfill.step")
+geometry1.SetFile(FilePath="C:/Users/david/Desktop/APEX/ANSYS FEA/HipRollMount.step")
+favorites1 = EngData.LoadFavoriteItems()
+Save(Overwrite=True)

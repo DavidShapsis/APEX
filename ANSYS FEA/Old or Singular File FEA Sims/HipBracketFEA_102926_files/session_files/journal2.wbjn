@@ -1,0 +1,48 @@
+# encoding: utf-8
+# 2026 R1
+SetScriptVersion(Version="26.1.174")
+system1 = GetSystem(Name="SYS")
+engineeringData1 = system1.GetContainer(ComponentName="Engineering Data")
+matl1 = engineeringData1.CreateMaterial(Name="Sunlu PETG-CF Wall")
+matl2 = engineeringData1.CreateMaterial(Name="Sunlu PETG-CF Infill")
+matl3 = engineeringData1.CreateMaterial(Name="Aluminum 6061 T6")
+matlProp1 = matl3.CreateProperty(
+    Name="Elasticity",
+    Behavior="Orthotropic",
+    Qualifiers={"Definition": "", "Behavior": "Orthotropic"})
+matlProp2 = matl3.CreateProperty(
+    Name="Density",
+    Qualifiers={"Definition": "", "Behavior": ""})
+matlProp2.SetVariableProperty(
+    VariableName="Density",
+    Property="Unit",
+    Value="g cm^-3")
+matlProp1.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Index=-1,
+    Variables=["Temperature"],
+    Values=[["22 [C]"]])
+matlProp3 = matl2.CreateProperty(
+    Name="Elasticity",
+    Behavior="Orthotropic",
+    Qualifiers={"Definition": "", "Behavior": "Orthotropic"})
+matlProp4 = matl2.CreateProperty(
+    Name="Density",
+    Qualifiers={"Definition": "", "Behavior": ""})
+matlProp5 = matl1.CreateProperty(
+    Name="Elasticity",
+    Behavior="Orthotropic",
+    Qualifiers={"Definition": "", "Behavior": "Orthotropic"})
+matlProp6 = matl1.CreateProperty(
+    Name="Density",
+    Qualifiers={"Definition": "", "Behavior": ""})
+matlProp6.SetVariableProperty(
+    VariableName="Density",
+    Property="Unit",
+    Value="g cm^-3")
+matlProp4.SetVariableProperty(
+    VariableName="Density",
+    Property="Unit",
+    Value="g cm^-3")
+Save(Overwrite=True)

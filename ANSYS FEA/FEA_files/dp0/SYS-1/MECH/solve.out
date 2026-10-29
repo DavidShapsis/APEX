@@ -1,0 +1,978 @@
+
+ Ansys Mechanical Enterprise Academic Student      
+
+
+ *------------------------------------------------------------------*
+ |                                                                  |
+ |   W E L C O M E   T O   T H E   A N S Y S (R)  P R O G R A M     |
+ |                                                                  |
+ *------------------------------------------------------------------*
+
+
+
+
+ ***************************************************************
+ *         ANSYS MAPDL 2026 R1          LEGAL NOTICES          *
+ ***************************************************************
+ *                                                             *
+ * Copyright (c) 2026 Synopsys, Inc. and ANSYS, Inc.           *
+ * All rights reserved.                                        *
+ * Unauthorized use, distribution or duplication is            *
+ * prohibited.                                                 *
+ *                                                             *
+ * Ansys is a registered trademark of Ansys, Inc. or its       *
+ * subsidiaries in the United States or other countries.       *
+ * See the Ansys, Inc. online documentation or the Ansys, Inc. *
+ * documentation CD or online help for the complete Legal      *
+ * Notice.                                                     *
+ *                                                             *
+ ***************************************************************
+ *                                                             *
+ * THIS ANSYS SOFTWARE PRODUCT AND PROGRAM DOCUMENTATION       *
+ * INCLUDE TRADE SECRETS AND CONFIDENTIAL AND PROPRIETARY      *
+ * PRODUCTS OF ANSYS, INC., ITS SUBSIDIARIES, OR LICENSORS.    *
+ * The software products and documentation are furnished by    *
+ * Ansys, Inc. or its subsidiaries under a software license    *
+ * agreement that contains provisions concerning               *
+ * non-disclosure, copying, length and nature of use,          *
+ * compliance with exporting laws, warranties, disclaimers,    *
+ * limitations of liability, and remedies, and other           *
+ * provisions.  The software products and documentation may be *
+ * used, disclosed, transferred, or copied only in accordance  *
+ * with the terms and conditions of that software license      *
+ * agreement.                                                  *
+ *                                                             *
+ * Ansys, Inc. is a UL registered                              *
+ * ISO 9001:2015 company.                                      *
+ *                                                             *
+ ***************************************************************
+ *                                                             *
+ * This product is subject to U.S. laws governing export and   *
+ * re-export.                                                  *
+ *                                                             *
+ * For U.S. Government users, except as specifically granted   *
+ * by the Ansys, Inc. software license agreement, the use,     *
+ * duplication, or disclosure by the United States Government  *
+ * is subject to restrictions stated in the Ansys, Inc.        *
+ * software license agreement and FAR 12.212 (for non-DOD      *
+ * licenses).                                                  *
+ *                                                             *
+ ***************************************************************
+
+ 2026 R1 
+     
+ Point Releases and Patches installed:   
+     
+ Ansys, Inc. License Manager 2026 R1 
+ Discovery (full install) 2026 R1
+ Core WB Files 2026 R1   
+ optiSLang Core UI 2026 R1   
+ CFX (includes CFD-Post) 2026 R1 
+ Chemkin 2026 R1 
+ EnSight 2026 R1 
+ FENSAP-ICE 2026 R1  
+ Fluent (includes CFD-Post) 2026 R1  
+ Polyflow (includes CFD-Post) 2026 R1
+ Forte (includes EnSight) 2026 R1
+ Rocky 2026 R1   
+ TurboGrid 2026 R1   
+ ACIS Geometry Interface 2026 R1 
+ AutoCAD Geometry Interface 2026 R1  
+ Catia, Version 4 Geometry Interface 2026 R1 
+ Catia, Version 5 Geometry Interface 2026 R1 
+ Catia, Version 6 Geometry Interface 2026 R1 
+ Creo Elements/Direct Modeling Geometry Interface 2026 R1
+ Creo Parametric Geometry Interface 2026 R1  
+ Inventor Geometry Interface 2026 R1 
+ JTOpen Geometry Interface 2026 R1   
+ NX Geometry Interface 2026 R1   
+ Parasolid Geometry Interface  2026 R1   
+ Solid Edge Geometry Interface 2026 R1   
+ SOLIDWORKS Geometry Interface 2026 R1   
+ Speos 2026 R1   
+ SpaceClaim 2026 R1  
+ Speos RPC 2026 R1   
+ Zemax OpticStudio 2026 R1   
+ Dynamic Reporting 2026 R1   
+ Aqwa 2026 R1
+ Autodyn 2026 R1 
+ Material Calibration App 2026 R1
+ Mechanical Products 2026 R1 
+ Motion 2026 R1  
+ Academic Student 2026 R1
+
+
+          *****  MAPDL COMMAND LINE ARGUMENTS  *****
+  BATCH MODE REQUESTED (-b)    = NOLIST
+  INPUT FILE COPY MODE (-c)    = COPY
+  DISTRIBUTED MEMORY PARALLEL REQUESTED
+       4 PARALLEL PROCESSES REQUESTED WITH SINGLE THREAD PER PROCESS
+    TOTAL OF     4 CORES REQUESTED
+  INPUT FILE NAME              = C:\Users\david\Desktop\APEX\ANSYS FEA\_ProjectScratch\ScrC2AB\dummy.dat
+  OUTPUT FILE NAME             = C:\Users\david\Desktop\APEX\ANSYS FEA\_ProjectScratch\ScrC2AB\solve.out
+  START-UP FILE MODE           = NOREAD
+  STOP FILE MODE               = NOREAD
+
+ RELEASE= 2026 R1              BUILD= 26.1      UP20260202   VERSION=WINDOWS x64 
+ CURRENT JOBNAME=file0  13:04:35  OCT 29, 2026  Elapsed Time=       0.109
+
+
+ PARAMETER _DS_PROGRESS =     999.0000000    
+
+ /INPUT FILE= ds.dat  LINE=       0
+
+
+
+ *** NOTE ***                            ELAPSED TIME =       5.155   TIME= 13:04:35
+ The /CONFIG,NOELDB command is not valid in a distributed memory         
+ parallel solution.  Command is ignored.                                 
+
+ *GET  _WALLSTRT  FROM  ACTI  ITEM=TIME WALL  VALUE= 0.143644044E-02
+
+ TITLE= 
+ FEA--Static Structural (A5)                                                   
+
+  ACT Extensions:
+      LSDYNA, 2026.1
+      5f463412-bd3e-484b-87e7-cbc0a665e474, wbex
+      ANSYSMotion, 2026.1
+      20180725-3f81-49eb-9f31-41364844c769, wbex
+
+ SET PARAMETER DIMENSIONS ON  _WB_PROJECTSCRATCH_DIR
+  TYPE=STRI  DIMENSIONS=      248        1        1
+
+ PARAMETER _WB_PROJECTSCRATCH_DIR(1) = C:\Users\david\Desktop\APEX\ANSYS FEA\_ProjectScratch\ScrC2AB\
+
+ SET PARAMETER DIMENSIONS ON  _WB_SOLVERFILES_DIR
+  TYPE=STRI  DIMENSIONS=      248        1        1
+
+ PARAMETER _WB_SOLVERFILES_DIR(1) = C:\Users\david\Desktop\APEX\ANSYS FEA\FEA_files\dp0\SYS-1\MECH\
+
+ SET PARAMETER DIMENSIONS ON  _WB_USERFILES_DIR
+  TYPE=STRI  DIMENSIONS=      248        1        1
+
+ PARAMETER _WB_USERFILES_DIR(1) = C:\Users\david\Desktop\APEX\ANSYS FEA\FEA_files\user_files\
+ --- Data in consistent NMM units. See Solving Units in the help system for more
+
+ MPA UNITS SPECIFIED FOR INTERNAL    
+  LENGTH      = MILLIMETERS (mm)
+  MASS        = TONNE (Mg)
+  TIME        = SECONDS (sec)
+  TEMPERATURE = CELSIUS (C)
+  TOFFSET     = 273.0
+  FORCE       = NEWTON (N)
+  HEAT        = MILLIJOULES (mJ)
+
+ INPUT  UNITS ARE ALSO SET TO MPA 
+
+ *** MAPDL - ENGINEERING ANALYSIS SYSTEM  RELEASE 2026 R1          26.1     ***
+ Ansys Mechanical Enterprise Academic Student      
+ 01055371  VERSION=WINDOWS x64   13:04:35  OCT 29, 2026 Elapsed Time=      5.174
+
+ FEA--Static Structural (A5)                                                   
+
+
+
+          ***** MAPDL ANALYSIS DEFINITION (PREP7) *****
+ *********** Send User Defined Coordinate System(s) ***********
+ *********** Nodes for the whole assembly ***********
+ *********** Nodes for all Remote Points ***********
+ *********** Elements for Body 1 'HipRollMountInfill:1\HipRollMountInfill' *****
+ *********** Elements for Body 2 'AluminumBar:1\Aluminum Bar' ***********
+ *********** Elements for Body 3 'HipRollMountPerimeters:1\HipRollMountPerimeter
+ *********** Set Reference Temperature ***********
+ *********** Send Materials ***********
+ *********** Create Contact "Contact Region" ***********
+             Real Constant Set For Above Contact Is 5 & 4
+ *********** Create Contact "Contact Region 2" ***********
+             Real Constant Set For Above Contact Is 7 & 6
+ *********** Fixed Supports ***********
+ *********** Create Remote Point "Internal Remote Point" ***********
+ *********** Construct Remote Force ***********
+
+
+ ***** ROUTINE COMPLETED *****  ELAPSED TIME =         5.785
+
+
+ --- Number of total nodes = 108783
+ --- Number of contact elements = 44160
+ --- Number of spring elements = 0
+ --- Number of bearing elements = 0
+ --- Number of solid elements = 56046
+ --- Number of condensed parts = 0
+ --- Number of total elements = 100207
+
+ *GET  _WALLBSOL  FROM  ACTI  ITEM=TIME WALL  VALUE= 0.160939767E-02
+ ****************************************************************************
+ *************************    SOLUTION       ********************************
+ ****************************************************************************
+
+ *****  MAPDL SOLUTION ROUTINE  *****
+
+
+ PERFORM A STATIC ANALYSIS
+  THIS WILL BE A NEW ANALYSIS
+
+ PARAMETER _THICKRATIO =    0.3330000000    
+
+ USE SPARSE MATRIX DIRECT SOLVER
+
+ CONTACT INFORMATION PRINTOUT LEVEL       1
+
+ CHECK INITIAL OPEN/CLOSED STATUS OF SELECTED CONTACT ELEMENTS
+      AND LIST DETAILED CONTACT PAIR INFORMATION
+
+ SPLIT CONTACT SURFACES AT SOLVE PHASE
+
+    NUMBER OF SPLITTING TBD BY PROGRAM
+
+ DO NOT COMBINE ELEMENT MATRIX FILES (.emat) AFTER DISTRIBUTED PARALLEL SOLUTION
+
+ DO NOT COMBINE ELEMENT SAVE DATA FILES (.esav) AFTER DISTRIBUTED PARALLEL SOLUTION
+
+ NLDIAG: Nonlinear diagnostics CONT option is set to ON. 
+         Writing frequency : each ITERATION.
+
+ DO NOT SAVE ANY RESTART FILES AT ALL
+ ****************************************************
+ ******************* SOLVE FOR LS 1 OF 1 ****************
+
+ SPECIFIED NODAL LOAD FX   FOR SELECTED NODES    108783 TO   108783 BY        1
+  REAL=  200.000000       IMAG=  0.00000000    
+
+ SPECIFIED NODAL LOAD FY   FOR SELECTED NODES    108783 TO   108783 BY        1
+  REAL=  0.00000000       IMAG=  0.00000000    
+
+ SPECIFIED NODAL LOAD FZ   FOR SELECTED NODES    108783 TO   108783 BY        1
+  REAL=  50.0000000       IMAG=  0.00000000    
+
+ PRINTOUT RESUMED BY /GOP
+
+ USE       1 SUBSTEPS INITIALLY THIS LOAD STEP FOR ALL  DEGREES OF FREEDOM
+ FOR AUTOMATIC TIME STEPPING:
+   USE      1 SUBSTEPS AS A MAXIMUM
+   USE      1 SUBSTEPS AS A MINIMUM
+
+ TIME=  1.0000    
+
+ ERASE THE CURRENT DATABASE OUTPUT CONTROL TABLE.
+
+
+ WRITE ALL  ITEMS TO THE DATABASE WITH A FREQUENCY OF NONE
+   FOR ALL APPLICABLE ENTITIES
+
+ WRITE NSOL ITEMS TO THE DATABASE WITH A FREQUENCY OF ALL 
+   FOR ALL APPLICABLE ENTITIES
+
+ WRITE RSOL ITEMS TO THE DATABASE WITH A FREQUENCY OF ALL 
+   FOR ALL APPLICABLE ENTITIES
+
+ WRITE EANG ITEMS TO THE DATABASE WITH A FREQUENCY OF ALL 
+   FOR ALL APPLICABLE ENTITIES
+
+ WRITE ETMP ITEMS TO THE DATABASE WITH A FREQUENCY OF ALL 
+   FOR ALL APPLICABLE ENTITIES
+
+ WRITE VENG ITEMS TO THE DATABASE WITH A FREQUENCY OF ALL 
+   FOR ALL APPLICABLE ENTITIES
+
+ WRITE STRS ITEMS TO THE DATABASE WITH A FREQUENCY OF ALL 
+   FOR ALL APPLICABLE ENTITIES
+
+ WRITE EPEL ITEMS TO THE DATABASE WITH A FREQUENCY OF ALL 
+   FOR ALL APPLICABLE ENTITIES
+
+ WRITE EPPL ITEMS TO THE DATABASE WITH A FREQUENCY OF ALL 
+   FOR ALL APPLICABLE ENTITIES
+
+ WRITE CONT ITEMS TO THE DATABASE WITH A FREQUENCY OF ALL 
+   FOR ALL APPLICABLE ENTITIES
+
+ *GET  ANSINTER_  FROM  ACTI  ITEM=INT        VALUE=  0.00000000    
+
+ *IF  ANSINTER_  ( =   0.00000     )  NE  
+      0  ( =   0.00000     )  THEN    
+
+ *ENDIF
+
+ *** NOTE ***                            ELAPSED TIME =       5.888   TIME= 13:04:36
+ The automatic domain decomposition logic has selected the MESH domain   
+ decomposition method with 4 processes per solution.                     
+
+ *****  MAPDL SOLVE    COMMAND  *****
+
+ *** WARNING ***                         ELAPSED TIME =       6.040   TIME= 13:04:36
+ Element shape checking is currently inactive.  Issue SHPP,ON or         
+ SHPP,WARN to reactivate, if desired.                                    
+
+ *** NOTE ***                            ELAPSED TIME =       6.113   TIME= 13:04:36
+ The model data was checked and warning messages were found.             
+  Please review output or errors file (                                  
+ C:\Users\david\Desktop\APEX\ANSYS                                       
+ FEA\_ProjectScratch\ScrC2AB\file0.err ) for these warning messages.     
+
+ *** SELECTION OF ELEMENT TECHNOLOGIES FOR APPLICABLE ELEMENTS ***
+      --- GIVE SUGGESTIONS AND RESET THE KEY OPTIONS ---
+
+ ELEMENT TYPE         1 IS SOLID187. IT IS NOT ASSOCIATED WITH FULLY INCOMPRESSIBLE
+ HYPERELASTIC MATERIALS. NO SUGGESTION IS AVAILABLE AND NO RESETTING IS NEEDED.
+
+ ELEMENT TYPE         2 IS SOLID186. KEYOPT(2)=0 IS SUGGESTED AND HAS BEEN RESET.
+  KEYOPT(1-12)=    0    0    0    0    0    0    0    0    0    0    0    0
+
+ ELEMENT TYPE         3 IS SOLID187. IT IS NOT ASSOCIATED WITH FULLY INCOMPRESSIBLE
+ HYPERELASTIC MATERIALS. NO SUGGESTION IS AVAILABLE AND NO RESETTING IS NEEDED.
+
+
+
+ *** MAPDL - ENGINEERING ANALYSIS SYSTEM  RELEASE 2026 R1          26.1     ***
+ Ansys Mechanical Enterprise Academic Student      
+ 01055371  VERSION=WINDOWS x64   13:04:36  OCT 29, 2026 Elapsed Time=      6.135
+
+ FEA--Static Structural (A5)                                                   
+
+
+
+                       S O L U T I O N   O P T I O N S
+
+   PROBLEM DIMENSIONALITY. . . . . . . . . . . . .3-D                  
+   DEGREES OF FREEDOM. . . . . . UX   UY   UZ   ROTX ROTY ROTZ
+   ANALYSIS TYPE . . . . . . . . . . . . . . . . .STATIC (STEADY-STATE)
+   OFFSET TEMPERATURE FROM ABSOLUTE ZERO . . . . .  273.15    
+   EQUATION SOLVER OPTION. . . . . . . . . . . . .SPARSE             
+   GLOBALLY ASSEMBLED MATRIX . . . . . . . . . . .SYMMETRIC  
+
+ *** NOTE ***                            ELAPSED TIME =       6.178   TIME= 13:04:36
+ Poisson's ratio PR input has been converted to NU input.                
+
+ *** NOTE ***                            ELAPSED TIME =       6.289   TIME= 13:04:36
+ The conditions for direct assembly have been met.  No .emat or .erot    
+ files will be produced.                                                 
+
+ TRIM CONTACT/TARGET SURFACE
+
+ *** NOTE ***                            ELAPSED TIME =       6.472   TIME= 13:04:37
+ Internal nodes from 108784 to 108784 are created.                       
+ 1 internal nodes are used for handling degrees of freedom on pilot      
+ nodes of rigid target surfaces.                                         
+
+ *** NOTE ***                            ELAPSED TIME =       6.792   TIME= 13:04:37
+ Internal nodes from 108784 to 108784 are created.                       
+ 1 internal nodes are used for handling degrees of freedom on pilot      
+ nodes of rigid target surfaces.                                         
+ START TRIMMING SMALL/BONDED CONTACT PAIRS FOR DMP RUN.                  
+
+   10574 CONTACT ELEMENTS &   10697 TARGET ELEMENTS ARE DELETED DUE TO TRIMMING LOGIC.
+       2 CONTACT PAIRS ARE REMOVED. 
+
+ CHECK INITIAL OPEN/CLOSED STATUS OF SELECTED CONTACT ELEMENTS
+      AND LIST DETAILED CONTACT PAIR INFORMATION
+
+ *** NOTE ***                            ELAPSED TIME =      15.149   TIME= 13:04:45
+ Internal nodes from 108784 to 108784 are created.                       
+ 1 internal nodes are used for handling degrees of freedom on pilot      
+ nodes of rigid target surfaces.                                         
+
+ *** NOTE ***                            ELAPSED TIME =      15.294   TIME= 13:04:45
+ Internal nodes from 108784 to 108784 are created.                       
+ 1 internal nodes are used for handling degrees of freedom on pilot      
+ nodes of rigid target surfaces.                                         
+ 
+ SPLITTING CONTACT SURFACES WITH A CONNECTED REGION
+ 
+
+ CONTACT PAIR ASSOCIATED WITH REAL CONSTANT 4 SPLIT INTO 4 NEW PAIRS 
+ ASSOCIATED WITH REAL CONSTANTS 9 - 11
+
+ NEW CONTACT ELEMENTS FROM 133259 TO 133567 WERE CREATED TO HANDLE OVERLAPPING LAYERS
+
+ NEW TARGET ELEMENTS FROM 133568 TO 164656 WERE CREATED TO HANDLE
+ THE SPLIT CONTACT PAIRS
+
+ TRIM CONTACT/TARGET SURFACE
+
+ *** NOTE ***                            ELAPSED TIME =      16.113   TIME= 13:04:46
+ Internal nodes from 108784 to 108784 are created.                       
+ 1 internal nodes are used for handling degrees of freedom on pilot      
+ nodes of rigid target surfaces.                                         
+
+ *** NOTE ***                            ELAPSED TIME =      16.314   TIME= 13:04:46
+ Internal nodes from 108784 to 108784 are created.                       
+ 1 internal nodes are used for handling degrees of freedom on pilot      
+ nodes of rigid target surfaces.                                         
+
+       0 CONTACT ELEMENTS &   30301 TARGET ELEMENTS ARE DELETED DUE TO SPLITTING LOGIC.
+
+ *** NOTE ***                            ELAPSED TIME =      20.564   TIME= 13:04:51
+ Internal nodes from 108784 to 108784 are created.                       
+ 1 internal nodes are used for handling degrees of freedom on pilot      
+ nodes of rigid target surfaces.                                         
+
+ *** NOTE ***                            ELAPSED TIME =      20.872   TIME= 13:04:51
+ Internal nodes from 108784 to 108784 are created.                       
+ 1 internal nodes are used for handling degrees of freedom on pilot      
+ nodes of rigid target surfaces.                                         
+
+ *** NOTE ***                            ELAPSED TIME =      22.019   TIME= 13:04:52
+ Smoothing on certain target nodes (e.g.32630) for pair ID 4 may have    
+ accuracy issue.  Please verify element normal of connected target       
+ elements (e.g.119493 & 127217).                                         
+
+ *** NOTE ***                            ELAPSED TIME =      28.101   TIME= 13:04:58
+ Deformable-deformable contact pair identified by real constant set 4    
+ and contact element type 4 has been set up.                             
+ Auto surface constraint is built
+ MPC anywhere inside pinball may be built
+ The current pair was split from a base pair (real ID 4).                
+ Contact algorithm: MPC based approach
+
+ *** NOTE ***                            ELAPSED TIME =      28.101   TIME= 13:04:58
+ Contact related postprocess items (ETABLE, pressure ...) are not        
+ available.                                                              
+ Contact detection at: nodal point (normal to target surface)
+ *WARNING*: Smoothing on certain contact/target nodes (for example       
+ 32630) may have an accuracy issue.  You may switch contact and target   
+ surfaces, or split the current pair into multiple pairs, or use Gauss   
+ detection.                                                              
+ MPC will be built internally to handle bonded contact.
+ Average contact surface length                3.8098    
+ Average contact pair depth                    2.2022    
+ Average target surface length                 4.3055    
+ Default pinball region factor PINB           0.25000    
+ *WARNING*: The default pinball radius may be too small to capture       
+ contacting zone under small sliding assumption.  Redefine the pinball   
+ radius if necessary.                                                    
+ The resulting pinball region                 0.55056    
+ Default target edge extension factor TOLS     2.0000    
+ Initial penetration/gap is excluded.
+ Bonded contact (always) is defined.
+
+ *** NOTE ***                            ELAPSED TIME =      28.101   TIME= 13:04:58
+ Max.  Initial penetration 0.52714767 was detected between contact       
+ element 107472 and target element 128614.                               
+ You may move entire target surface by : x= -0.347445146, y=             
+ -0.391343504, z= -6.33782156E-02,to reduce initial penetration.         
+ *WARNING*: The detected Max.  Penetration is close to the pair based    
+ pinball.  Please verify the pinball radius carefully.                   
+ ****************************************
+  
+
+ *** NOTE ***                            ELAPSED TIME =      28.101   TIME= 13:04:58
+ Deformable-deformable contact pair identified by real constant set 10   
+ and contact element type 4 has been set up.                             
+ Auto surface constraint is built
+ MPC anywhere inside pinball may be built
+ The current pair was split from a base pair (real ID 4).                
+ Contact algorithm: MPC based approach
+
+ *** NOTE ***                            ELAPSED TIME =      28.101   TIME= 13:04:58
+ Contact related postprocess items (ETABLE, pressure ...) are not        
+ available.                                                              
+ Contact detection at: nodal point (normal to target surface)
+ *WARNING*: Smoothing on certain contact/target nodes (for example       
+ 32653) may have an accuracy issue.  You may switch contact and target   
+ surfaces, or split the current pair into multiple pairs, or use Gauss   
+ detection.                                                              
+ MPC will be built internally to handle bonded contact.
+ Average contact surface length                3.8098    
+ Average contact pair depth                    2.2022    
+ Average target surface length                 4.2130    
+ Default pinball region factor PINB           0.25000    
+ *WARNING*: The default pinball radius may be too small to capture       
+ contacting zone under small sliding assumption.  Redefine the pinball   
+ radius if necessary.                                                    
+ The resulting pinball region                 0.55056    
+ Default target edge extension factor TOLS     2.0000    
+ Initial penetration/gap is excluded.
+ Bonded contact (always) is defined.
+
+ *** NOTE ***                            ELAPSED TIME =      28.102   TIME= 13:04:58
+ Max.  Initial penetration 0.52714767 was detected between contact       
+ element 107472 and target element 128614.                               
+ You may move entire target surface by : x= -9.552169042E-09, y=         
+ 0.372719428, z= -0.372779954,to reduce initial penetration.             
+ *WARNING*: The detected Max.  Penetration is close to the pair based    
+ pinball.  Please verify the pinball radius carefully.                   
+ *WARNING*: The geometric gap/penetration may be too large.  Increase    
+ pinball radius if it is a true geometric gap/penetration.  Decrease     
+ pinball if it is a false one.                                           
+ ****************************************
+  
+
+ *** NOTE ***                            ELAPSED TIME =      28.102   TIME= 13:04:58
+ Deformable-deformable contact pair identified by real constant set 9    
+ and contact element type 4 has been set up.                             
+ Auto surface constraint is built
+ MPC anywhere inside pinball may be built
+ The current pair was split from a base pair (real ID 4).                
+ Contact algorithm: MPC based approach
+
+ *** NOTE ***                            ELAPSED TIME =      28.102   TIME= 13:04:58
+ Contact related postprocess items (ETABLE, pressure ...) are not        
+ available.                                                              
+ Contact detection at: nodal point (normal to target surface)
+ *WARNING*: Smoothing on certain contact/target nodes (for example       
+ 32595) may have an accuracy issue.  You may switch contact and target   
+ surfaces, or split the current pair into multiple pairs, or use Gauss   
+ detection.                                                              
+ MPC will be built internally to handle bonded contact.
+ Average contact surface length                3.8098    
+ Average contact pair depth                    2.2022    
+ Average target surface length                 3.3546    
+ Default pinball region factor PINB           0.25000    
+ *WARNING*: The default pinball radius may be too small to capture       
+ contacting zone under small sliding assumption.  Redefine the pinball   
+ radius if necessary.                                                    
+ The resulting pinball region                 0.55056    
+ Default target edge extension factor TOLS     2.0000    
+ Initial penetration/gap is excluded.
+ Bonded contact (always) is defined.
+
+ *** NOTE ***                            ELAPSED TIME =      28.102   TIME= 13:04:58
+ Max.  Initial penetration 0.52714767 was detected between contact       
+ element 107472 and target element 128614.                               
+ You may move entire target surface by : x= -0.365923131, y=             
+ 0.365923131, z= 0.100425047,to reduce initial penetration.              
+ *WARNING*: The detected Max.  Penetration is close to the pair based    
+ pinball.  Please verify the pinball radius carefully.                   
+ ****************************************
+  
+
+ *** NOTE ***                            ELAPSED TIME =      28.102   TIME= 13:04:58
+ Deformable-deformable contact pair identified by real constant set 11   
+ and contact element type 4 has been set up.                             
+ Auto surface constraint is built
+ MPC anywhere inside pinball may be built
+ The current pair was split from a base pair (real ID 4).                
+ Contact algorithm: MPC based approach
+
+ *** NOTE ***                            ELAPSED TIME =      28.102   TIME= 13:04:58
+ Contact related postprocess items (ETABLE, pressure ...) are not        
+ available.                                                              
+ Contact detection at: nodal point (normal to target surface)
+ *WARNING*: Smoothing on certain contact/target nodes (for example       
+ 34445) may have an accuracy issue.  You may switch contact and target   
+ surfaces, or split the current pair into multiple pairs, or use Gauss   
+ detection.                                                              
+ MPC will be built internally to handle bonded contact.
+ Average contact surface length                3.8098    
+ Average contact pair depth                    2.2022    
+ Average target surface length                 3.3566    
+ Default pinball region factor PINB           0.25000    
+ *WARNING*: The default pinball radius may be too small to capture       
+ contacting zone under small sliding assumption.  Redefine the pinball   
+ radius if necessary.                                                    
+ The resulting pinball region                 0.55056    
+ Default target edge extension factor TOLS     2.0000    
+ Initial penetration/gap is excluded.
+ Bonded contact (always) is defined.
+
+ *** NOTE ***                            ELAPSED TIME =      28.102   TIME= 13:04:58
+ Max.  Initial penetration 0.52714767 was detected between contact       
+ element 107472 and target element 128614.                               
+ You may move entire target surface by : x= 0.365924169, y=              
+ -0.365924169, z= -0.10041748,to reduce initial penetration.             
+ *WARNING*: The detected Max.  Penetration is close to the pair based    
+ pinball.  Please verify the pinball radius carefully.                   
+ ****************************************
+  
+
+ *** NOTE ***                            ELAPSED TIME =      28.102   TIME= 13:04:58
+ Deformable-deformable contact pair identified by real constant set 7    
+ and contact element type 6 has been set up.                             
+ Auto surface constraint is built
+ MPC anywhere inside pinball may be built
+ Contact algorithm: MPC based approach
+
+ *** NOTE ***                            ELAPSED TIME =      28.102   TIME= 13:04:58
+ Contact related postprocess items (ETABLE, pressure ...) are not        
+ available.                                                              
+ Contact detection at: nodal point (normal to target surface)
+ *WARNING*: Smoothing on certain contact/target nodes (for example       
+ 30092) may have an accuracy issue.  You may switch contact and target   
+ surfaces, or split the current pair into multiple pairs, or use Gauss   
+ detection.                                                              
+ MPC will be built internally to handle bonded contact.
+ Average contact surface length                4.4422    
+ Average contact pair depth                    3.3330    
+ Average target surface length                 5.9206    
+ Default pinball region factor PINB           0.25000    
+ The resulting pinball region                 0.83324    
+ Default target edge extension factor TOLS     2.0000    
+ Initial penetration/gap is excluded.
+ Bonded contact (always) is defined.
+
+ *** NOTE ***                            ELAPSED TIME =      28.102   TIME= 13:04:58
+ Min.  Initial gap 0.1905 was detected between contact element 130310    
+ and target element 129781.                                              
+ Contact is detected due to initial settings.                            
+  
+ Max.  Geometric gap 0.269407684 has been detected between contact       
+ element 130608 and target element 129859.                               
+ ****************************************
+  
+
+ *** NOTE ***                            ELAPSED TIME =      28.103   TIME= 13:04:58
+ Force-distributed-surface identified by real constant set 8 and         
+ contact element type 8 has been set up.  The pilot node 108783 is used  
+ to apply the force.  Internal MPC will be built.                        
+ The used degrees of freedom set is  UX   UY   UZ   ROTX ROTY ROTZ
+ Please verify constraints (including rotational degrees of freedom)
+  on the pilot node by yourself.
+ ****************************************
+  
+  
+  
+
+ *** NOTE ***                            ELAPSED TIME =      30.390   TIME= 13:05:00
+ Internal nodes from 108784 to 108784 are created.                       
+ 1 internal nodes are used for handling degrees of freedom on pilot      
+ nodes of rigid target surfaces.                                         
+
+  
+  
+     D I S T R I B U T E D   D O M A I N   D E C O M P O S E R
+  
+  ...Number of elements: 80033
+  ...Number of nodes:    108784
+  ...Decompose to 4 CPU domains
+  ...Element load balance ratio =     1.117
+
+
+                      L O A D   S T E P   O P T I O N S
+
+   LOAD STEP NUMBER. . . . . . . . . . . . . . . .     1
+   TIME AT END OF THE LOAD STEP. . . . . . . . . .  1.0000    
+   NUMBER OF SUBSTEPS. . . . . . . . . . . . . . .     1
+   STEP CHANGE BOUNDARY CONDITIONS . . . . . . . .    NO
+   PRINT OUTPUT CONTROLS . . . . . . . . . . . . .NO PRINTOUT
+   DATABASE OUTPUT CONTROLS
+      ITEM     FREQUENCY   COMPONENT
+       ALL       NONE               
+      NSOL        ALL               
+      RSOL        ALL               
+      EANG        ALL               
+      ETMP        ALL               
+      VENG        ALL               
+      STRS        ALL               
+      EPEL        ALL               
+      EPPL        ALL               
+      CONT        ALL               
+
+
+ SOLUTION MONITORING INFO IS WRITTEN TO FILE= file.mntr                                                                                                                                                                                                                                                           
+
+ *** NOTE ***                            ELAPSED TIME =      32.231   TIME= 13:05:02
+ Force-distributed-surface identified by real constant set 8 and         
+ contact element type 8 has been set up.  The pilot node 108783 is used  
+ to apply the force.  Internal MPC will be built.                        
+ The used degrees of freedom set is  UX   UY   UZ   ROTX ROTY ROTZ
+ Please verify constraints (including rotational degrees of freedom)
+  on the pilot node by yourself.
+ ****************************************
+  
+
+  
+ The FEA model contains 0 external CE equations and 64326 internal CE    
+ equations.                                                              
+
+
+                         ***********  PRECISE MASS SUMMARY  ***********
+
+   TOTAL RIGID BODY MASS MATRIX ABOUT ORIGIN
+               Translational mass               |   Coupled translational/rotational mass
+        0.45762E-03    0.0000        0.0000     |     0.0000      -0.16021E-01  -0.21040E-01
+         0.0000       0.45762E-03    0.0000     |    0.16021E-01    0.0000      -0.13620E-04
+         0.0000        0.0000       0.45762E-03 |    0.21040E-01   0.13620E-04    0.0000    
+     ------------------------------------------ | ------------------------------------------
+                                                |         Rotational mass (inertia)
+                                                |     2.8527       0.76179E-03  -0.54506E-03
+                                                |    0.76179E-03    2.2469       0.78989    
+                                                |   -0.54506E-03   0.78989        2.8072    
+
+   TOTAL MASS = 0.45762E-03
+     The mass principal axes coincide with the global Cartesian axes
+
+   CENTER OF MASS (X,Y,Z)=  -0.29764E-01    45.977       -35.009    
+
+   TOTAL INERTIA ABOUT CENTER OF MASS
+         1.3245       0.13557E-03  -0.68223E-04
+        0.13557E-03    1.6861       0.53312E-01
+       -0.68223E-04   0.53312E-01    1.8398    
+
+   PRINCIPAL INERTIAS =    1.3245        1.6694        1.8565    
+   ORIENTATION VECTORS OF THE INERTIA PRINCIPAL AXES IN GLOBAL CARTESIAN
+     ( 1.000,-0.000, 0.000) ( 0.000, 0.954,-0.299) (-0.000, 0.299, 0.954) 
+
+
+  *** MASS SUMMARY BY ELEMENT TYPE ***
+
+  TYPE      MASS
+     1  0.506924E-04
+     2  0.240060E-04
+     3  0.382923E-03
+
+ Range of element maximum matrix coefficients in global coordinates
+ Maximum = 809028.837 at element 14316.                                  
+ Minimum = 171.358781 at element 13989.                                  
+
+   *** ELEMENT MATRIX FORMULATION TIMES
+     TYPE    NUMBER     ENAME   TOTAL ELAPSED   AVG ELAPSED
+
+        1     14315  SOLID187          1.6459   0.000114978
+        2        68  SOLID186          0.0175   0.000257171
+        3     41663  SOLID187          4.7831   0.000114804
+        4     10247  CONTA174          6.0570   0.000591104
+        5     11151  TARGE170          0.0370   0.000003322
+        6       746  CONTA174          0.0691   0.000092600
+        7       198  TARGE170          0.0020   0.000009983
+        8      1644  CONTA174          0.0711   0.000043273
+        9         1  TARGE170          0.0000   0.000010100
+ Elapsed Time at end of element matrix formulation = 44.9311767.         
+
+ DISTRIBUTED SPARSE MATRIX DIRECT SOLVER.
+  Number of equations =      258516,    Maximum wavefront =   1314
+
+ *** NOTE ***                            ELAPSED TIME =      49.175   TIME= 13:05:19
+ The initial memory allocation (-m) has been exceeded.                   
+  Supplemental memory allocations are being used.                        
+
+
+  Memory allocated on only this MPI rank (rank     0)
+  -------------------------------------------------------------------
+  Equation solver memory allocated                     =   523.640 MB
+  Equation solver memory required for in-core mode     =   503.256 MB
+  Equation solver memory required for out-of-core mode =   210.555 MB
+  Total (solver and non-solver) memory allocated       =  2085.832 MB
+
+
+  Total memory summed across all MPI ranks on this machines
+  -------------------------------------------------------------------
+  Equation solver memory allocated                     =  2498.200 MB
+  Equation solver memory required for in-core mode     =  2395.008 MB
+  Equation solver memory required for out-of-core mode =   861.788 MB
+  Total (solver and non-solver) memory allocated       =  5643.438 MB
+
+ *** NOTE ***                            ELAPSED TIME =      49.175   TIME= 13:05:19
+ The Distributed Sparse Matrix Solver is currently running in the        
+ in-core memory mode.  This memory mode uses the most amount of memory   
+ in order to avoid using the hard drive as much as possible, which most  
+ often results in the fastest solution time.  This mode is recommended   
+ if enough physical memory is present to accommodate all of the solver   
+ data.                                                                   
+ curEqn=  38034  totEqn=  38034 Job CP sec=     44.188
+      Factor Done= 100% Factor Wall sec=      7.411 rate=       9.5 GFlops
+ Distributed sparse solver maximum pivot= 3236115.31 at node 30194 UY.   
+ Distributed sparse solver minimum pivot= 79.7335057 at node 31297 UX.   
+ Distributed sparse solver minimum pivot in absolute value= 79.7335057   
+ at node 31297 UX.                                                       
+
+   *** ELEMENT RESULT CALCULATION TIMES
+     TYPE    NUMBER     ENAME   TOTAL ELAPSED   AVG ELAPSED
+
+        1     14315  SOLID187          1.6036   0.000112025
+        2        68  SOLID186          0.0137   0.000201985
+        3     41663  SOLID187          4.7847   0.000114844
+        4      9938  CONTA174          0.6659   0.000067006
+        6       746  CONTA174          0.0982   0.000131613
+        8      1644  CONTA174          0.0031   0.000001858
+
+   *** NODAL LOAD CALCULATION TIMES
+     TYPE    NUMBER     ENAME   TOTAL ELAPSED   AVG ELAPSED
+
+        1     14315  SOLID187          0.3020   0.000021094
+        2        68  SOLID186          0.0039   0.000057626
+        3     41663  SOLID187          0.8468   0.000020326
+        4      9938  CONTA174          0.0270   0.000002714
+        6       746  CONTA174          0.0027   0.000003607
+        8      1644  CONTA174          0.0000   0.000000000
+ *** LOAD STEP     1   SUBSTEP     1  COMPLETED.    CUM ITER =      1
+ *** TIME =   1.00000         TIME INC =   1.00000      NEW TRIANG MATRIX
+
+
+ *** MAPDL BINARY FILE STATISTICS
+  BUFFER SIZE USED= 16384
+        9.125 MB WRITTEN ON ELEMENT SAVED DATA FILE: file0.esav
+       76.562 MB WRITTEN ON ASSEMBLED MATRIX FILE: file0.full
+       11.125 MB WRITTEN ON RESULTS FILE: file0.rst
+ *************** Write FE CONNECTORS *********
+
+ WRITE OUT CONSTRAINT EQUATIONS TO FILE= file.ce                                                                                                                                                                                                                                                             
+ ****************************************************
+ *************** FINISHED SOLVE FOR LS 1 *************
+
+ FINISH SOLUTION PROCESSING
+
+
+ ***** ROUTINE COMPLETED *****  ELAPSED TIME =        62.980
+
+
+
+ *GET  _WALLASOL  FROM  ACTI  ITEM=TIME WALL  VALUE= 0.174944026E-01
+
+ PRINTOUT RESUMED BY /GOP
+
+ *** MAPDL - ENGINEERING ANALYSIS SYSTEM  RELEASE 2026 R1          26.1     ***
+ Ansys Mechanical Enterprise Academic Student      
+ 01055371  VERSION=WINDOWS x64   13:05:33  OCT 29, 2026 Elapsed Time=     63.005
+
+ FEA--Static Structural (A5)                                                   
+
+
+
+          ***** MAPDL RESULTS INTERPRETATION (POST1) *****
+
+ *** NOTE ***                            ELAPSED TIME =      63.007   TIME= 13:05:33
+ Reading results into the database (SET command) will update the current 
+ displacement and force boundary conditions in the database with the     
+ values from the results file for that load set.  Note that any          
+ subsequent solutions will use these values unless action is taken to    
+ either SAVE the current values or not overwrite them (/EXIT,NOSAVE).    
+
+ Set Encoding of XML File to:ISO-8859-1
+
+ Set Output of XML File to:
+     PARM,     ,     ,     ,     ,     ,     ,     ,     ,     ,     ,     ,
+         ,     ,     ,     ,     ,     ,     ,
+
+ DATABASE WRITTEN ON FILE  parm.xml                                                                                                                                                                                                                                                            
+
+ EXIT THE MAPDL POST1 DATABASE PROCESSOR
+
+
+ ***** ROUTINE COMPLETED *****  ELAPSED TIME =        63.015
+
+
+
+ PRINTOUT RESUMED BY /GOP
+
+ *GET  _WALLDONE  FROM  ACTI  ITEM=TIME WALL  VALUE= 0.175042636E-01
+
+ PARAMETER _PREPTIME =    0.6226460000    
+
+ PARAMETER _SOLVTIME =     57.18601760    
+
+ PARAMETER _POSTTIME =    0.3549970000E-01
+
+ PARAMETER _TOTALTIM =     57.84416330    
+
+ *GET  _DLBRATIO  FROM  ACTI  ITEM=SOLU DLBR  VALUE=  1.11682136    
+
+ *GET  _COMBTIME  FROM  ACTI  ITEM=SOLU COMB  VALUE= 0.328429500    
+
+ *GET  _SSMODE   FROM  ACTI  ITEM=SOLU SSMM  VALUE=  2.00000000    
+
+ *GET  _NDOFS    FROM  ACTI  ITEM=SOLU NDOF  VALUE=  258516.000    
+
+ *GET  _SOL_END_TIME  FROM  ACTI  ITEM=SET  TIME  VALUE=  1.00000000    
+
+ *IF  _sol_end_time  ( =   1.00000     )  EQ  
+      1.000000  ( =   1.00000     )  THEN    
+
+ /FCLEAN COMMAND REMOVING ALL LOCAL FILES
+
+ *ENDIF
+ --- Total number of nodes = 108783
+ --- Total number of elements = 80033
+ --- Element load balance ratio = 1.11682136
+ --- Time to combine distributed files = 0.3284295
+ --- Sparse memory mode = 2
+ --- Number of DOF = 258516
+
+ EXIT MAPDL WITHOUT SAVING DATABASE
+
+
+ NUMBER OF WARNING MESSAGES ENCOUNTERED=          1
+ NUMBER OF ERROR   MESSAGES ENCOUNTERED=          0
+
++--------------------- M A P D L   S T A T I S T I C S ------------------------+
+
+Release: 2026 R1            Build: 26.1       Update: UP20260202   Platform: WINDOWS x64 
+Date Run: 10/29/2026   Time: 13:05     Process ID: 50484
+Operating System: Windows 11  (Build: 26300)
+
+Processor Model: Intel(R) Core(TM) Ultra 7 365
+
+Compiler: Intel(R) Fortran Compiler Classic Version 2021.9  (Build: 20230302)
+          Intel(R) C/C++ Compiler Classic Version 2021.9  (Build: 20230302)
+          Intel(R) oneAPI Math Kernel Library Version 2024.2.3-Product Build 20250403
+
+Number of machines requested            :    1
+Total number of cores available         :    8
+Number of physical cores available      :    8
+Number of processes requested           :    4
+Number of threads per process requested :    1
+Total number of cores requested         :    4 (Distributed Memory Parallel)               
+MPI Type: INTELMPI
+MPI Version: Intel(R) MPI Library 2021.16 for Windows* OS
+
+
+GPU Acceleration: Not Requested
+
+Job Name: file0
+Input File: dummy.dat
+
+  Core                Machine Name   Working Directory
+ -----------------------------------------------------
+     0                David-Laptop   C:\Users\david\Desktop\APEX\ANSYS FEA\_ProjectScratch\ScrC2AB
+     1                David-Laptop   C:\Users\david\Desktop\APEX\ANSYS FEA\_ProjectScratch\ScrC2AB
+     2                David-Laptop   C:\Users\david\Desktop\APEX\ANSYS FEA\_ProjectScratch\ScrC2AB
+     3                David-Laptop   C:\Users\david\Desktop\APEX\ANSYS FEA\_ProjectScratch\ScrC2AB
+ 
+Latency time from master to core     1 =    4.606 microseconds
+Latency time from master to core     2 =    7.083 microseconds
+Latency time from master to core     3 =   17.518 microseconds
+ 
+Communication speed from master to core     1 =  3686.77 MB/sec
+Communication speed from master to core     2 =  2888.96 MB/sec
+Communication speed from master to core     3 =  3066.11 MB/sec
+
+Total CPU time for main thread                    :       46.9 seconds
+Total CPU time summed for all threads             :       48.1 seconds
+
+Elapsed time spent obtaining a license            :        0.6 seconds
+Elapsed time spent pre-processing model (/PREP7)  :        0.6 seconds
+Elapsed time spent solution - preprocessing       :       26.1 seconds
+Elapsed time spent computing solution             :       28.6 seconds
+   Elapsed time in element formation & assembly   :        9.3 seconds
+   Elapsed time in equation solver                :       13.2 seconds
+   Elapsed time in element result calculations    :        2.6 seconds
+Elapsed time spent solution - postprocessing      :        0.3 seconds
+Elapsed time spent post-processing model (/POST1) :        0.0 seconds
+ 
+Equation solver used                              :            Sparse (symmetric)
+Sparse direct equation solver computational rate  :       37.6 Gflops
+Sparse direct equation solver effective I/O rate  :       12.1 GB/sec
+
+Sum of disk space used on all processes           :      564.9 MB
+
+Sum of memory used on all processes               :     3378.0 MB
+Sum of memory allocated on all processes          :     5803.0 MB
+Physical memory available                         :         32 GB
+Total amount of I/O written to disk               :        0.8 GB
+Total amount of I/O read from disk                :        0.5 GB
+
++------------------ E N D   M A P D L   S T A T I S T I C S -------------------+
+
+
+ *-----------------------------------------------------------------------------*
+ |                                                                             |
+ |                               RUN COMPLETED                                 |
+ |                                                                             |
+ |-----------------------------------------------------------------------------|
+ |                                                                             |
+ |  Ansys MAPDL 2026 R1         Build 26.1         UP20260202    WINDOWS x64   |
+ |                                                                             |
+ |-----------------------------------------------------------------------------|
+ |                                                                             |
+ |  Database Requested(-db)     1024 MB     Scratch Memory Requested   1024 MB |
+ |  Max Database Used(Master)    220 MB     Max Scratch Used(Master)    701 MB |
+ |  Max Database Used(Workers)     1 MB     Max Scratch Used(Workers)   971 MB |
+ |  Sum Database Used(All)       223 MB     Sum Scratch Used(All)      3155 MB |
+ |                                                                             |
+ |-----------------------------------------------------------------------------|
+ |                                                                             |
+ |        CP Time      (sec) =         48.094       Time  =  13:05:44          |
+ |        Elapsed Time (sec) =         73.526       Date  =  10/29/2026        |
+ |                                                                             |
+ *-----------------------------------------------------------------------------*
