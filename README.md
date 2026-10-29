@@ -111,6 +111,7 @@ Flash each Pico with MicroPython, then copy the contents of `Code/Pico/` to the 
 | Mechanical build | In progress |
 | Custom PCB | In progress |
 | CAD files | In progress |
+| Structural FEA (ANSYS) | In progress — mounting bracket first |
  
 ---
  
@@ -122,6 +123,7 @@ APEX/
 │   ├── Pi5/             # Raspberry Pi 5 code (ROS 2 node, dashboard, sensors, vision)
 │   └── Pico/            # RP2040 MicroPython firmware (one copy runs on every leg)
 ├── CAD/                 # Fusion 360 leg and body models, PCB V1 design and Gerber files
+├── ANSYS FEA/           # ANSYS Workbench structural rigidity analyses of components
 ├── Photos/              # Build photos
 ├── README.md            # This file
 ├── TECHNICAL.md         # How it works: architecture, protocol, gait, control loop, vision, dashboard
