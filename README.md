@@ -130,6 +130,20 @@ APEX/
 ├── HARDWARE.md          # Pi 5 buses and pins, config.txt, OLED, Pico boards, speaker
 └── ENGINEERING_NOTES.md # Open issues, bench checklists, resolved defects, planned work
 ```
+
+### Downloading the CAD files
+
+The Fusion 360 files (`.f3z`, `.f3d`) are stored with [Git LFS](https://git-lfs.com). GitHub's **Code → Download ZIP** does not include LFS content, so it gives you tiny (~130 byte) placeholder files that Fusion cannot open. To get the real files, either:
+
+- **Clone with Git LFS:** install Git LFS, then
+
+  ```bash
+  git lfs install
+  git clone https://github.com/shaps987/APEX.git
+  ```
+
+  If you already cloned without LFS, run `git lfs pull` inside the repo.
+- **Download a single file:** open the file on GitHub and click the download button.
  
 ---
  
