@@ -1,0 +1,20 @@
+/COM,ANSYS RELEASE 2026 R1           BUILD 26.1      UP20260202       13:33:38
+
+ *** WARNING ***                         ELAPSED TIME =       5.903   TIME= 13:33:39
+ Element shape checking is currently inactive.  Issue SHPP,ON or         
+ SHPP,WARN to reactivate, if desired.                                    
+
+ *** WARNING ***                         ELAPSED TIME =      10.962   TIME= 13:33:44
+ Too many nodes 9251 are included in the force-distributed-surface       
+ constraint identified by real constant set 13.  This may greatly        
+ affect solver performance due to large wave fronts and memory           
+ consumption.  Also check results carefully and consider solving with a  
+ different unit system.                                                  
+
+ *** WARNING ***                         ELAPSED TIME =      11.033   TIME= 13:33:45
+ This model has one or more constraint equations that has 26355 terms.   
+ This will lead to significantly higher memory requirements and          
+ solution times.  At this point the solution will be terminated.  If     
+ you wish to bypass this message to allow the solution to continue with  
+ increased solution time and memory requirements, use the CEFILTER,OFF   
+ command.                                                                
