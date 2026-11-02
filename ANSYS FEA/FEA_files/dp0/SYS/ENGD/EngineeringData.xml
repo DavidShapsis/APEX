@@ -608,30 +608,15 @@
           <Name>Young's Modulus X direction</Name>
           <Units name="Stress" />
         </ParameterDetails>
-        <ParameterDetails id="pa6">
-          <Name>Young's Modulus Y direction</Name>
-          <Units name="Stress" />
-        </ParameterDetails>
         <ParameterDetails id="pa7">
           <Name>Young's Modulus Z direction</Name>
           <Units name="Stress" />
-        </ParameterDetails>
-        <ParameterDetails id="pa8">
-          <Name>Poisson's Ratio XY</Name>
         </ParameterDetails>
         <ParameterDetails id="pa9">
           <Name>Poisson's Ratio YZ</Name>
         </ParameterDetails>
         <ParameterDetails id="pa10">
           <Name>Poisson's Ratio XZ</Name>
-        </ParameterDetails>
-        <ParameterDetails id="pa11">
-          <Name>Shear Modulus XY</Name>
-          <Units name="Stress" />
-        </ParameterDetails>
-        <ParameterDetails id="pa12">
-          <Name>Shear Modulus YZ</Name>
-          <Units name="Stress" />
         </ParameterDetails>
         <ParameterDetails id="pa13">
           <Name>Shear Modulus XZ</Name>
@@ -640,6 +625,21 @@
         <ParameterDetails id="pa14">
           <Name>Temperature</Name>
           <Units name="Temperature" />
+        </ParameterDetails>
+        <ParameterDetails id="pa6">
+          <Name>Young's Modulus Y direction</Name>
+          <Units name="Stress" />
+        </ParameterDetails>
+        <ParameterDetails id="pa8">
+          <Name>Poisson's Ratio XY</Name>
+        </ParameterDetails>
+        <ParameterDetails id="pa11">
+          <Name>Shear Modulus XY</Name>
+          <Units name="Stress" />
+        </ParameterDetails>
+        <ParameterDetails id="pa12">
+          <Name>Shear Modulus YZ</Name>
+          <Units name="Stress" />
         </ParameterDetails>
         <ParameterDetails id="pa15">
           <Name>Density</Name>

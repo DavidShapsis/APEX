@@ -522,7 +522,7 @@
       <storage-scheme-id valType="String">version-1-format</storage-scheme-id>
       <deleted-sources valType="String">[]</deleted-sources>
       <last-updated valType="Int64">5371</last-updated>
-      <last-modified-by-usage valType="String">{"Extrinsic": 7510, "Input": 5368, "Output": 5368}</last-modified-by-usage>
+      <last-modified-by-usage valType="String">{"Extrinsic": 7540, "Input": 5368, "Output": 5368}</last-modified-by-usage>
       <outputs-generated-by-type valType="String">{}</outputs-generated-by-type>
       <unique-system-dir valType="String">SYS-1</unique-system-dir>
       <contains-significant-data valType="Boolean">true</contains-significant-data>
@@ -557,10 +557,10 @@
       <container-type valType="String">Ansys.Simulation.Core.Addin:SimulationModel</container-type>
       <storage-scheme-id valType="String">version-1-format</storage-scheme-id>
       <deleted-sources valType="String">[]</deleted-sources>
-      <last-updated valType="Int64">6028</last-updated>
-      <last-modified-by-usage valType="String">{"Extrinsic": 6388, "Input": 6026, "Output": 6026}</last-modified-by-usage>
+      <last-updated valType="Int64">7525</last-updated>
+      <last-modified-by-usage valType="String">{"Extrinsic": 7524, "Input": 6026, "Output": 6026}</last-modified-by-usage>
       <outputs-generated-by-type valType="String">{}</outputs-generated-by-type>
-      <last-update-regen-times valType="String">{"Preferences": 0, "ToolbarExp": 0, "FileTypesContainer": 0, "FileContainer": 0, "Messages": 0, "Parameters": 0, "Schematic": 0, "ReportDataContainer": 0, "Graphics": 0, "Units": 0, "HpsContainer": 0, "PyAddinManager": 0, "Scopes": 0, "Engineering Data": 4011, "Geometry 1": 5371, "Model 1": 6014, "Setup 1": 5938, "Solution 1": 5939, "Results 1": 5940, "Geometry 2": 5432, "Model 2": 5016, "Setup 2": 5043, "Solution 2": 5044, "Results 2": 5045}</last-update-regen-times>
+      <last-update-regen-times valType="String">{"Preferences": 0, "ToolbarExp": 0, "FileTypesContainer": 0, "FileContainer": 0, "Messages": 0, "Parameters": 0, "Schematic": 0, "ReportDataContainer": 0, "Graphics": 0, "Units": 0, "HpsContainer": 0, "PyAddinManager": 0, "Scopes": 0, "Engineering Data": 7311, "Geometry 1": 5371, "Model 1": 6028, "Setup 1": 6129, "Solution 1": 6186, "Results 1": 6187, "Geometry 2": 5432, "Model 2": 6302, "Setup 2": 6281, "Solution 2": 6282, "Results 2": 6283, "EngineeringDataGeneratedChartData": 0, "EngineeringDataCurveFit": 0, "EngineeringDataFavoriteItems": 0, "Geometry": 6838, "Model": 7481, "Setup": 7498, "Solution": 7499, "Results": 7500}</last-update-regen-times>
       <unique-system-dir valType="String">SYS-1</unique-system-dir>
       <contains-significant-data valType="Boolean">true</contains-significant-data>
       <Object Name="/Model 1/SimulationConnection:SimulationConnection" Version="1.0">
@@ -642,7 +642,7 @@
       <Object Name="/Model 1/MechanicalModel:MechanicalModel" Version="1.0">
         <class-type valType="String">MechanicalModel</class-type>
         <object-name valType="String">MechanicalModel</object-name>
-        <member-data valType="String">{"DisplayText": "MechanicalModel", "Caption": "Model", "File": $$f41f177c-93ce-410c-8ec1-312f87b1d66c, "MeshFile": None, "EdaFile": None, "AcpRenumberingInformation": {}, "ModelConversionAssociativityMap": {}, "ModelId": 13, "PrototypeId": 16, "PrototypeUnitSystem": "WBUST_StandardMKS", "ModelHash": "d63818b9-ec2c-417a-83ab-2fe4f70b2b31", "GeometryHash": "9eefe974-71c2-49a0-834a-260224cf066c", "IsResetNotRequired": False, "AllowMeshing": True, "TransferFiles": {"InputFile": {}, "ExternalModelOutputProvider": {}, "SimulationSolutionOutputProvider": {}, "SimulationModelGeneratedMesh": {}, "MeshingAssemblyTransferType": {}, "TopologyOptimizationResultsCDB": {}, "SpaceClaimModelerMode": {}, "MaterialDesignerLoadCase": {}, "Modeler": {}, "AIMGeometryMeshOutputProvider": {}, "AIMMechanicalPhysicsDefinitionOutputProvider": {}, "ExternalModelOutputProviderForAssembly": {}, "EngineeringData": {"Engineering Data": [$$74eb1261-3cdc-4a90-85e1-07fc1db4bac5]}, "CompositeEngineeringData": {}, "SimulationEngineeringData": {}, "SolidSectionData": {}, "EnhancedModelData": {}}, "UnconsumedUpstreamDataForModelAssembly": {}, "ModelsWithConflictingModelHashes": [], "ApplicationRegisteredFiles": {}, "IsModifiedDueToSubstructureFileTypeChange": False}</member-data>
+        <member-data valType="String">{"DisplayText": "MechanicalModel", "Caption": "Model", "File": $$f41f177c-93ce-410c-8ec1-312f87b1d66c, "MeshFile": None, "EdaFile": None, "AcpRenumberingInformation": {}, "ModelConversionAssociativityMap": {}, "ModelId": 13, "PrototypeId": 16, "PrototypeUnitSystem": "WBUST_StandardMKS", "ModelHash": "d63818b9-ec2c-417a-83ab-2fe4f70b2b31", "GeometryHash": "9eefe974-71c2-49a0-834a-260224cf066c", "IsResetNotRequired": False, "AllowMeshing": True, "TransferFiles": {"InputFile": {}, "ExternalModelOutputProvider": {}, "SimulationSolutionOutputProvider": {}, "SimulationModelGeneratedMesh": {}, "MeshingAssemblyTransferType": {}, "TopologyOptimizationResultsCDB": {}, "SpaceClaimModelerMode": {}, "MaterialDesignerLoadCase": {}, "Modeler": {}, "AIMGeometryMeshOutputProvider": {}, "AIMMechanicalPhysicsDefinitionOutputProvider": {}, "ExternalModelOutputProviderForAssembly": {}, "EngineeringData": {"Engineering Data": [$$6c76fe44-2ef1-48a7-84cb-2c53ac51b2fc]}, "CompositeEngineeringData": {}, "SimulationEngineeringData": {}, "SolidSectionData": {}, "EnhancedModelData": {}}, "UnconsumedUpstreamDataForModelAssembly": {}, "ModelsWithConflictingModelHashes": [], "ApplicationRegisteredFiles": {}, "IsModifiedDueToSubstructureFileTypeChange": False}</member-data>
         <custom-data>
           <File valType="String">f41f177c-93ce-410c-8ec1-312f87b1d66c</File>
           <FilePath valType="String"></FilePath>
@@ -663,7 +663,7 @@
       <last-updated valType="Int64">6129</last-updated>
       <last-modified-by-usage valType="String">{"Extrinsic": 6117, "Input": 6117, "Output": 6117}</last-modified-by-usage>
       <outputs-generated-by-type valType="String">{}</outputs-generated-by-type>
-      <last-update-regen-times valType="String">{"Preferences": 0, "ToolbarExp": 0, "FileTypesContainer": 0, "FileContainer": 0, "Messages": 0, "Parameters": 0, "Schematic": 0, "ReportDataContainer": 0, "Graphics": 0, "Units": 0, "HpsContainer": 0, "PyAddinManager": 0, "Scopes": 0, "Engineering Data": 4011, "Geometry 1": 5371, "Model 1": 6028, "Setup 1": 6085, "Solution 1": 6086, "Results 1": 6087, "Geometry 2": 5432, "Model 2": 6053, "Setup 2": 5043, "Solution 2": 5044, "Results 2": 5045}</last-update-regen-times>
+      <last-update-regen-times valType="String">{"Preferences": 0, "ToolbarExp": 0, "FileTypesContainer": 0, "FileContainer": 0, "Messages": 0, "Parameters": 0, "Schematic": 0, "ReportDataContainer": 0, "Graphics": 0, "Units": 0, "HpsContainer": 0, "PyAddinManager": 0, "Scopes": 0, "Engineering Data": 7311, "Geometry 1": 5371, "Model 1": 7525, "Setup 1": 6129, "Solution 1": 6186, "Results 1": 6187, "Geometry 2": 5432, "Model 2": 6302, "Setup 2": 6281, "Solution 2": 6282, "Results 2": 6283, "EngineeringDataGeneratedChartData": 0, "EngineeringDataCurveFit": 0, "EngineeringDataFavoriteItems": 0, "Geometry": 6838, "Model": 7481, "Setup": 7498, "Solution": 7499, "Results": 7500}</last-update-regen-times>
       <unique-system-dir valType="String">SYS-1</unique-system-dir>
       <contains-significant-data valType="Boolean">true</contains-significant-data>
       <Object Name="/Setup 1/MechanicalSystemType:SystemClass for Structural|Static|ANSYS" Version="1.0">
@@ -880,7 +880,7 @@
       <storage-scheme-id valType="String">version-1-format</storage-scheme-id>
       <deleted-sources valType="String">[]</deleted-sources>
       <last-updated valType="Int64">5432</last-updated>
-      <last-modified-by-usage valType="String">{"Extrinsic": 7512, "Input": 5429, "Output": 5429}</last-modified-by-usage>
+      <last-modified-by-usage valType="String">{"Extrinsic": 7542, "Input": 5429, "Output": 5429}</last-modified-by-usage>
       <outputs-generated-by-type valType="String">{}</outputs-generated-by-type>
       <unique-system-dir valType="String">SYS-2</unique-system-dir>
       <contains-significant-data valType="Boolean">true</contains-significant-data>
@@ -925,10 +925,10 @@
       <container-type valType="String">Ansys.Simulation.Core.Addin:SimulationModel</container-type>
       <storage-scheme-id valType="String">version-1-format</storage-scheme-id>
       <deleted-sources valType="String">[]</deleted-sources>
-      <last-updated valType="Int64">6302</last-updated>
-      <last-modified-by-usage valType="String">{"Extrinsic": 6879, "Input": 6263, "Output": 6263}</last-modified-by-usage>
+      <last-updated valType="Int64">7538</last-updated>
+      <last-modified-by-usage valType="String">{"Extrinsic": 7537, "Input": 6263, "Output": 6263}</last-modified-by-usage>
       <outputs-generated-by-type valType="String">{}</outputs-generated-by-type>
-      <last-update-regen-times valType="String">{"Preferences": 0, "ToolbarExp": 0, "FileTypesContainer": 0, "FileContainer": 0, "Messages": 0, "Parameters": 0, "Schematic": 0, "ReportDataContainer": 0, "Graphics": 0, "Units": 0, "HpsContainer": 0, "PyAddinManager": 0, "Scopes": 0, "Engineering Data": 4011, "Geometry 1": 5371, "Model 1": 6028, "Setup 1": 6129, "Solution 1": 6186, "Results 1": 6187, "Geometry 2": 5432, "Model 2": 6053, "Setup 2": 6281, "Solution 2": 6282, "Results 2": 6283}</last-update-regen-times>
+      <last-update-regen-times valType="String">{"Preferences": 0, "ToolbarExp": 0, "FileTypesContainer": 0, "FileContainer": 0, "Messages": 0, "Parameters": 0, "Schematic": 0, "ReportDataContainer": 0, "Graphics": 0, "Units": 0, "HpsContainer": 0, "PyAddinManager": 0, "Scopes": 0, "Engineering Data": 7311, "Geometry 1": 5371, "Model 1": 7525, "Setup 1": 6129, "Solution 1": 6186, "Results 1": 6187, "Geometry 2": 5432, "Model 2": 6302, "Setup 2": 6281, "Solution 2": 6282, "Results 2": 6283, "EngineeringDataGeneratedChartData": 0, "EngineeringDataCurveFit": 0, "EngineeringDataFavoriteItems": 0, "Geometry": 6838, "Model": 7481, "Setup": 7498, "Solution": 7499, "Results": 7500}</last-update-regen-times>
       <unique-system-dir valType="String">SYS-2</unique-system-dir>
       <contains-significant-data valType="Boolean">true</contains-significant-data>
       <Object Name="/Model 2/SimulationConnection:SimulationConnection" Version="1.0">
@@ -1010,7 +1010,7 @@
       <Object Name="/Model 2/MechanicalModel:MechanicalModel" Version="1.0">
         <class-type valType="String">MechanicalModel</class-type>
         <object-name valType="String">MechanicalModel</object-name>
-        <member-data valType="String">{"DisplayText": "MechanicalModel", "Caption": "Model", "File": $$38e625c0-e65f-4237-890f-c6cce2b0e78f, "MeshFile": None, "EdaFile": None, "AcpRenumberingInformation": {}, "ModelConversionAssociativityMap": {}, "ModelId": 12, "PrototypeId": 15, "PrototypeUnitSystem": "WBUST_StandardMKS", "ModelHash": "803c0969-c44e-4934-898c-0f0b76422311", "GeometryHash": "147e3bdc-564e-438f-b99d-601eb7d42de9", "IsResetNotRequired": False, "AllowMeshing": True, "TransferFiles": {"InputFile": {}, "ExternalModelOutputProvider": {}, "SimulationSolutionOutputProvider": {}, "SimulationModelGeneratedMesh": {}, "MeshingAssemblyTransferType": {}, "TopologyOptimizationResultsCDB": {}, "SpaceClaimModelerMode": {}, "MaterialDesignerLoadCase": {}, "Modeler": {}, "AIMGeometryMeshOutputProvider": {}, "AIMMechanicalPhysicsDefinitionOutputProvider": {}, "ExternalModelOutputProviderForAssembly": {}, "EngineeringData": {"Engineering Data": [$$be87a868-8ac8-4b45-abb9-7acaff6aa746]}, "CompositeEngineeringData": {}, "SimulationEngineeringData": {}, "SolidSectionData": {}, "EnhancedModelData": {}}, "UnconsumedUpstreamDataForModelAssembly": {}, "ModelsWithConflictingModelHashes": [], "ApplicationRegisteredFiles": {}, "IsModifiedDueToSubstructureFileTypeChange": False}</member-data>
+        <member-data valType="String">{"DisplayText": "MechanicalModel", "Caption": "Model", "File": $$38e625c0-e65f-4237-890f-c6cce2b0e78f, "MeshFile": None, "EdaFile": None, "AcpRenumberingInformation": {}, "ModelConversionAssociativityMap": {}, "ModelId": 12, "PrototypeId": 15, "PrototypeUnitSystem": "WBUST_StandardMKS", "ModelHash": "803c0969-c44e-4934-898c-0f0b76422311", "GeometryHash": "147e3bdc-564e-438f-b99d-601eb7d42de9", "IsResetNotRequired": False, "AllowMeshing": True, "TransferFiles": {"InputFile": {}, "ExternalModelOutputProvider": {}, "SimulationSolutionOutputProvider": {}, "SimulationModelGeneratedMesh": {}, "MeshingAssemblyTransferType": {}, "TopologyOptimizationResultsCDB": {}, "SpaceClaimModelerMode": {}, "MaterialDesignerLoadCase": {}, "Modeler": {}, "AIMGeometryMeshOutputProvider": {}, "AIMMechanicalPhysicsDefinitionOutputProvider": {}, "ExternalModelOutputProviderForAssembly": {}, "EngineeringData": {"Engineering Data": [$$ea188a24-08e7-4c95-b3ad-e8588d502eec]}, "CompositeEngineeringData": {}, "SimulationEngineeringData": {}, "SolidSectionData": {}, "EnhancedModelData": {}}, "UnconsumedUpstreamDataForModelAssembly": {}, "ModelsWithConflictingModelHashes": [], "ApplicationRegisteredFiles": {}, "IsModifiedDueToSubstructureFileTypeChange": False}</member-data>
         <custom-data>
           <File valType="String">38e625c0-e65f-4237-890f-c6cce2b0e78f</File>
           <FilePath valType="String"></FilePath>
@@ -1275,7 +1275,7 @@
       <storage-scheme-id valType="String">version-1-format</storage-scheme-id>
       <deleted-sources valType="String">[]</deleted-sources>
       <last-updated valType="Int64">7481</last-updated>
-      <last-modified-by-usage valType="String">{"Extrinsic": 7479, "Input": 7479, "Output": 7479}</last-modified-by-usage>
+      <last-modified-by-usage valType="String">{"Extrinsic": 7513, "Input": 7479, "Output": 7479}</last-modified-by-usage>
       <outputs-generated-by-type valType="String">{}</outputs-generated-by-type>
       <last-update-regen-times valType="String">{"Preferences": 0, "ToolbarExp": 0, "FileTypesContainer": 0, "FileContainer": 0, "Messages": 0, "Parameters": 0, "Schematic": 0, "ReportDataContainer": 0, "Graphics": 0, "Units": 0, "HpsContainer": 0, "PyAddinManager": 0, "Scopes": 0, "Engineering Data": 7311, "Geometry 1": 5371, "Model 1": 6028, "Setup 1": 6129, "Solution 1": 6186, "Results 1": 6187, "Geometry 2": 5432, "Model 2": 6302, "Setup 2": 6281, "Solution 2": 6282, "Results 2": 6283, "EngineeringDataGeneratedChartData": 0, "EngineeringDataCurveFit": 0, "EngineeringDataFavoriteItems": 0, "Geometry": 6838, "Model": 7464, "Setup": 0, "Solution": 0, "Results": 0}</last-update-regen-times>
       <unique-system-dir valType="String">SYS-3</unique-system-dir>
