@@ -13,7 +13,7 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 ![Firmware](https://img.shields.io/badge/MCU-RP2040%20%C3%974-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-![APEX render in the field](Photos/APEX_in_field.png)
+![APEX render in the field](Photos/APEX_in_field.jpg)
  
 ---
 
@@ -31,6 +31,23 @@ APEX is designed to walk across varied outdoor terrain using real-time inverse k
 - **Per-Motor Current Sensing** — every motor driver's current is read and shown live on the dashboard; a mid-swing spike is treated as an early foot touchdown and triggers recovery
 
 For how all of this works, see **[TECHNICAL.md](TECHNICAL.md)**.
+
+---
+
+## Gallery
+
+<table>
+  <tr>
+    <td align="center"><img src="Photos/APEX_isometric_view.jpg" width="400" alt="APEX isometric view"><br>Isometric</td>
+    <td align="center"><img src="Photos/APEX_front_view.jpg" width="400" alt="APEX front view"><br>Front</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="Photos/APEX_side_view.jpg" width="400" alt="APEX side view"><br>Side</td>
+    <td align="center"><img src="Photos/APEX_top_view.jpg" width="400" alt="APEX top view"><br>Top</td>
+  </tr>
+</table>
+
+More renders are in [Photos/](Photos/).
 
 ---
  
@@ -124,7 +141,7 @@ APEX/
 │   └── Pico/            # RP2040 MicroPython firmware (one copy runs on every leg)
 ├── CAD/                 # Fusion 360 leg and body models, PCB V1 design and Gerber files
 ├── ANSYS FEA/           # ANSYS Workbench structural rigidity analyses of components
-├── Photos/              # Build photos
+├── Photos/              # CAD renders
 ├── README.md            # This file
 ├── TECHNICAL.md         # How it works: architecture, protocol, gait, control loop, vision, dashboard
 ├── HARDWARE.md          # Pi 5 buses and pins, config.txt, OLED, Pico boards, speaker
