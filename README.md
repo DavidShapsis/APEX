@@ -59,7 +59,7 @@ For the full, up-to-date bill of materials, see the [APEX BOM on Google Sheets](
  
 ## Getting Started
  
-> Full setup instructions are a work in progress. The notes below are enough to get running.
+> Full setup instructions are a work in progress.
  
 ### Pi 5 Requirements
  
