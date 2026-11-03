@@ -2,9 +2,9 @@
  
 ---
  
-# A.P.E.X. — **A**utonomous **P**recision **Ex**ploration
+# **A**.**P**.**E**.**X**. — **A**utonomous **P**recision **Ex**ploration
  
-A fully custom-built quadruped robot dog designed and coded from scratch.
+APEX is a fully custom-built quadruped robot dog designed and coded from scratch.
 
 APEX is designed to walk across varied outdoor terrain using real-time inverse kinematics, stay balanced using an IMU, navigate to GPS waypoints autonomously, and stream live camera footage back to any device over WiFi. Onboard ML-based obstacle avoidance is built and awaiting tuning on the hardware, for fully autonomous terrain exploration.
  
@@ -173,7 +173,7 @@ Questions or inquiries: [apex.quadrupedalrobot@gmail.com](mailto:apex.quadrupeda
 ---
 
 ## License
- 
+
 MIT
  
 ---
