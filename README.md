@@ -107,6 +107,14 @@ Flash each Pico with MicroPython, then copy the contents of `Code/Pico/` to the 
  
 ---
  
+## iOS App
+
+The new [`iOS App/`](iOS%20App/) folder holds **APEX Mission Control**, a native SwiftUI app for controlling the robot from an iPhone. It talks to the same Flask server as the web dashboard and covers driving with the live camera feed, homing / stand / go / stop, GPS route editing on a map, obstacle avoidance, subsystem health and motor currents.
+
+More details, and a guide to installing it on your own phone, are coming soon.
+
+---
+
 ## Project Status
  
 | Component | Status |
@@ -142,6 +150,7 @@ APEX/
 ├── CAD/                 # Fusion 360 leg and body models, PCB V1 design and Gerber files
 ├── ANSYS FEA/           # ANSYS Workbench structural rigidity analyses of components
 ├── Photos/              # CAD renders
+├── iOS App/             # SwiftUI Mission Control app for iPhone
 ├── README.md            # This file
 ├── TECHNICAL.md         # How it works: architecture, protocol, gait, control loop, vision, dashboard
 ├── HARDWARE.md          # Pi 5 buses and pins, config.txt, OLED, Pico boards, speaker
