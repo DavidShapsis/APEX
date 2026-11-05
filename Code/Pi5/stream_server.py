@@ -35,6 +35,8 @@ class RobodogStreamer(Node):
         self.host = host
         self.port = port
         self.output_frame = None
+        self.frame_seq = 0          # bumps on every new camera frame
+        self.frame_time = 0.0       # time.monotonic() of the newest frame
         self.lock = threading.Lock()
 
         self.current_direction = 0
@@ -247,7 +249,11 @@ class RobodogStreamer(Node):
         return jsonify({"ok": True})
 
     def status(self):
-        return jsonify(self.homing_status)
+        # frame_age lets the dashboard tell a dead camera from a dropped stream.
+        with self.lock:
+            t = self.frame_time
+        age = round(time.monotonic() - t, 2) if t else None
+        return jsonify(dict(self.homing_status, frame_age=age))
 
     def get_waypoints(self):
         """The browser's working copy of the route. Sent on page load so a
@@ -284,15 +290,24 @@ class RobodogStreamer(Node):
     def update_frame(self, frame):
         with self.lock:
             self.output_frame = frame
+            self.frame_seq += 1
+            self.frame_time = time.monotonic()
 
     def generate(self):
+        # Only send NEW frames. The old loop re-encoded the last frame forever,
+        # so a dead camera looked like a live (frozen) feed with no error.
+        last_seq = -1
         while True:
             with self.lock:
-                if self.output_frame is not None:
-                    (flag, encodedImage) = cv2.imencode(".jpg", self.output_frame)
-                    if flag:
-                        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
-            time.sleep(0.03)
+                frame, seq = self.output_frame, self.frame_seq
+            if frame is None or seq == last_seq:
+                time.sleep(0.01)
+                continue
+            last_seq = seq
+            # Encode outside the lock so a slow client cannot stall update_frame.
+            flag, jpg = cv2.imencode(".jpg", frame)
+            if flag:
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpg.tobytes() + b'\r\n')
 
     def video_feed(self):
         return Response(self.generate(), mimetype='multipart/x-mixed-replace; boundary=frame')

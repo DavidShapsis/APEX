@@ -147,7 +147,13 @@ _PAGE = """
             border: 1px solid var(--apex-line); border-radius: 10px;
             background: #000; overflow: hidden; line-height: 0;
         }
+        .feed-frame { position: relative; }
         .feed-frame img { width: 100%; display: block; }
+        .feed-stale {
+            display: none; position: absolute; top: .5rem; left: .5rem;
+            background: #b00020; color: #fff; font-size: .8rem; line-height: 1.4;
+            padding: .2rem .5rem; border-radius: 6px;
+        }
 
         /* ---- buttons ------------------------------------------------------- */
         .btn-row { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; }
@@ -464,8 +470,20 @@ _PAGE = """
             sats.classList.toggle('na', !g.sats);
             sats.innerText = g.sats;
         }
+        // An MJPEG <img> never reconnects by itself: after a Wi-Fi blip it just
+        // keeps showing its last frame. Reopen it whenever /status comes back
+        // after failing, or when the Pi has fresh frames but we were stale.
+        let statusDown = false, feedStale = false;
+        function reconnectFeed() {
+            document.getElementById('feedImg').src = '/video_feed?t=' + Date.now();
+        }
         function refreshStatus() {
             fetch('/status').then(r => r.json()).then(s => {
+                if (statusDown) { statusDown = false; reconnectFeed(); }
+                const stale = s.frame_age === null || s.frame_age === undefined || s.frame_age > 2;
+                if (feedStale && !stale) reconnectFeed();
+                feedStale = stale;
+                document.getElementById('feedStale').style.display = stale ? 'block' : 'none';
                 const nHomed = s.homed.filter(v => v === 1).length;
                 const allHomed = nHomed === 4;
                 LEG_NAMES.forEach((name, i) => {
@@ -570,7 +588,7 @@ _PAGE = """
                           s.avoid_steer + '° · stride ' + s.avoid_stride + '%</span>'
                         : 'off — steering is unmodified';
                 }
-            }).catch(() => {});
+            }).catch(() => { statusDown = true; });
         }
         // ---- GPS route editor ---------------------------------------
         // WP is the browser's working copy: [[lat, lon], ...] as strings while
@@ -691,7 +709,8 @@ _PAGE = """
         <div class="apex-card">
             <h3 class="card-head">Live Feed</h3>
             <div class="feed-frame">
-                <img src='/video_feed' alt="camera feed">
+                <img id="feedImg" src='/video_feed' alt="camera feed">
+                <div id="feedStale" class="feed-stale">CAMERA STALE</div>
             </div>
         </div>
 

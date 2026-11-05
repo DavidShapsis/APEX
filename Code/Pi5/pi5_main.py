@@ -1218,20 +1218,47 @@ def main():
         disp.line("Avoidance      no lib")
 
     def camera_loop():
+        nonlocal cam
         if cam is None:
             return          # no camera this boot -- nothing to stream
+        misses = 0
         while rclpy.ok():
-            frame = cam.get_frame()
-            if frame is not None:
-                if avoider is not None:
-                    avoider.submit_frame(frame)
-                    # Draw the costmap onto the dashboard feed whenever
-                    # avoidance is on, so the ROI and threshold can actually be
-                    # tuned by looking at the robot instead of guessing.
-                    # annotate() copies only when it has something to draw.
-                    if controller.avoid_enabled:
-                        frame = avoider.annotate(frame)
-                streamer.update_frame(frame)
+            try:
+                frame = cam.get_frame()
+                if frame is None:
+                    # USB cameras can wedge or re-enumerate (brownout, cable
+                    # bump). Before, this spun forever on None and the feed
+                    # froze on the last good frame. Reopen after ~2 s of misses.
+                    misses += 1
+                    if misses >= 60:
+                        print("[CAM] no frames for ~2 s, reopening camera")
+                        controller.subsystem_health["camera"] = False
+                        try:
+                            cam.release()
+                        except Exception:
+                            pass
+                        try:
+                            cam = USBWebcam()
+                            controller.subsystem_health["camera"] = True
+                        except Exception as e:
+                            print(f"[CAM] reopen failed: {e}")
+                            time.sleep(1.0)
+                        misses = 0
+                else:
+                    misses = 0
+                    if avoider is not None:
+                        avoider.submit_frame(frame)
+                        # Draw the costmap onto the dashboard feed whenever
+                        # avoidance is on, so the ROI and threshold can actually be
+                        # tuned by looking at the robot instead of guessing.
+                        # annotate() copies only when it has something to draw.
+                        if controller.avoid_enabled:
+                            frame = avoider.annotate(frame)
+                    streamer.update_frame(frame)
+            except Exception as e:
+                # An exception used to kill this thread silently and freeze the feed.
+                print(f"[CAM] camera_loop error: {e!r}")
+                time.sleep(0.5)
             time.sleep(0.03)
 
     streamer.run()
