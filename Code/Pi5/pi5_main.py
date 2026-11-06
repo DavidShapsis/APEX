@@ -1370,8 +1370,10 @@ def main():
                 # Live health: a sensor fine at boot but no longer reading
                 # should light the dashboard degrade banner, not just print.
                 controller.subsystem_health['compass'] = (compass is not None) and not heading_stale
-                if gps is not None and fix_stale:
-                    controller.subsystem_health['gps'] = False
+                if gps is not None:
+                    # Recovers on its own: down only while a fix we once had
+                    # has gone quiet, up again as soon as it returns.
+                    controller.subsystem_health['gps'] = not fix_stale
 
                 if nav_s["heading"] is not None and nav_s["heading_t"] != last_heading_t:
                     last_heading_t = nav_s["heading_t"]
