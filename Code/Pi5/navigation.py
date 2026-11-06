@@ -82,9 +82,12 @@ class GPSReader:
         return round(decimal_degrees, 8)
 
 class CompassReader:
-    # QMC5883L status register (0x06) bits.
+    # Status register bits (0x06 on the QMC5883L, 0x09 on the QMC5883P).
     _STATUS_DRDY = 0x01
     _STATUS_OVL = 0x02      # any axis saturated -> the reading is pinned garbage
+    _ADDR_L = 0x0D          # QMC5883L
+    _ADDR_P = 0x2C          # QMC5883P
+    _P_CHIP_ID = 0x80       # QMC5883P register 0x00
 
     def __init__(self, sda_pin, scl_pin, explicit_bus_id=None, declination_deg=0.0):
         """
@@ -102,15 +105,34 @@ class CompassReader:
             self.bus_id = 1 if sda_pin == 2 else 0
 
         self.bus = SMBus(self.bus_id)
-        self.addr = 0x0D
         self.declination_deg = declination_deg
         self.configured = False
+        # Two different chips are sold as "QMC5883" and both turn up inside
+        # GPS modules: the QMC5883L (address 0x0D) and the QMC5883P (address
+        # 0x2C, chip ID 0x80 in register 0x00). Their register maps differ, so
+        # probe for the P first and fall back to the L.
+        self.chip = 'L'
+        self.addr = self._ADDR_L
         try:
-            self.bus.write_byte_data(self.addr, 0x0A, 0x80)   # soft reset
-            time.sleep(0.01)
-            self.bus.write_byte_data(self.addr, 0x0B, 0x01)   # SET/RESET period (recommended)
-            # 0x1D = OSR 512 | RNG 8G | ODR 200Hz | continuous
-            self.bus.write_byte_data(self.addr, 0x09, 0x1D)
+            if self.bus.read_byte_data(self._ADDR_P, 0x00) == self._P_CHIP_ID:
+                self.chip, self.addr = 'P', self._ADDR_P
+        except OSError:
+            pass
+        try:
+            if self.chip == 'P':
+                self.bus.write_byte_data(self.addr, 0x0B, 0x80)   # soft reset
+                time.sleep(0.01)
+                self.bus.write_byte_data(self.addr, 0x29, 0x06)   # axis sign definition
+                # 0x08 = SET/RESET on | range +/-8 G
+                self.bus.write_byte_data(self.addr, 0x0B, 0x08)
+                # 0x0F = OSR2 1 | OSR1 8 | ODR 200 Hz | continuous
+                self.bus.write_byte_data(self.addr, 0x0A, 0x0F)
+            else:
+                self.bus.write_byte_data(self.addr, 0x0A, 0x80)   # soft reset
+                time.sleep(0.01)
+                self.bus.write_byte_data(self.addr, 0x0B, 0x01)   # SET/RESET period (recommended)
+                # 0x1D = OSR 512 | RNG 8G | ODR 200Hz | continuous
+                self.bus.write_byte_data(self.addr, 0x09, 0x1D)
             self.configured = True
         except OSError as e:
             # Raise, don't just print: pi5_main's _bring_up() turns this into
@@ -132,16 +154,10 @@ class CompassReader:
         z down, roll about x, pitch about y -- verify the signs if a bench
         heading check ever shows the turn direction inverted.
         """
-        try:
-            data = self.bus.read_i2c_block_data(self.addr, 0x00, 7)
-        except OSError:
+        sample = self._read_xyz()
+        if sample is None:
             return None
-
-        if data[6] & self._STATUS_OVL:
-            return None
-        x = self._convert(data[0], data[1])
-        y = self._convert(data[2], data[3])
-        z = self._convert(data[4], data[5])
+        x, y, z = sample
         if (x, y, z) in ((0, 0, 0), (-1, -1, -1)):
             # all 0x0000 or all 0xFFFF -> chip not really answering
             return None
@@ -157,6 +173,25 @@ class CompassReader:
         yh = y * cr - z * sr
         heading = math.degrees(math.atan2(yh, xh))
         return (heading + self.declination_deg + 360.0) % 360.0
+
+    def _read_xyz(self):
+        """Raw (x, y, z) counts, or None on an I2C error or an overflowed
+        sample. The two chips keep their data and status registers in
+        different places; both report overflow in status bit 1."""
+        try:
+            if self.chip == 'P':
+                data = self.bus.read_i2c_block_data(self.addr, 0x01, 6)
+                status = self.bus.read_byte_data(self.addr, 0x09)
+            else:
+                block = self.bus.read_i2c_block_data(self.addr, 0x00, 7)
+                data, status = block[:6], block[6]
+        except OSError:
+            return None
+        if status & self._STATUS_OVL:
+            return None
+        return (self._convert(data[0], data[1]),
+                self._convert(data[2], data[3]),
+                self._convert(data[4], data[5]))
 
     def _convert(self, lsb, msb):
         val = lsb | (msb << 8)
