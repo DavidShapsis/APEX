@@ -121,9 +121,14 @@ class CompassReader:
         try:
             if self.chip == 'P':
                 self.bus.write_byte_data(self.addr, 0x0B, 0x80)   # soft reset
-                time.sleep(0.01)
+                time.sleep(0.05)
+                # The reset bit does not clear itself: the chip stays in reset
+                # and drops every other write until it is cleared. Without
+                # this the range and axis-sign writes below were silently lost.
+                self.bus.write_byte_data(self.addr, 0x0B, 0x00)
+                time.sleep(0.05)
                 self.bus.write_byte_data(self.addr, 0x29, 0x06)   # axis sign definition
-                # 0x08 = SET/RESET on | range +/-8 G
+                # 0x08 = range +/-8 G (3750 counts per gauss)
                 self.bus.write_byte_data(self.addr, 0x0B, 0x08)
                 # 0x0F = OSR2 1 | OSR1 8 | ODR 200 Hz | continuous
                 self.bus.write_byte_data(self.addr, 0x0A, 0x0F)
