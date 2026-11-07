@@ -38,7 +38,7 @@ Team does not offer.
 |----------|----------|
 | Drive    | Status pills, banners, live MJPEG feed (corner button for full screen with controls), Snapshot and Record buttons that save to Photos, steering, Home x4 / Stand / Go / Stop |
 | Navigate | Robot GPS, route map (opens on the robot; Fit centers on it; Track follows it and rotates the map to its compass heading; tap to add waypoints), NAV MODE Start / Pause / Stop, route editor |
-| Systems  | Obstacle avoidance, subsystem health, motor currents, leg deactivation |
+| Systems  | Sensor Readout (all of `/api/state`: INA226 Pi 5 V rail current/voltage/power, GPS, subsystems, robot, navigation, legs), obstacle avoidance, subsystem health, motor currents, leg deactivation |
 | Settings | Robot address (default `apex.local`), connection details, icon toggle (A.P.E.X. logo or robot render), open web dashboard in your browser |
 
 ## Files
@@ -47,6 +47,7 @@ Team does not offer.
 |------|------|
 | `ApexClient.swift` | HTTP calls to every Flask route |
 | `Models.swift` | `ApexStatus` from `/status`, waypoint drafts, avoidance states |
+| `StateModels.swift` | `ApexState` from `/api/state` (all fields optional) |
 | `RobotStore.swift` | 1 s status polling, commands, steering coalescing, route editor |
 | `MJPEGStream.swift` | Pulls `/video_feed` and cuts JPEG frames out of the stream |
 | `LocationProvider.swift` | One-shot phone location for the "Me" waypoint button |

@@ -63,6 +63,13 @@ struct ApexClient: Sendable {
         return try JSONDecoder().decode(ApexStatus.self, from: data)
     }
 
+    /// GET /api/state (schema 1). Throws ApexError.http(404) if the Pi has no such route yet.
+    func state() async throws -> ApexState {
+        let (data, response) = try await session.data(from: url("/api/state"))
+        try Self.check(response)
+        return try JSONDecoder().decode(ApexState.self, from: data)
+    }
+
     func waypoints() async throws -> [[Double]] {
         struct Body: Decodable { let waypoints: [[Double]] }
         let (data, response) = try await session.data(from: url("/waypoints"))

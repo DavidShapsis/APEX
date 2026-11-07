@@ -23,6 +23,8 @@
 		B0000000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000000E /* Assets.xcassets */; };
 		B00000000000000000000010 /* Capture.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000010 /* Capture.swift */; };
 		B00000000000000000000012 /* SettingsOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000012 /* SettingsOpener.swift */; };
+		B00000000000000000000013 /* StateModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000013 /* StateModels.swift */; };
+		B00000000000000000000014 /* SensorsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000014 /* SensorsCard.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +46,8 @@
 		F0000000000000000000000F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		F00000000000000000000010 /* Capture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Capture.swift; sourceTree = "<group>"; };
 		F00000000000000000000012 /* SettingsOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsOpener.swift; sourceTree = "<group>"; };
+		F00000000000000000000013 /* StateModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateModels.swift; sourceTree = "<group>"; };
+		F00000000000000000000014 /* SensorsCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorsCard.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -87,6 +91,7 @@
 				F00000000000000000000007 /* Theme.swift */,
 				F00000000000000000000010 /* Capture.swift */,
 				F00000000000000000000012 /* SettingsOpener.swift */,
+				F00000000000000000000013 /* StateModels.swift */,
 				F0000000000000000000000E /* Assets.xcassets */,
 			);
 			path = APEX;
@@ -100,6 +105,7 @@
 				F0000000000000000000000A /* DriveView.swift */,
 				F0000000000000000000000B /* NavigateView.swift */,
 				F0000000000000000000000C /* SystemsView.swift */,
+				F00000000000000000000014 /* SensorsCard.swift */,
 				F0000000000000000000000D /* SettingsView.swift */,
 			);
 			path = Views;
@@ -183,6 +189,8 @@
 				B00000000000000000000007 /* Theme.swift in Sources */,
 				B00000000000000000000010 /* Capture.swift in Sources */,
 				B00000000000000000000012 /* SettingsOpener.swift in Sources */,
+				B00000000000000000000013 /* StateModels.swift in Sources */,
+				B00000000000000000000014 /* SensorsCard.swift in Sources */,
 				B00000000000000000000008 /* ContentView.swift in Sources */,
 				B00000000000000000000009 /* FeedView.swift in Sources */,
 				B0000000000000000000000A /* DriveView.swift in Sources */,
@@ -261,7 +269,7 @@
 				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIconRobot;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
@@ -295,7 +303,7 @@
 				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIconRobot;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;

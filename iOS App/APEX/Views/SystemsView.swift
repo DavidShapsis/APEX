@@ -4,6 +4,7 @@ import SwiftUI
 struct SystemsView: View {
     var body: some View {
         ApexScreen("Systems") {
+            SensorsCard()
             AvoidanceCard()
             HealthCard()
             CurrentsCard()

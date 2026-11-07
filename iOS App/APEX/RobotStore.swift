@@ -17,6 +17,10 @@ final class RobotStore {
     private(set) var lastUpdate: Date?
     private(set) var lastError: String?
 
+    /// Latest /api/state, and whether the Pi answered 404 (route not installed yet).
+    private(set) var state: ApexState?
+    private(set) var stateMissing = false
+
     let feed: MJPEGStream
     let capture: CaptureController
 
@@ -105,6 +109,8 @@ final class RobotStore {
         UserDefaults.standard.set(value, forKey: Self.hostKey)
         hostCandidates = Self.makeCandidates(for: value)
         status = ApexStatus()
+        state = nil
+        stateMissing = false
         connection = .connecting
         lastUpdate = nil
         failures = 0
@@ -160,6 +166,7 @@ final class RobotStore {
                 }
             }
             if !waypointsLoaded { await loadWaypoints() }
+            await refreshState(client)
         } catch {
             guard client.baseURL == self.client?.baseURL else { return }
             failures += 1
@@ -172,6 +179,21 @@ final class RobotStore {
                     useCandidate((candidateIndex + 1) % hostCandidates.count)
                 }
             }
+        }
+    }
+
+    /// Sensor readout. Failure here never affects the connection light.
+    private func refreshState(_ client: ApexClient) async {
+        do {
+            let s = try await client.state()
+            guard client.baseURL == self.client?.baseURL else { return }
+            state = s
+            stateMissing = false
+        } catch ApexError.http(404) {
+            stateMissing = true
+            state = nil
+        } catch {
+            // Keep the last values; the next poll retries.
         }
     }
 
