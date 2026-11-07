@@ -478,14 +478,14 @@ _PAGE = """
             document.getElementById('feedImg').src = '/video_feed?t=' + Date.now();
         }
         function renderPower(p) {
-            const el = document.getElementById('pwrLine');
+            const el = document.getElementById('pillPower');
             if (!el) return;
             if (!p || !p.valid || p.amps === null) {
-                el.innerText = 'Robot current: --';
+                el.innerText = '5V --';
                 return;
             }
-            el.innerText = 'Robot current: ' + p.amps.toFixed(2) + ' A'
-                + (p.volts > 0.5 ? '  (' + p.volts.toFixed(2) + ' V)' : '');
+            el.innerText = '5V ' + p.amps.toFixed(2) + ' A'
+                + (p.volts > 0.5 ? ' ' + p.volts.toFixed(2) + ' V' : '');
         }
         function refreshStatus() {
             fetch('/status').then(r => r.json()).then(s => {
@@ -712,6 +712,7 @@ _PAGE = """
             <span class="pill" id="pillHomed">HOMED 0/4</span>
             <span class="pill" id="pillStand">STANDING</span>
             <span class="pill" id="pillWalk">WALKING</span>
+            <span class="pill" id="pillPower">5V --</span>
         </div>
     </header>
 
@@ -865,7 +866,6 @@ _PAGE = """
                     <span class="nav-sec-chip" id="curChip">0/4 LEGS</span>
                 </button>
                 <div class="nav-sec-body">
-                    <div id="pwrLine" style="margin-bottom:.5rem">Robot current: --</div>
                     <div class="info" id="i_current">Live current per motor, read from each
                         BTS7960's current-sense outputs, shown as
                         <b>right&nbsp;side&nbsp;/&nbsp;left&nbsp;side</b> of the driver (RPWM /
