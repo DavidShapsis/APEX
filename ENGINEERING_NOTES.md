@@ -21,7 +21,6 @@ The two-minute version. Full detail is one click away on each line.
 - **[Calibrate `TOUCHDOWN_AMPS`](#ground-contact-current-sensing-replaced-the-fsr)** — the current-based touchdown abort ships with 3.0 A placeholders; too low aborts mid-walk, too high misses touchdowns.
 - **[Verify the `reverse` flags during an actual turn](#set-the-left-right-reverse-flags-now-matters-for-turning-verify-it)** — wrong polarity here now steers the wrong way, not just at boot.
 - **[PID `kp = 0.8` still needs bench tuning](#pid-kp-still-needs-bench-tuning-windup-ruled-out-kd-fixed)** — simulation favors a softer gain, but the sim has no gravity or load to fight.
-- **[Confirm which rail the INA219 is on](#low-voltage-alarm-threshold-may-be-unreachable-check-which-rail-the-ina219-is-on)** — the low-voltage alarm may be watching a rail that never drops.
 - **[IK clamps unreachable targets silently](#ik-clamps-unreachable-targets-silently)** — a bad command doesn't error, it just quietly clips.
 - **[Obstacle avoidance has never run on real hardware](#obstacle-avoidance-built-and-simulated-never-run-on-hardware)** — simulated and unit-tested only; tune thresholds on the bench first.
 - **[Compass hard/soft-iron calibration still isn't done](#compass-declination-tilt-now-handled-hard-soft-iron-calibration-still-not)** — declination and tilt compensation are in, calibration against local magnetic interference is not.
@@ -76,13 +75,13 @@ The two-minute version. Full detail is one click away on each line.
   - [RESOLVED — mission end now holds position; route is editable from the dashboard](#resolved-mission-end-now-holds-position-route-is-editable-from-the-dashboard)
   - [RESOLVED — blocking sensor reads moved off the control loop](#resolved-blocking-sensor-reads-moved-off-the-control-loop)
   - [RESOLVED — IMU stabilization is now differential, not a common offset](#resolved-imu-stabilization-is-now-differential-not-a-common-offset)
-  - [Low-voltage alarm threshold may be unreachable — check which rail the INA219 is on](#low-voltage-alarm-threshold-may-be-unreachable-check-which-rail-the-ina219-is-on)
+  - [RESOLVED — power monitor is an INA226 on the 5 V rail](#low-voltage-alarm-threshold-may-be-unreachable-check-which-rail-the-ina219-is-on)
   - [RESOLVED — an out-of-range target left the motor at its last duty](#resolved-an-out-of-range-target-left-the-motor-at-its-last-duty)
   - [Compass: declination + tilt now handled; hard/soft-iron calibration still not](#compass-declination-tilt-now-handled-hard-soft-iron-calibration-still-not)
   - [RESOLVED — autonomous nav no longer drives on a dead sensor](#resolved-autonomous-nav-no-longer-drives-on-a-dead-sensor)
   - [RESOLVED — a camera that fails to open no longer reads as healthy](#resolved-a-camera-that-fails-to-open-no-longer-reads-as-healthy)
   - [RESOLVED — `port_by_leg` mutated without the serial lock](#resolved-port-by-leg-mutated-without-the-serial-lock)
-  - [INA219 — voltage-only for now; confirm the wiring](#ina219-voltage-only-for-now-confirm-the-wiring)
+  - [RESOLVED — INA226 current reading](#ina219-voltage-only-for-now-confirm-the-wiring)
   - [RESOLVED — two repo files could not run at all](#resolved-two-repo-files-could-not-run-at-all)
   - [RESOLVED — Pico PID state was not reset when drive is cut](#resolved-pico-pid-state-was-not-reset-when-drive-is-cut)
   - [RESOLVED — `fsr.py` interrupt helpers could not both be used](#resolved-fsr-py-interrupt-helpers-could-not-both-be-used)
@@ -1325,13 +1324,13 @@ mission end is no longer one of the things that needs it.
 <a id="resolved-blocking-sensor-reads-moved-off-the-control-loop"></a>
 ### RESOLVED — blocking sensor reads moved off the control loop
 The `while rclpy.ok()` loop in `pi5_main.main()` used to call `imu.update()`,
-`compass.get_heading()` and (once a second) the INA219 reads **inline, every
+`compass.get_heading()` and (once a second) the power-monitor reads **inline, every
 iteration**. Those are synchronous I2C transactions — a few ms on a healthy bus,
 but on a NAKing or wedged bus the kernel blocks for its I2C timeout, and while it
 blocked so did steering resends, the IMU reflex and the avoidance stride command.
 
 `sensor_hub.SensorHub` now runs one poller thread per sensor (IMU 50 Hz, GPS +
-compass 10 Hz, INA219 1 Hz); each thread owns its hardware object exclusively and
+compass 10 Hz, INA226 1 Hz); each thread owns its hardware object exclusively and
 publishes into a lock-protected snapshot. The loop reads `imu_snapshot()` /
 `nav_snapshot()` / `power_snapshot()` — dict copies, never hardware — each with a
 staleness cutoff, so a dead or hung sensor degrades to the safe default (flat
@@ -1380,26 +1379,19 @@ correction will actively tip the robot the wrong way — check this on the bench
 before trusting it, ideally with the robot held up off the ground first.**
 
 <a id="low-voltage-alarm-threshold-may-be-unreachable-check-which-rail-the-ina219-is-on"></a>
-### Low-voltage alarm threshold may be unreachable — check which rail the INA219 is on
+### RESOLVED — power monitor is an INA226 on the 5 V rail
 
-`pi5_main.LOW_VOLT_THRESHOLD = 4.75` V, compared against `INA219.get_voltage()`.
-That is a sensible undervoltage trip for a **5 V regulated rail**, but the BOM
-and README describe the INA219 as *battery* telemetry, and the electronics pack
-is a **2S LiHV** — roughly 8.7 V full to 6.0 V empty. If it is wired across that
-battery, 4.75 V is below fully-flat and `low_battery.wav` can never play; the
-alarm is dead code. Decide which it is and set the threshold to match (~6.4 V
-for a 2S pack, or leave 4.75 if it really is on the 5 V rail).
+The board is a TI INA226 (2 mΩ shunt, marked R002) on the **5 V regulated
+rail**, not an INA219 on the battery. `power_monitor.INA226` checks the
+manufacturer and die IDs at start-up (so a wrong chip raises and boot reports
+Power FAIL) and scales voltage (1.25 mV/LSB) and shunt current (2.5 µV/LSB over
+2 mΩ) itself; `INA219` is kept as an alias for the import in `pi5_main`. The old
+INA219 scaling read the wrong voltage on this chip.
 
-There is no longer a current side to this alarm — `MAX_CURRENT_MA` was removed
-and the check is voltage-only, because it is unconfirmed whether a shunt is even
-in the load path. See *INA219 — voltage-only for now* below for the full state.
-Either way this is on the *electronics* supply — nothing monitors the 3S motor
-pack, which is the one that actually gets hammered.
-
-Verified correct while checking this, so it does not need re-deriving: config
-word `0x399F` decodes to 32 V range / ±320 mV / 12-bit / continuous, calibration
-2048 gives a 0.2 mA current LSB matching `raw * 0.2`, and the power LSB is 20×
-that, matching `raw * 4.0` mW.
+`LOW_VOLT_THRESHOLD = 4.75` V is therefore correct: it trips on regulator sag.
+It is not a battery alarm, and nothing monitors the 3S motor pack. Still worth a
+bench check of `SHUNT_OHMS` (shunt mV against a known load) before trusting the
+current figure.
 
 <a id="resolved-an-out-of-range-target-left-the-motor-at-its-last-duty"></a>
 ### RESOLVED — an out-of-range target left the motor at its last duty
@@ -1434,7 +1426,7 @@ Fixed:
   byte-identical to the old `atan2(y, x)`, so there is no regression when level;
   it only removes the per-stride heading wobble when the body tilts.
 - **Bad-sample rejection.** Returns `None` (not `0.0`, and not a garbage angle)
-  on I2C `OSError`, on the QMC5883L overflow bit, and on an all-`0x0000` /
+  on I2C `OSError`, on the QMC5883 overflow bit, and on an all-`0x0000` /
   all-`0xFFFF` block. Init does a soft reset first and records `configured`.
 - **Frozen-heading detection.** `nav_snapshot()` exposes `heading_age` (time
   since the last *good* read — the shared nav poller keeps ticking on GPS alone,
@@ -1500,27 +1492,12 @@ Both sides are under `serial_lock` now, matching what `handle_recovery` and
 `request_stop` already did.
 
 <a id="ina219-voltage-only-for-now-confirm-the-wiring"></a>
-### INA219 — voltage-only for now; confirm the wiring
+### RESOLVED — INA226 current reading
 
-**Needs a bench check on the actual board.** Two unknowns:
-
-1. **What VIN− senses.** `LOW_VOLT_THRESHOLD = 4.75 V` in `pi5_main` suits the
-   5 V regulated rail (warn when the buck sags). If VIN− is on the 2S pack
-   instead (~6.0–8.4 V LiPo / 6.6–8.7 V LiHV) the alarm can never fire and the
-   threshold should be ~6.2–6.6 V. There's a `TODO(hardware)` on the constant.
-2. **Whether a shunt is in the load path** across VIN+/VIN−. If the board is
-   wired as a plain voltmeter (VIN+/VIN− bridged), `get_current()` /
-   `get_power()` are meaningless.
-
-Current state: **only `get_voltage()` is used.** `sensor_hub._power_poll` no
-longer calls `get_current()` (it stores `None`), and the `pi5_main` power check
-is voltage-only. `INA219.get_current()` / `get_power()` are kept intact but
-uncalled — once the shunt path is confirmed, re-enable the one line in
-`_power_poll` and restore the current check in `pi5_main`. The config register
-(`0x399F` + cal `2048`) assumes ±320 mV / 0.1 Ω = ±3.2 A FSR, so if the INA219
-turns out to be on a motor rail that draws more, the current reading would pin
-and the (unchecked) overflow bit would set — another reason to verify before
-trusting it.
+`get_current()` / `get_power()` now work: the INA226 shunt is in the 5 V load
+path, `sensor_hub._power_poll` reads both voltage and current at 1 Hz, and the
+dashboard shows the rail current in the `5V` pill. The alarm stays voltage-only.
+The old ±3.2 A / 0.1 Ω INA219 calibration notes no longer apply.
 
 <a id="resolved-two-repo-files-could-not-run-at-all"></a>
 ### RESOLVED — two repo files could not run at all
@@ -1788,9 +1765,9 @@ removed. The bus map is now one device per bus, apart from the two that share:
 |---|---|---|
 | I2C0 | 27 / 28 | BNO085 IMU (`bus_id=0`) |
 | I2C1 | 3 / 5 | OLED |
-| I2C3 | 15 / 16 | compass (`explicit_bus_id=3`) + INA219 |
+| I2C3 | 15 / 16 | compass (`explicit_bus_id=3`) + INA226 |
 
-The compass is the QMC5883L built into the HGLRC M100 GPS (its SDA/SCL leads;
+The compass is the QMC5883P (0x2C; the driver also handles a QMC5883L at 0x0D) built into the HGLRC M100 GPS (its SDA/SCL leads;
 the GPS itself stays on TX/RX through the USB‑TTL adapter). It used to be
 pointed at I2C1 by inference from `sda_pin=2`. Full pin table and the
 config.txt lines are in `HARDWARE.md`.
@@ -1799,7 +1776,7 @@ config.txt lines are in `HARDWARE.md`.
 raises, and three constructors swallowed their errors:
 
 - `CompassReader` printed "Compass not found" and returned normally.
-- `INA219` printed the error and set `available = False`, after which
+- `INA219` (now `INA226`) printed the error and set `available = False`, after which
   `get_voltage()` returned a made-up 5.0 V — so the low-voltage alarm could
   never fire, and the dashboard showed power as healthy.
 - `QuadrupedAudio` called `bluetoothctl connect`, which does not exist inside

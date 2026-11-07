@@ -2,7 +2,7 @@
 sensor_hub.py -- keeps blocking sensor I/O off the 100 Hz control loop.
 
 pi5_main's control loop used to call imu.update(), compass.get_heading() and
-the INA219 reads inline, every iteration. Those are synchronous I2C
+the INA226 reads inline, every iteration. Those are synchronous I2C
 transactions: on a healthy bus they cost a few ms, but on a NAKing or wedged
 bus the kernel blocks for its I2C timeout -- and while it blocks, steering
 resends, the IMU reflex and the avoidance stride command all wait with it.
@@ -30,9 +30,9 @@ import time
 
 # Per-sensor default poll rates (Hz). The IMU feeds gait levelling, which only
 # rebuilds the gait on a > 1.5 deg attitude change, so 50 Hz is already
-# generous; the QMC5883L runs at 200 Hz ODR internally so 10 Hz here always
+# generous; the QMC5883 runs at 200 Hz ODR internally so 10 Hz here always
 # gets a fresh sample, and the GPS emits at 1 Hz;
-# the INA219 battery check runs once a second in the loop.
+# the INA226 power check runs once a second in the loop.
 IMU_HZ = 50.0
 NAV_HZ = 10.0
 POWER_HZ = 1.0

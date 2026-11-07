@@ -13,7 +13,7 @@
 
 # --- core control loop -------------------------------------------------------
 pyserial>=3.5            # UART to the leg Picos, and the GPS module
-smbus2>=0.4              # I2C for the INA219 power monitor and the QMC5883 compass
+smbus2>=0.4              # I2C for the INA226 power monitor and the QMC5883 compass
 
 # --- IMU (BNO085) ----------------------------------------------------------
 adafruit-circuitpython-bno08x>=1.1

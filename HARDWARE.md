@@ -33,16 +33,16 @@ pip install luma.oled        # pulls in luma.core + pillow
 
 ## What's already used on the header
 
-Each I2C device has a bus of its own except the compass and INA219, which share
+Each I2C device has a bus of its own except the compass and INA226, which share
 I2C3 (no address clash). Derived from the code (`IMU`, `CompassReader`,
-`INA219`, `BootDisplay`, `pi5_main.pico_ports`).
+`INA226`, `BootDisplay`, `pi5_main.pico_ports`).
 
 | Bus / signal | Device | Addr | Header pins (BCM GPIO) | Code |
 |---|---|---|---|---|
 | **I2C0** (`/dev/i2c-0`) | BNO085 IMU | `0x4A`/`0x4B` | 27 (GPIO0 SDA), 28 (GPIO1 SCL) | `IMU(bus_id=0)` |
 | **I2C1** (`/dev/i2c-1`) | SH1106 OLED | `0x3C` | 3 (GPIO2 SDA), 5 (GPIO3 SCL) | `BootDisplay(port=1)` |
-| **I2C3** (`/dev/i2c-3`) | QMC5883L compass (built into the HGLRC M100 GPS) | `0x0D` | 15 (GPIO22 SDA), 16 (GPIO23 SCL) | `CompassReader(explicit_bus_id=3)` |
-| **I2C3** (`/dev/i2c-3`) | INA219 power monitor | `0x40` | 15, 16 — in parallel with the compass | `INA219(bus_id=3)` |
+| **I2C3** (`/dev/i2c-3`) | QMC5883P compass (built into the HGLRC M100 GPS; a QMC5883L at `0x0D` is also supported) | `0x2C` | 15 (GPIO22 SDA), 16 (GPIO23 SCL) | `CompassReader(explicit_bus_id=3)` |
+| **I2C3** (`/dev/i2c-3`) | INA226 power monitor (2 mΩ shunt, on the 5 V rail) | `0x40` | 15, 16 — in parallel with the compass | `INA226(bus_id=3)` |
 | **UART0** (`/dev/ttyAMA0`) | Leg Pico | — | 8 (GPIO14 TX), 10 (GPIO15 RX) | `pico_ports` |
 | **UART2** (`/dev/ttyAMA2`) | Leg Pico | — | 7 (GPIO4 TX), 29 (GPIO5 RX) | `pico_ports` |
 | **UART3** (`/dev/ttyAMA3`) | Leg Pico | — | 24 (GPIO8 TX), 21 (GPIO9 RX) | `pico_ports` |
@@ -66,7 +66,7 @@ not from which UART it is on.
 ```ini
 dtparam=i2c_arm=on            # I2C1  — OLED
 dtparam=i2c0=on               # I2C0  — IMU, GPIO0/1
-dtoverlay=i2c3,pins_22_23     # I2C3  — compass + INA219
+dtoverlay=i2c3,pins_22_23     # I2C3  — compass + INA226
 dtparam=uart0=on              # ttyAMA0
 dtoverlay=uart2               # ttyAMA2
 dtoverlay=uart3               # ttyAMA3
@@ -85,7 +85,7 @@ Check with `i2cdetect -l` (buses 0, 1, 3 should be listed) and then:
 ```bash
 i2cdetect -y 0     # 4a  (IMU)
 i2cdetect -y 1     # 3c  (OLED)
-i2cdetect -y 3     # 0d  (compass), 40 (INA219)
+i2cdetect -y 3     # 2c  (compass), 40 (INA226)
 ```
 
 A device that does not answer is reported as FAIL at boot and as down on the

@@ -1183,7 +1183,7 @@ def main():
     imu = _bring_up("IMU", lambda: IMU(sda_pin=None, scl_pin=None, bus_id=0, window_size=12), disp, health)
     gps = _bring_up("GPS", lambda: GPSReader(uart_path='/dev/ttyUSB0', baudrate=115200), disp, health)
     # QMC5883L inside the HGLRC M100 GPS, on I2C-3 (pins 15/16) -- its own bus
-    # for now; the INA219 (0x40) joins it there once fitted.
+    # for now; the INA226 (0x40) shares it.
     compass = _bring_up("Compass", lambda: CompassReader(
         sda_pin=None, scl_pin=None, explicit_bus_id=3,
         declination_deg=MAGNETIC_DECLINATION_DEG), disp, health)
@@ -1273,20 +1273,16 @@ def main():
     # Speaker MAC comes from the gitignored .env (see .env.example) so a
     # personal device address never lands in a public file.
     audio_engine = _bring_up("Audio", lambda: QuadrupedAudio(os.environ["APEX_SPEAKER_MAC"]), disp, health)
-    # TODO(hardware): confirm what the INA219's VIN- actually senses and set this
-    # accordingly. 4.75 suits the 5V regulated rail (warn on regulator sag). If
-    # VIN- is on the 2S pack instead (~6.0-8.4V LiPo / 6.6-8.7V LiHV) this can
-    # never fire and it should be ~6.2-6.6V. See ENGINEERING_NOTES.
+    # The INA226 sits on the 5V regulated rail, so 4.75 V warns on regulator sag.
+    # It is not battery telemetry. The alarm is voltage-only; current is shown
+    # on the dashboard.
     LOW_VOLT_THRESHOLD = 4.75
-    # Current/power are NOT checked: it is unconfirmed whether a shunt is in the
-    # load path at all (INA219 may be wired as a plain voltmeter). INA219 keeps
-    # get_current()/get_power() for when that is verified; nothing calls them.
     AUDIO_COOLDOWN = 10.0
     last_power_check = time.time()
     last_audio_warning = 0
     last_status_publish = time.time()
 
-    # Every blocking sensor read (IMU + compass over I2C, GPS UART drain, INA219
+    # Every blocking sensor read (IMU + compass over I2C, GPS UART drain, INA226
     # battery reads) runs on its own poller thread from here on. The control
     # loop only ever reads lock-protected snapshots, so a wedged I2C bus can no
     # longer stall steering or the IMU reflex -- it just makes that snapshot go

@@ -25,7 +25,7 @@ Code/
 │   ├── sensor_hub.py          threaded sensor polling
 │   ├── imu.py                 BNO085 roll/pitch
 │   ├── navigation.py          GPS, compass, waypoints
-│   ├── power_monitor.py       INA219 battery voltage
+│   ├── power_monitor.py       INA226 5 V rail voltage + current
 │   ├── webcam.py              USB camera
 │   ├── vision_obstacle.py     depth-model obstacle avoidance
 │   ├── stream_server.py       Flask dashboard server
@@ -118,7 +118,7 @@ Before any of this runs, the robot must be homed, stood up, and started from the
 |---|---|
 | Control loop | Steering decision, gait rebuild, Pico ack/recovery handling, status publish |
 | Gait serial worker | The single writer to the four Pico UARTs -- gait frames, home/stop commands, recovery |
-| `SensorHub` pollers | One each for IMU (50 Hz, I2C0), GPS (USB serial) + compass (I2C3) at 10 Hz, INA219 (I2C3, 1 Hz) |
+| `SensorHub` pollers | One each for IMU (50 Hz, I2C0), GPS (USB serial) + compass (I2C3) at 10 Hz, INA226 (I2C3, 1 Hz) |
 | Vision worker | Depth inference + costmap, 1-3 fps; not started if the ONNX model isn't installed |
 | Flask / ROS executor | Dashboard requests and ROS 2 callbacks |
  
@@ -128,9 +128,9 @@ The compass reads *true* north — `MAGNETIC_DECLINATION_DEG` in `pi5_main.py` (
 
 The GPS is guarded the same way: `GPSReader` timestamps its last positional fix, and a receiver that goes quiet (fix older than 5 s) counts as *no fix* even though `has_fix` is still latched — autonomous nav then holds position instead of driving toward a frozen waypoint bearing. A camera that fails to open raises at boot (marked down, degrade banner) rather than reading as healthy while returning nothing.
 
-The INA219 is read for **voltage only** right now — whether a shunt is actually in the load path for current sensing is unconfirmed, so `get_current()`/`get_power()` are kept but unused rather than feeding a meaningless number into the low-battery alarm. `LOW_VOLT_THRESHOLD` in `pi5_main.py` also needs a bench check (see `ENGINEERING_NOTES.md`) to confirm which rail it's actually measuring.
+The INA226 (2 mΩ shunt, on the **5 V rail**) reports voltage and current; the low-voltage alarm uses voltage only (`LOW_VOLT_THRESHOLD = 4.75` V, a sag on the regulated rail) and the dashboard shows the 5 V rail current in a pill. It is not battery telemetry — nothing monitors the 3S motor pack.
 
-Every hardware handle is brought up through `_bring_up()`, which reports FAIL (boot log, OLED `DOWN:` line, dashboard degraded banner) whenever the constructor raises — so the IMU, compass, INA219, camera and speaker classes all raise on a device that does not answer rather than returning a half-working object. Repeated main-loop warnings go through `_log_every()`, at most once per 2 s each.
+Every hardware handle is brought up through `_bring_up()`, which reports FAIL (boot log, OLED `DOWN:` line, dashboard degraded banner) whenever the constructor raises — so the IMU, compass, INA226, camera and speaker classes all raise on a device that does not answer rather than returning a half-working object. Repeated main-loop warnings go through `_log_every()`, at most once per 2 s each.
 
 Audio runs inside the ROS container but plays through the host: `audio.py` sends it to the host's PipeWire over local TCP (`PULSE_SERVER=tcp:127.0.0.1:4713`; the container shares the host network but mounts no sockets), and the host keeps the Bluetooth speaker paired. `QuadrupedAudio` checks that the speaker is the default output and fails otherwise. Its MAC comes from `APEX_SPEAKER_MAC` in the gitignored `Code/Pi5/.env`. Setup is in [HARDWARE.md](HARDWARE.md).
  
