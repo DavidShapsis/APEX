@@ -12,6 +12,12 @@ final class MJPEGStream {
     enum State: Equatable { case idle, connecting, streaming, failed }
 
     private(set) var image: UIImage?
+    /// The newest frame exactly as the robot sent it (for lossless snapshots).
+    @ObservationIgnored private(set) var latestJPEG: Data?
+    /// Called on the main actor for every decoded frame (used by the video recorder).
+    @ObservationIgnored var frameHandler: (@MainActor (UIImage) -> Void)?
+    /// Called when streaming shuts down: app backgrounded, last viewer gone, or no address.
+    @ObservationIgnored var onStopped: (@MainActor () -> Void)?
     private(set) var state: State = .idle
     private(set) var fps: Int = 0
 
@@ -45,12 +51,14 @@ final class MJPEGStream {
         } else {
             teardown()
             state = .idle
+            onStopped?()
         }
     }
 
     private func restart() {
         teardown()
         image = nil
+        latestJPEG = nil
         update()
     }
 
@@ -61,8 +69,8 @@ final class MJPEGStream {
         state = .connecting
 
         let receiver = MJPEGReceiver(
-            onFrame: { [weak self] img in
-                Task { @MainActor [weak self] in self?.handleFrame(img, gen: gen) }
+            onFrame: { [weak self] img, jpeg in
+                Task { @MainActor [weak self] in self?.handleFrame(img, jpeg: jpeg, gen: gen) }
             },
             onEnd: { [weak self] in
                 Task { @MainActor [weak self] in self?.handleEnd(gen: gen) }
@@ -87,10 +95,12 @@ final class MJPEGStream {
         generation += 1
     }
 
-    private func handleFrame(_ img: UIImage, gen: Int) {
+    private func handleFrame(_ img: UIImage, jpeg: Data, gen: Int) {
         guard gen == generation else { return }
         image = img
+        latestJPEG = jpeg
         state = .streaming
+        frameHandler?(img)
         framesThisSecond += 1
         let now = Date()
         let dt = now.timeIntervalSince(fpsWindowStart)
@@ -120,14 +130,14 @@ final class MJPEGStream {
 /// URLSession delegate. Runs on its own serial queue, so the buffer needs no lock.
 private final class MJPEGReceiver: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private var buffer = Data()
-    private let onFrame: @Sendable (UIImage) -> Void
+    private let onFrame: @Sendable (UIImage, Data) -> Void
     private let onEnd: @Sendable () -> Void
 
     private static let soi = Data([0xFF, 0xD8])
     private static let eoi = Data([0xFF, 0xD9])
     private static let maxBuffer = 8 * 1024 * 1024
 
-    init(onFrame: @escaping @Sendable (UIImage) -> Void, onEnd: @escaping @Sendable () -> Void) {
+    init(onFrame: @escaping @Sendable (UIImage, Data) -> Void, onEnd: @escaping @Sendable () -> Void) {
         self.onFrame = onFrame
         self.onEnd = onEnd
     }
@@ -146,7 +156,7 @@ private final class MJPEGReceiver: NSObject, URLSessionDataDelegate, @unchecked 
 
         if let jpeg = latest, let img = UIImage(data: jpeg) {
             // Decode off the main thread so drawing it is cheap.
-            onFrame(img.preparingForDisplay() ?? img)
+            onFrame(img.preparingForDisplay() ?? img, jpeg)
         }
     }
 

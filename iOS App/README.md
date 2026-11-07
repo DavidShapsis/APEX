@@ -23,14 +23,23 @@ deployment target iOS 17.0, no iOS 18+ APIs. The compiled app runs on newer iOS,
    Allow **Local Network** when asked, or the app cannot reach the robot.
 8. Free signing expires after 7 days. Rebuild and reinstall.
 
+## Connect button
+
+While the robot is unreachable, a red **Connect** button shows in the top right and in the
+"Robot not reachable" banner. It opens iOS Wi-Fi settings through the private `App-Prefs` URL
+(`SettingsOpener.swift`), so you can join the robot's network. Where it lands depends on the iOS
+version. Join APEXWifi once and iOS auto-joins it whenever it is in range. The app cannot join
+a network by itself: that needs the Hotspot Configuration capability, which a free Personal
+Team does not offer.
+
 ## Layout
 
 | Tab      | Contents |
 |----------|----------|
-| Drive    | Status pills, banners, live MJPEG feed (corner button for full screen with controls), steering, Home x4 / Stand / Go / Stop |
-| Navigate | Robot GPS, route map (tap to add waypoints), NAV MODE Start / Pause / Stop, route editor |
+| Drive    | Status pills, banners, live MJPEG feed (corner button for full screen with controls), Snapshot and Record buttons that save to Photos, steering, Home x4 / Stand / Go / Stop |
+| Navigate | Robot GPS, route map (opens on the robot; Fit centers on it; Track follows it and rotates the map to its compass heading; tap to add waypoints), NAV MODE Start / Pause / Stop, route editor |
 | Systems  | Obstacle avoidance, subsystem health, motor currents, leg deactivation |
-| Settings | Robot address (default `apex.local`), connection details, open web dashboard in Safari |
+| Settings | Robot address (default `apex.local`), connection details, icon toggle (A.P.E.X. logo or robot render), open web dashboard in your browser |
 
 ## Files
 

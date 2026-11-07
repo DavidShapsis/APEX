@@ -60,6 +60,66 @@ struct RouteMapCard: View {
     @Environment(RobotStore.self) private var store
     @State private var camera: MapCameraPosition = .automatic
     @State private var tapToAdd = false
+    @State private var tracking = false
+    @State private var didInitialCenter = false
+    @State private var cameraHeading: Double = 0     // heading of the map camera, to orient the robot arrow
+    @State private var trackHeading: Double = 0      // last heading applied while tracking
+    @State private var trackCenter: CLLocationCoordinate2D?
+
+    // Map zoom, as camera distance in metres. Tune these to taste.
+    private static let fitDistance: CLLocationDistance = 150               // Fit button and Track mode
+    private static let startDistance: CLLocationDistance = fitDistance * 2 // first view, a bit wider than Fit
+    private static let trackPitch: Double = 0                              // 0 = straight down; try 45 for a chase view
+
+    private func fitOnRobot() {
+        tracking = false
+        guard let c = store.status.gps.coordinate else {
+            withAnimation { camera = .automatic }   // no fix yet: fit whatever is on the map
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.6)) {
+            camera = .camera(MapCamera(centerCoordinate: c, distance: Self.fitDistance, heading: 0, pitch: 0))
+        }
+    }
+
+    private func toggleTracking() {
+        Haptics.light()
+        if tracking {
+            tracking = false
+            return
+        }
+        guard store.status.gps.coordinate != nil else {
+            store.showToast("The robot has no GPS fix.")
+            return
+        }
+        tracking = true
+        applyTrack(force: true)
+    }
+
+    /// Keeps the camera on the robot at fit zoom, rotated so the robot's compass heading points up.
+    private func applyTrack(force: Bool = false) {
+        guard tracking, let c = store.status.gps.coordinate else { return }
+        let h = store.status.gps.heading ?? trackHeading
+        if !force, let last = trackCenter,
+           abs(Self.angleDelta(h, trackHeading)) < 3,
+           CLLocation(latitude: c.latitude, longitude: c.longitude)
+               .distance(from: CLLocation(latitude: last.latitude, longitude: last.longitude)) < 0.5 {
+            return   // ignore compass jitter and GPS noise
+        }
+        trackHeading = h
+        trackCenter = c
+        withAnimation(.easeInOut(duration: 0.9)) {
+            camera = .camera(MapCamera(centerCoordinate: c, distance: Self.fitDistance,
+                                       heading: h, pitch: Self.trackPitch))
+        }
+    }
+
+    private static func angleDelta(_ a: Double, _ b: Double) -> Double {
+        var d = (a - b).truncatingRemainder(dividingBy: 360)
+        if d > 180 { d -= 360 }
+        if d < -180 { d += 360 }
+        return d
+    }
 
     var body: some View {
         let points: [MapPoint] = store.waypoints.enumerated().compactMap { item in
@@ -68,11 +128,16 @@ struct RouteMapCard: View {
         }
         let robot = store.status.gps.coordinate
         let active = store.waypointsDirty ? -1 : store.status.wpIndex
+        // Arrow angle on screen: straight up while tracking, else robot heading minus map rotation.
+        let pinRotation: Double? = store.status.gps.heading.map { tracking ? 0 : $0 - cameraHeading }
 
         ApexCard("Route Map", info: """
-            Robot position (arrow) and your route as it is in the editor below. Turn on Tap to add \
-            and tap the map to drop a waypoint. Map imagery needs internet, so on the APEX hotspot \
-            the background may be blank, but the points and route still draw.
+            Robot position (arrow) and your route as it is in the editor below. The map opens on the \
+            robot. Fit centers on the robot, north up. Track follows the robot at the same zoom and \
+            rotates the map so the robot's compass heading points up; dragging the map while tracking \
+            snaps back, so turn Track off to look around. Turn on Tap to add and tap the map to drop \
+            a waypoint. Map imagery needs internet, so on the APEX hotspot the background may be \
+            blank, but the points and route still draw.
             """) {
             MapReader { proxy in
                 Map(position: $camera) {
@@ -87,7 +152,7 @@ struct RouteMapCard: View {
                     }
                     if let robot {
                         Annotation("APEX", coordinate: robot, anchor: .center) {
-                            RobotPin(heading: store.status.gps.heading)
+                            RobotPin(rotation: pinRotation)
                         }
                     }
                     UserAnnotation()
@@ -97,6 +162,9 @@ struct RouteMapCard: View {
                     MapCompass()
                     MapScaleView()
                 }
+                .onMapCameraChange(frequency: .onEnd) { context in
+                    cameraHeading = context.camera.heading
+                }
                 .onTapGesture(coordinateSpace: .local) { pt in
                     guard tapToAdd, let c = proxy.convert(pt, from: .local) else { return }
                     store.addWaypoint(c)
@@ -105,22 +173,39 @@ struct RouteMapCard: View {
             .frame(height: 280)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.apexLine, lineWidth: 1))
+            .onChange(of: store.status.gps.hasFix, initial: true) { _, hasFix in
+                // First time the robot has a fix, open the map on it, wider than Fit.
+                guard hasFix, !didInitialCenter, let c = store.status.gps.coordinate else { return }
+                didInitialCenter = true
+                camera = .camera(MapCamera(centerCoordinate: c, distance: Self.startDistance, heading: 0, pitch: 0))
+            }
+            .onChange(of: store.status.gps) { _, _ in
+                applyTrack()
+            }
 
             HStack(spacing: 8) {
                 Button {
                     tapToAdd.toggle()
                     Haptics.light()
                 } label: {
-                    Label(tapToAdd ? "Tap to add: on" : "Tap to add", systemImage: "hand.tap.fill")
+                    Label(tapToAdd ? "Add: on" : "Tap to add", systemImage: "hand.tap.fill")
                 }
                 .apexButton(tapToAdd ? .on : .normal)
 
                 Button {
-                    withAnimation { camera = .automatic }
+                    Haptics.light()
+                    fitOnRobot()
                 } label: {
                     Label("Fit", systemImage: "scope")
                 }
                 .apexButton()
+
+                Button {
+                    toggleTracking()
+                } label: {
+                    Label(tracking ? "Tracking" : "Track", systemImage: "location.north.line.fill")
+                }
+                .apexButton(tracking ? .on : .normal)
             }
         }
     }
@@ -148,16 +233,17 @@ struct WaypointPin: View {
 }
 
 struct RobotPin: View {
-    let heading: Double?
+    /// Arrow angle on screen in degrees (0 = up). nil means no compass, so a plain dot.
+    let rotation: Double?
 
     var body: some View {
         ZStack {
             Circle().fill(Color.apexRed.opacity(0.25)).frame(width: 40, height: 40)
-            Image(systemName: heading == nil ? "circle.fill" : "location.north.fill")
-                .font(.system(size: heading == nil ? 14 : 20, weight: .bold))
+            Image(systemName: rotation == nil ? "circle.fill" : "location.north.fill")
+                .font(.system(size: rotation == nil ? 14 : 20, weight: .bold))
                 .foregroundStyle(.white)
                 .shadow(color: Color.apexRed, radius: 4)
-                .rotationEffect(.degrees(heading ?? 0))
+                .rotationEffect(.degrees(rotation ?? 0))
         }
     }
 }

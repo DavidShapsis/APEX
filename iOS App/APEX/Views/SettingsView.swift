@@ -5,6 +5,8 @@ struct SettingsView: View {
     @Environment(RobotStore.self) private var store
     @Environment(\.openURL) private var openURL
     @State private var hostText = ""
+    @State private var robotIcon = false
+    private static let robotIconName = "AppIconRobot"
     @FocusState private var hostFocused: Bool
 
     var body: some View {
@@ -59,11 +61,24 @@ struct SettingsView: View {
                 .apexButton()
             }
 
-            ApexCard("Web Dashboard", info: "Opens the original Mission Control page in Safari. Handy for anything this app does not cover yet.") {
+            ApexCard("App Icon", info: "Switches the home screen icon between the A.P.E.X. logo and the robot render. iOS shows its own confirmation when the icon changes.") {
+                Toggle(isOn: Binding(
+                    get: { robotIcon },
+                    set: { setRobotIcon($0) }
+                )) {
+                    Text("Robot render icon")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.apexText)
+                }
+                .tint(Color.apexRed)
+                .disabled(!UIApplication.shared.supportsAlternateIcons)
+            }
+
+            ApexCard("Web Dashboard", info: "Opens the original Mission Control page in your browser. Handy for anything this app does not cover yet.") {
                 Button {
                     if let url = store.client?.baseURL { openURL(url) }
                 } label: {
-                    Label("Open in Safari", systemImage: "safari")
+                    Label("Open in Browser", systemImage: "globe")
                 }
                 .apexButton()
                 .disabled(store.client == nil)
@@ -77,7 +92,23 @@ struct SettingsView: View {
                 infoRow("Version", appVersion)
             }
         }
-        .onAppear { hostText = store.host }
+        .onAppear {
+            hostText = store.host
+            robotIcon = UIApplication.shared.alternateIconName == Self.robotIconName
+        }
+    }
+
+    private func setRobotIcon(_ on: Bool) {
+        let previous = robotIcon
+        robotIcon = on
+        Task { @MainActor in
+            do {
+                try await UIApplication.shared.setAlternateIconName(on ? Self.robotIconName : nil)
+            } catch {
+                robotIcon = previous
+                store.showToast("Could not change the icon: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func save() {

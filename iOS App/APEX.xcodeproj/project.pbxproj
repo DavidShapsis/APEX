@@ -21,6 +21,8 @@
 		B0000000000000000000000C /* SystemsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000000C /* SystemsView.swift */; };
 		B0000000000000000000000D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000000D /* SettingsView.swift */; };
 		B0000000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000000E /* Assets.xcassets */; };
+		B00000000000000000000010 /* Capture.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000010 /* Capture.swift */; };
+		B00000000000000000000012 /* SettingsOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000012 /* SettingsOpener.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +42,8 @@
 		F0000000000000000000000D /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		F0000000000000000000000E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F0000000000000000000000F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		F00000000000000000000010 /* Capture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Capture.swift; sourceTree = "<group>"; };
+		F00000000000000000000012 /* SettingsOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsOpener.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -81,6 +85,8 @@
 				F00000000000000000000005 /* LocationProvider.swift */,
 				F00000000000000000000006 /* RobotStore.swift */,
 				F00000000000000000000007 /* Theme.swift */,
+				F00000000000000000000010 /* Capture.swift */,
+				F00000000000000000000012 /* SettingsOpener.swift */,
 				F0000000000000000000000E /* Assets.xcassets */,
 			);
 			path = APEX;
@@ -175,6 +181,8 @@
 				B00000000000000000000005 /* LocationProvider.swift in Sources */,
 				B00000000000000000000006 /* RobotStore.swift in Sources */,
 				B00000000000000000000007 /* Theme.swift in Sources */,
+				B00000000000000000000010 /* Capture.swift in Sources */,
+				B00000000000000000000012 /* SettingsOpener.swift in Sources */,
 				B00000000000000000000008 /* ContentView.swift in Sources */,
 				B00000000000000000000009 /* FeedView.swift in Sources */,
 				B0000000000000000000000A /* DriveView.swift in Sources */,
@@ -250,15 +258,17 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIconRobot;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = APEX;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "APEX talks to the robot over its Wi-Fi network to read status, stream video and send commands.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Your location is used only when you tap Me to drop a waypoint where you are standing.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "APEX saves snapshots and video from the robot camera to your Photos library when you tap Snapshot or Record.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -282,15 +292,17 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIconRobot;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = APEX;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "APEX talks to the robot over its Wi-Fi network to read status, stream video and send commands.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Your location is used only when you tap Me to drop a waypoint where you are standing.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "APEX saves snapshots and video from the robot camera to your Photos library when you tap Snapshot or Record.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

@@ -17,7 +17,7 @@ struct ContentView: View {
         }
         .overlay(alignment: .top) {
             if let msg = store.toast {
-                ToastView(text: msg)
+                ToastView(text: msg, success: store.toastSuccess)
                     .padding(.horizontal, 16)
                     .padding(.top, 6)
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -66,11 +66,50 @@ struct ApexScreen<Content: View>: View {
             .toolbarBackground(Color.apexBG, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    ConnectionLight()
+                    ConnectionAccessory()
                 }
             }
             .refreshable { await store.refresh() }
         }
+    }
+}
+
+/// Top right of every tab: the Connect button while the robot is unreachable,
+/// otherwise the status light. A separate view so it tracks the store itself.
+@MainActor
+struct ConnectionAccessory: View {
+    @Environment(RobotStore.self) private var store
+
+    var body: some View {
+        if store.connection == .disconnected {
+            ConnectButton()
+        } else {
+            ConnectionLight()
+        }
+    }
+}
+
+/// Shown in the top right while the robot is unreachable. Opens iOS Wi-Fi settings.
+@MainActor
+struct ConnectButton: View {
+    @Environment(RobotStore.self) private var store
+
+    var body: some View {
+        Button {
+            Haptics.tap()
+            store.openWiFiSettings()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "wifi")
+                Text("Connect")
+            }
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.apexRed, in: Capsule())
+        }
+        .accessibilityLabel("Open Wi-Fi settings to join the robot's network")
     }
 }
 
@@ -123,10 +162,25 @@ struct ConnectionBanner: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(store.connection == .connecting ? "Connecting to \(store.host)" : "Robot not reachable")
                     .font(.system(size: 14, weight: .bold))
-                Text("Join the APEX Wi-Fi network. If it still does not connect, check the address in Settings.")
+                Text("Join the APEX Wi-Fi network (APEXWifi). If it still does not connect, check the address in Settings.")
                     .font(.system(size: 12))
                     .foregroundStyle(Color(white: 0.85))
                     .fixedSize(horizontal: false, vertical: true)
+                if store.connection == .disconnected {
+                    Button {
+                        Haptics.tap()
+                        store.openWiFiSettings()
+                    } label: {
+                        Label("Open Wi-Fi settings", systemImage: "wifi")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.apexRed, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 6)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -139,10 +193,12 @@ struct ConnectionBanner: View {
 
 struct ToastView: View {
     let text: String
+    var success = false
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Color.apexRedHi)
+            Image(systemName: success ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .foregroundStyle(success ? Color.apexGreen : Color.apexRedHi)
             Text(text)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)

@@ -17,7 +17,8 @@ final class RobotStore {
     private(set) var lastUpdate: Date?
     private(set) var lastError: String?
 
-    let feed = MJPEGStream()
+    let feed: MJPEGStream
+    let capture: CaptureController
 
     /// Last steering angle sent. The robot does not report it back in /status,
     /// so like the web page this starts at 0 on launch.
@@ -31,6 +32,7 @@ final class RobotStore {
     private var waypointsLoaded = false
 
     var toast: String?
+    private(set) var toastSuccess = false
     private var toastTask: Task<Void, Never>?
 
     private var pollTask: Task<Void, Never>?
@@ -48,10 +50,16 @@ final class RobotStore {
     private var hostEverWorked = false
 
     init() {
+        let stream = MJPEGStream()
+        feed = stream
+        capture = CaptureController(feed: stream)
         let saved = UserDefaults.standard.string(forKey: Self.hostKey) ?? Self.defaultHost
         host = saved
         hostCandidates = Self.makeCandidates(for: saved)
         useCandidate(0)
+        capture.onMessage = { [weak self] message, success in
+            self?.showToast(message, success: success)
+        }
     }
 
     var isConnected: Bool { connection == .connected }
@@ -102,6 +110,13 @@ final class RobotStore {
         failures = 0
         useCandidate(0)
         Task { await refresh() }
+    }
+
+    /// Opens iOS Wi-Fi settings so the phone can join the robot's network. The app keeps
+    /// polling, so it reconnects by itself once the phone is back on the robot's Wi-Fi.
+    func openWiFiSettings() {
+        showToast("In Settings, open Wi-Fi and join APEXWifi")
+        SettingsOpener.openWiFi()
     }
 
     func setActive(_ active: Bool) {
@@ -342,7 +357,8 @@ final class RobotStore {
 
     // MARK: Toast
 
-    func showToast(_ message: String) {
+    func showToast(_ message: String, success: Bool = false) {
+        toastSuccess = success
         toast = message
         toastTask?.cancel()
         toastTask = Task { [weak self] in

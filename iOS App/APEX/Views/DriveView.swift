@@ -33,6 +33,7 @@ struct DriveView: View {
                         .padding(8)
                         .accessibilityLabel("Full screen video")
                     }
+                CaptureButtons()
             }
 
             ApexCard("Steering", info: """
@@ -102,14 +103,9 @@ struct SteeringControl: View {
                         .foregroundStyle(.white)
                         .frame(width: 52, alignment: .leading)
                 }
-                Slider(value: angleBinding, in: -90...90, step: 1) {
-                    Text("Direction")
-                } minimumValueLabel: {
-                    Text("-90").font(.system(size: 10, design: .monospaced)).foregroundStyle(Color.apexMuted)
-                } maximumValueLabel: {
-                    Text("+90").font(.system(size: 10, design: .monospaced)).foregroundStyle(Color.apexMuted)
-                }
-                .tint(Color.apexRed)
+                Text("-90").font(.system(size: 10, design: .monospaced)).foregroundStyle(Color.apexMuted)
+                DirectionSlider(angle: store.direction) { store.setDirection($0) }
+                Text("+90").font(.system(size: 10, design: .monospaced)).foregroundStyle(Color.apexMuted)
             }
 
             HStack(spacing: 8) {
@@ -125,20 +121,72 @@ struct SteeringControl: View {
         .disabled(!store.isConnected)
     }
 
-    private var angleBinding: Binding<Double> {
-        Binding(
-            get: { Double(store.direction) },
-            set: { newValue in
-                let a = Int(newValue.rounded())
-                guard a != store.direction else { return }
-                if a == 0 || a % 15 == 0 { Haptics.light() }
-                store.setDirection(a)
-            })
-    }
-
     private func preset(_ a: Int) {
         Haptics.tap()
         store.setDirection(a)
+    }
+}
+
+/// Direction slider, -90...+90: a solid red track from end to end with a white thumb.
+/// Custom, because the system Slider always colors the part of the track left of the thumb.
+@MainActor
+struct DirectionSlider: View {
+    let angle: Int
+    let onChange: (Int) -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    private let thumb: CGFloat = 30
+    private let trackHeight: CGFloat = 10
+
+    init(angle: Int, onChange: @escaping (Int) -> Void) {
+        self.angle = angle
+        self.onChange = onChange
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let usable = max(1, geo.size.width - thumb)
+            let thumbX = usable * CGFloat(angle + 90) / 180
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.apexRed)
+                    .frame(height: trackHeight)
+                    .shadow(color: Color.apexRed.opacity(0.5), radius: 5)
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: thumb, height: thumb)
+                    .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+                    .offset(x: thumbX)
+            }
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        guard isEnabled else { return }
+                        let t = min(max((drag.location.x - thumb / 2) / usable, 0), 1)
+                        commit(Int((t * 180 - 90).rounded()))
+                    })
+        }
+        .frame(height: 44)
+        .opacity(isEnabled ? 1 : 0.4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Direction")
+        .accessibilityValue("\(angle) degrees")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: commit(angle + 5)
+            case .decrement: commit(angle - 5)
+            @unknown default: break
+            }
+        }
+    }
+
+    private func commit(_ value: Int) {
+        let a = max(-90, min(90, value))
+        guard a != angle else { return }
+        if a == 0 || a % 15 == 0 { Haptics.light() }
+        onChange(a)
     }
 }
 
