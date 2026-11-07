@@ -477,6 +477,16 @@ _PAGE = """
         function reconnectFeed() {
             document.getElementById('feedImg').src = '/video_feed?t=' + Date.now();
         }
+        function renderPower(p) {
+            const el = document.getElementById('pwrLine');
+            if (!el) return;
+            if (!p || !p.valid || p.amps === null) {
+                el.innerText = 'Robot current: --';
+                return;
+            }
+            el.innerText = 'Robot current: ' + p.amps.toFixed(2) + ' A'
+                + (p.volts > 0.5 ? '  (' + p.volts.toFixed(2) + ' V)' : '');
+        }
         function refreshStatus() {
             fetch('/status').then(r => r.json()).then(s => {
                 if (statusDown) { statusDown = false; reconnectFeed(); }
@@ -504,6 +514,7 @@ _PAGE = """
                 document.getElementById('pillWalk').classList.toggle('live', s.walking === 1);
                 renderCurrents(s.currents);
                 renderGps(s.gps);
+                renderPower(s.power);
 
                 // ---- Navigation: mode, pause, route progress, transport ----
                 const navOn = s.nav_mode === 1;
@@ -854,6 +865,7 @@ _PAGE = """
                     <span class="nav-sec-chip" id="curChip">0/4 LEGS</span>
                 </button>
                 <div class="nav-sec-body">
+                    <div id="pwrLine" style="margin-bottom:.5rem">Robot current: --</div>
                     <div class="info" id="i_current">Live current per motor, read from each
                         BTS7960's current-sense outputs, shown as
                         <b>right&nbsp;side&nbsp;/&nbsp;left&nbsp;side</b> of the driver (RPWM /

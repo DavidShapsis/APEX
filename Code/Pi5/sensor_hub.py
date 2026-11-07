@@ -172,14 +172,16 @@ class SensorHub:
             self._nav["t"] = now
 
     def _power_poll(self):
-        # Only voltage is read. get_current()/get_power() are left on INA219 but
-        # not called: whether a shunt is actually in the load path is unconfirmed
-        # (see ENGINEERING_NOTES / power_monitor.py). Re-enable the current line here
-        # once the wiring is verified.
+        # Voltage and current (amps) from the INA226. If the shunt is not wired
+        # into the load path the current simply reads about 0 A.
         v = self.power.get_voltage()
+        try:
+            i = self.power.get_current()
+        except Exception:
+            i = None            # a power object without a current reading
         with self._lock:
             self._power["voltage"] = v
-            self._power["current"] = None
+            self._power["current"] = i
             self._power["t"] = time.monotonic()
 
     # -- snapshots (safe to call at any rate from any one reader) ------

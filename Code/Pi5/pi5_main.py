@@ -298,6 +298,8 @@ class PiQuadrupedController(Node):
         # heading*10 (true north, filtered; -1 = no compass)]. Replaced as a
         # whole list, so a reader never sees half an update.
         self.nav_readout = [0, 0, 0, 0, -1]
+        # [valid, current mA, voltage mV] from the INA226, set by the control loop.
+        self.power_readout = [0, 0, 0]
 
         # System State Tracking Management
         self.current_mode = RobotMode.MANUAL
@@ -646,7 +648,8 @@ class PiQuadrupedController(Node):
         avoid_available, avoid_enabled, avoid_state_code, avoid_steer_deg,
         avoid_stride_pct, wp_index, wp_total, nav_mode, nav_paused,
          health_mask, motor currents x24 (see motor_current_block),
-         has_fix, satellites, lat*1e7, lon*1e7, heading*10 (see nav_readout)].
+         has_fix, satellites, lat*1e7, lon*1e7, heading*10 (see nav_readout),
+         power_valid, current_mA, voltage_mV (see power_readout)].
 
         Fields are only ever APPENDED, never inserted: stream_server reads each
         block by fixed index behind a length check, so an older dashboard against
@@ -681,7 +684,8 @@ class PiQuadrupedController(Node):
                     + [int(wp_idx), int(wp_total), nav_mode, nav_paused,
                        int(health_mask)]
                     + self.motor_current_block()
-                    + list(self.nav_readout))
+                    + list(self.nav_readout)
+                    + list(self.power_readout))
         self.homing_status_pub.publish(msg)
 
     def swing_steps(self, height_z):
@@ -1581,6 +1585,12 @@ def main():
 
                 if current_time - last_power_check > 1.0:
                     p = sensor_hub.power_snapshot()
+                    # Published to the dashboard as [valid, current mA, voltage mV].
+                    if p is not None and p["current"] is not None:
+                        controller.power_readout = [1, int(round(p["current"] * 1000)),
+                                                    int(round(p["voltage"] * 1000))]
+                    else:
+                        controller.power_readout = [0, 0, 0]
                     if p is not None:
                         # Voltage only -- see LOW_VOLT_THRESHOLD note. p["current"]
                         # is None (the shunt path is unverified).

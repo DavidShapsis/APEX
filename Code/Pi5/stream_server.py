@@ -61,6 +61,7 @@ class RobodogStreamer(Node):
             'health': 0x3F,   # 6 bits, all subsystems assumed up until told otherwise
             'currents': [-1] * 24,
             'gps': {'fix': 0, 'sats': 0, 'lat': None, 'lon': None, 'heading': None},
+            'power': {'valid': 0, 'amps': None, 'volts': None},
         }
 
         self.app.add_url_rule('/video_feed', 'video_feed', self.video_feed)
@@ -95,6 +96,7 @@ class RobodogStreamer(Node):
                 'health': 0x3F,
                 'currents': [-1] * 24,
                 'gps': {'fix': 0, 'sats': 0, 'lat': None, 'lon': None, 'heading': None},
+                'power': {'valid': 0, 'amps': None, 'volts': None},
             }
             if len(data) >= 15:
                 status.update({
@@ -129,6 +131,13 @@ class RobodogStreamer(Node):
                     'lat': lat_e7 / 1e7 if fix else None,
                     'lon': lon_e7 / 1e7 if fix else None,
                     'heading': head_x10 / 10 if head_x10 >= 0 else None,
+                }
+            if len(data) >= 52:
+                p_valid, p_ma, p_mv = data[49:52]
+                status['power'] = {
+                    'valid': p_valid,
+                    'amps': p_ma / 1000.0 if p_valid else None,
+                    'volts': p_mv / 1000.0 if p_valid else None,
                 }
             self.homing_status = status
 
