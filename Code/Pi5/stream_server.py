@@ -1,3 +1,4 @@
+import json
 import time
 import cv2
 import threading
@@ -38,6 +39,7 @@ class RobodogStreamer(Node):
         self.frame_seq = 0          # bumps on every new camera frame
         self.frame_time = 0.0       # time.monotonic() of the newest frame
         self.lock = threading.Lock()
+        self.started = time.monotonic()     # for /api/state uptime
 
         self.current_direction = 0
         self.nav_mode = False  # Track state of autonomous navigation
@@ -76,6 +78,7 @@ class RobodogStreamer(Node):
         self.app.add_url_rule('/deactivate_leg', 'deactivate_leg', self.deactivate_leg, methods=['POST'])
         self.app.add_url_rule('/reactivate_leg', 'reactivate_leg', self.reactivate_leg, methods=['POST'])
         self.app.add_url_rule('/status', 'status', self.status, methods=['GET'])
+        self.app.add_url_rule('/api/state', 'api_state', self.api_state, methods=['GET'])
         self.app.add_url_rule('/waypoints', 'get_waypoints', self.get_waypoints, methods=['GET'])
         self.app.add_url_rule('/set_waypoints', 'set_waypoints', self.set_waypoints, methods=['POST'])
         self.app.add_url_rule('/nav_control', 'nav_control', self.nav_control, methods=['POST'])
@@ -263,6 +266,126 @@ class RobodogStreamer(Node):
             t = self.frame_time
         age = round(time.monotonic() - t, 2) if t else None
         return jsonify(dict(self.homing_status, frame_age=age))
+
+    # Names for the numeric codes in the status message. HEALTH_NAMES must match
+    # HEALTH_BITS in pi5_main.py; AVOID_STATE_NAMES must match AvoidState.CODES
+    # in vision_obstacle.py.
+    HEALTH_NAMES = ('imu', 'gps', 'compass', 'power', 'camera', 'audio')
+    JOINT_NAMES = ('roll', 'pitch', 'knee')
+    AVOID_STATE_NAMES = ('off', 'clear', 'avoiding', 'clearing', 'blocked', 'escape')
+    COMPASS_POINTS = ('N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW')
+
+    def api_state(self):
+        """GET /api/state -- everything the robot reports, as one readable JSON
+        document with named fields, real booleans and units in the key names
+        (no bitmasks or index-into-an-array codes). Meant for clients such as
+        the iOS app; /status is left unchanged for the web dashboard.
+
+        Add ?compact=1 for a single-line response.
+        """
+        s = self.homing_status
+        with self.lock:
+            t = self.frame_time
+        frame_age = round(time.monotonic() - t, 2) if t else None
+
+        def ma(v):
+            return None if v is None or v < 0 else v    # -1 = no data
+
+        cur = list(s.get('currents') or [])
+        cur += [-1] * (24 - len(cur))
+        homed = list(s.get('homed') or [0, 0, 0, 0])
+        deact = list(s.get('deactivated') or [0, 0, 0, 0])
+        legs = []
+        for i, name in enumerate(LEG_NAMES):
+            legs.append({
+                'name': name,
+                'index': i,
+                'homed': homed[i] == 1,
+                'deactivated': deact[i] == 1,
+                # mA; right/left side of each driver, null when not reporting.
+                'currents_ma': {
+                    joint: {'right': ma(cur[i * 6 + j * 2]),
+                            'left': ma(cur[i * 6 + j * 2 + 1])}
+                    for j, joint in enumerate(self.JOINT_NAMES)
+                },
+            })
+
+        mask = s.get('health', 0x3F)
+        health = {name: bool((mask >> i) & 1)
+                  for i, name in enumerate(self.HEALTH_NAMES)}
+
+        g = s.get('gps') or {}
+        heading = g.get('heading')
+        gps = {
+            'fix': g.get('fix') == 1 and g.get('lat') is not None,
+            'satellites': g.get('sats', 0),
+            'lat': g.get('lat'),
+            'lon': g.get('lon'),
+            'heading_deg': heading,                 # true north, filtered
+            'compass_point': (self.COMPASS_POINTS[int(round(heading / 45)) % 8]
+                              if heading is not None else None),
+        }
+
+        p = s.get('power') or {}
+        amps, volts = p.get('amps'), p.get('volts')
+        power = {
+            'valid': bool(p.get('valid')),
+            'rail_5v_amps': amps,
+            'rail_5v_volts': volts,
+            'rail_5v_watts': (round(amps * volts, 3)
+                              if amps is not None and volts is not None else None),
+        }
+
+        wp_total, wp_index = s.get('wp_total', 0), s.get('wp_index', 0)
+        code = s.get('avoid_state', 0)
+        doc = {
+            'meta': {
+                'schema': 1,
+                'time_unix': round(time.time(), 3),
+                'uptime_s': round(time.monotonic() - self.started, 1),
+            },
+            'robot': {
+                'all_homed': all(v == 1 for v in homed),
+                'standing': s.get('standing') == 1,
+                'walking': s.get('walking') == 1,
+                'steering_deg': self.current_direction,   # last angle sent from a client
+            },
+            'legs': legs,
+            'health': {
+                'ok': all(health.values()),
+                'offline': [n for n, up in health.items() if not up],
+                'subsystems': health,
+                'mask': mask,
+            },
+            'gps': gps,
+            'power': power,
+            'navigation': {
+                'autonomous': s.get('nav_mode') == 1,
+                'paused': s.get('nav_paused') == 1,
+                'waypoint_index': wp_index,
+                'waypoint_total': wp_total,
+                'route_complete': wp_total > 0 and wp_index >= wp_total,
+                # The last route sent from the dashboard or app.
+                'waypoints': [{'lat': w[0], 'lon': w[1]} for w in self.waypoints],
+            },
+            'avoidance': {
+                'available': s.get('avoid_available') == 1,
+                'enabled': s.get('avoid_enabled') == 1,
+                'state': (self.AVOID_STATE_NAMES[code]
+                          if 0 <= code < len(self.AVOID_STATE_NAMES) else 'unknown'),
+                'state_code': code,
+                'steer_deg': s.get('avoid_steer', 0),
+                'stride_pct': s.get('avoid_stride', 100),
+            },
+            'camera': {
+                'frame_age_s': frame_age,
+                'live': frame_age is not None and frame_age <= 2,
+            },
+        }
+        indent = None if request.args.get('compact') else 2
+        return Response(json.dumps(doc, indent=indent) + '\n',
+                        mimetype='application/json',
+                        headers={'Cache-Control': 'no-store'})
 
     def get_waypoints(self):
         """The browser's working copy of the route. Sent on page load so a
