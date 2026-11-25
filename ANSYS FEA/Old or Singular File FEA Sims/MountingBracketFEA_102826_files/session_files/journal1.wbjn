@@ -1,0 +1,161 @@
+# encoding: utf-8
+# 2026 R1
+SetScriptVersion(Version="26.1.174")
+template1 = GetTemplate(
+    TemplateName="Static Structural",
+    Solver="ANSYS")
+system1 = template1.CreateSystem()
+engineeringData1 = system1.GetContainer(ComponentName="Engineering Data")
+matl1 = engineeringData1.CreateMaterial(Name="SUNLU PETG-CF Wall")
+matlProp1 = matl1.CreateProperty(
+    Name="Density",
+    Qualifiers={"Definition": "", "Behavior": ""})
+matlProp2 = matl1.CreateProperty(
+    Name="Elasticity",
+    Behavior="Orthotropic",
+    Qualifiers={"Definition": "", "Behavior": "Orthotropic"})
+matlProp1.SetVariableProperty(
+    VariableName="Density",
+    Property="Unit",
+    Value="g cm^-3")
+matlProp2.BeginBatchUpdate()
+matlProp2.SetVariableProperty(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    VariableName="Shear Modulus XY",
+    Property="Unit",
+    Value="MPa")
+matlProp2.EndBatchUpdate()
+matlProp2.BeginBatchUpdate()
+matlProp2.SetVariableProperty(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    VariableName="Shear Modulus YZ",
+    Property="Unit",
+    Value="MPa")
+matlProp2.EndBatchUpdate()
+matlProp2.BeginBatchUpdate()
+matlProp2.SetVariableProperty(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    VariableName="Shear Modulus XZ",
+    Property="Unit",
+    Value="MPa")
+matlProp2.EndBatchUpdate()
+matlProp2.BeginBatchUpdate()
+matlProp2.SetVariableProperty(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    VariableName="Young's Modulus X direction",
+    Property="Unit",
+    Value="hbar")
+matlProp2.EndBatchUpdate()
+matlProp2.BeginBatchUpdate()
+matlProp2.SetVariableProperty(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    VariableName="Young's Modulus X direction",
+    Property="Unit",
+    Value="MPa")
+matlProp2.EndBatchUpdate()
+matlProp2.BeginBatchUpdate()
+matlProp2.SetVariableProperty(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    VariableName="Young's Modulus Y direction",
+    Property="Unit",
+    Value="MPa")
+matlProp2.EndBatchUpdate()
+matlProp2.BeginBatchUpdate()
+matlProp2.SetVariableProperty(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    VariableName="Young's Modulus Z direction",
+    Property="Unit",
+    Value="MPa")
+matlProp2.EndBatchUpdate()
+matlProp1.SetData(
+    Index=-1,
+    Variables=["Density"],
+    Values=[["1.23 [g cm^-3]"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Index=-1,
+    Variables=["Young's Modulus X direction"],
+    Values=[["2300 [MPa]"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Variables=["Young's Modulus Y direction"],
+    Values=[["2300 [MPa]"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Variables=["Young's Modulus Z direction"],
+    Values=[["1250 [MPa]"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Variables=["Poisson's Ratio XY"],
+    Values=[["0.35"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Variables=["Poisson's Ratio YZ"],
+    Values=[["0.35"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Variables=["Poisson's Ratio XZ"],
+    Values=[["0.35"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Variables=["Shear Modulus XZ"],
+    Values=[["463 [MPa]"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Variables=["Shear Modulus YZ"],
+    Values=[["850 [MPa]"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Variables=["Shear Modulus XY"],
+    Values=[["850 [MPa]"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Variables=["Temperature"],
+    Values=[["22 [C]"]])
+matlProp2.SetData(
+    SheetName="Elasticity",
+    SheetQualifiers={"Definition": "", "Behavior": "Orthotropic"},
+    Variables=["Shear Modulus YZ"],
+    Values=[["463 [MPa]"]])
+EngData.EnableFilter(Enable=False)
+favorites1 = EngData.LoadFavoriteItems()
+geometry1 = system1.GetContainer(ComponentName="Geometry")
+geometry1.Edit(IsDiscoveryGeometry=True)
+geometry1.Exit()
+modelComponent1 = system1.GetComponent(Name="Model")
+modelComponent1.Refresh()
+model1 = system1.GetContainer(ComponentName="Model")
+model1.Edit()
+model1.Exit()
+geometry1.SetFile(FilePath="C:/Users/david/Downloads/MountingBracket.step")
+modelComponent1.Refresh()
+model1.Edit()
+Save(Overwrite=True)
+Save(Overwrite=True)
+model1.Exit()
+model1.Edit()
+model1.Exit()
+model1.Edit()
+model1.Exit()
+Save(Overwrite=True)
+results1 = system1.GetContainer(ComponentName="Results")
+results1.Edit()
+model1.Exit()
+Save(Overwrite=True)

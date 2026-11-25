@@ -1,0 +1,161 @@
+import sys
+import time
+import unittest
+from unittest.mock import MagicMock, patch
+
+# --- 1. Universal Hardware Mocks ---
+# These prevent scripts from crashing when looking for real I2C buses or serial ports
+sys.modules['serial'] = MagicMock()
+sys.modules['smbus2'] = MagicMock()
+sys.modules['cv2'] = MagicMock()
+sys.modules['power_monitor'] = MagicMock()
+sys.modules['audio'] = MagicMock()
+sys.modules['webcam'] = MagicMock()
+sys.modules['stream_server'] = MagicMock()
+sys.modules['navigation'] = MagicMock()
+sys.modules['imu'] = MagicMock()
+
+# Now we can safely import the targets without triggering physical hardware checks
+import rclpy
+try:
+    from Code.Pi5.pi5_main import (PiQuadrupedController, RobotMode, RobotActivity,
+                                   main)
+except:
+    from pi5_main import (PiQuadrupedController, RobotMode, RobotActivity,
+                               main)
+
+class TestPi5QuadrupedSoftware(unittest.TestCase):
+    
+    @classmethod
+    def setUpClass(cls):
+        """Initialize ROS 2 context once for the test suite context."""
+        if not rclpy.ok():
+            rclpy.init()
+
+    @classmethod
+    def tearDownClass(cls):
+        """Shutdown ROS 2 context gracefully."""
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    @patch('serial.Serial')
+    def test_controller_initialization(self, mock_serial):
+        """Verifies that the controller node initializes, sets up kinematic engines, and creates global variables."""
+        # Setup mock serial instances
+        mock_instance = MagicMock()
+        mock_serial.return_value = mock_instance
+        
+        # Instantiate node
+        controller = PiQuadrupedController()
+        
+        # Two 16-byte terminators: 0xFF tells the Pico to cycle the buffer,
+        # 0xFE tells it to hold on the final step (used for recovery paths).
+        self.assertTrue(hasattr(controller, 'end_marker'), "Missing 'end_marker' attribute in controller setup!")
+        self.assertEqual(controller.end_marker, b'\xFF' * 16, "The cycling end_marker is not the 16-byte 0xFF block.")
+        self.assertEqual(controller.oneshot_end_marker, b'\xFE' * 16, "The one-shot end marker is not the 16-byte 0xFE block.")
+        
+        # Verify initial state engine allocation. Mode (what the operator asked
+        # for) and activity (what the robot is transiently doing) are separate
+        # fields -- they used to be one, which stranded staged recoveries.
+        self.assertEqual(controller.current_mode, RobotMode.MANUAL)
+        self.assertEqual(controller.current_activity, RobotActivity.NORMAL)
+        self.assertIsNotNone(controller.ik_engine)
+        self.assertIsNotNone(controller.path_gen)
+        
+        # Clean up background threads spawned by init
+        controller.close_hardware()
+
+    @patch('serial.Serial')
+    def test_recovery_state_transition_and_framing(self, mock_serial):
+        """Verifies that handle_recovery locks state threads, parses metrics, and streams correct NaN termination blocks."""
+        mock_port = MagicMock()
+        mock_serial.return_value = mock_port
+        
+        controller = PiQuadrupedController()
+        
+        # Bypass forward kinematics lookup calculations for pure logic parsing verification
+        # The internal calculation yields raw motor joint values [roll, pitch, knee]
+        controller.ik_engine.calculate = MagicMock(return_value=[0.0, 0.0, 0.0])
+        
+        # --- FIXED FOR TRUNCATION CRASH: Provide exact 4-value elements containing [X, Y, Z, is_swing] ---
+        # The background gait serial worker processes frames expecting a swing flag at index 3.
+        valid_recovery_coordinates = [
+            [0.0, 0.0, 30.0, False],
+            [0.0, 0.0, 33.0, False],
+            [0.0, 0.0, 36.0, False]
+        ]
+        controller.recovery_engine.get_recovery_gait = MagicMock(return_value=valid_recovery_coordinates)
+        
+        # Formulate a structured abort string matching what the Pico transmits on touchdown
+        sample_abort_msg = "ABORTED,4.5,-2.1,12.8"
+        
+        # Execute recovery procedure
+        controller.handle_recovery(sample_abort_msg, mock_port)
+        
+        # Allow the background worker thread a brief tick to process the step queue and clear the state
+        timeout = 1.0
+        start_time = time.time()
+        while controller.current_activity == RobotActivity.RECOVERY and (time.time() - start_time) < timeout:
+            time.sleep(0.01)
+
+        # Recovery clears the ACTIVITY. It must leave the operating mode alone --
+        # a stumble should not silently drop the robot out of GPS navigation.
+        self.assertEqual(controller.current_activity, RobotActivity.NORMAL,
+                         "The recovery routine failed to release the activity back to NORMAL.")
+        self.assertEqual(controller.current_mode, RobotMode.MANUAL,
+                         "Recovery must not change the operating mode.")
+        
+        # Expected: START marker, 16-byte float packs, then the one-shot
+        # terminator -- a recovery path must not be cycled by the Pico.
+        mock_port.write.assert_any_call(b'\xAA\xAA')
+        mock_port.write.assert_any_call(b'\xFE' * 16)
+        
+        controller.close_hardware()
+
+    @patch('serial.Serial')
+    def test_pack_voltage_parsing(self, mock_serial):
+        """VBAT,<leg>,<mV> lines are consumed and stored; -1, stale or
+        malformed data reads back as -1; other lines are left alone."""
+        mock_serial.return_value = MagicMock()
+        controller = PiQuadrupedController()
+        try:
+            self.assertEqual(controller.pack_voltage_mv(), -1, "No report yet should read -1.")
+
+            self.assertTrue(controller.record_pack_voltage("VBAT,0,11840"))
+            self.assertEqual(controller.pack_voltage_mv(), 11840)
+
+            self.assertTrue(controller.record_pack_voltage("VBAT,0,-1"))
+            self.assertEqual(controller.pack_voltage_mv(), -1)
+
+            # Malformed or unknown-leg lines are consumed but change nothing.
+            controller.record_pack_voltage("VBAT,0,12000")
+            self.assertTrue(controller.record_pack_voltage("VBAT,0,abc"))
+            self.assertTrue(controller.record_pack_voltage("VBAT,9,9000"))
+            self.assertTrue(controller.record_pack_voltage("VBAT,0"))
+            self.assertEqual(controller.pack_voltage_mv(), 12000)
+
+            # A second board's reading is averaged in; an invalid one is not.
+            self.assertTrue(controller.record_pack_voltage("VBAT,2,12200"))
+            self.assertEqual(controller.pack_voltage_mv(), 12100)
+            controller.record_pack_voltage("VBAT,3,-1")
+            self.assertEqual(controller.pack_voltage_mv(), 12100)
+
+            # A stale leg drops out; all stale reads as -1.
+            t, mv = controller.pack_voltage[0]
+            controller.pack_voltage[0] = (t - 10.0, mv)
+            self.assertEqual(controller.pack_voltage_mv(), 12200)
+            t, mv = controller.pack_voltage[2]
+            controller.pack_voltage[2] = (t - 10.0, mv)
+            self.assertEqual(controller.pack_voltage_mv(), -1)
+
+            # CUR lines are not VBAT's to consume, and CUR parsing still works.
+            cur = "CUR,0,1,2,3,4,5,6"
+            self.assertFalse(controller.record_pack_voltage(cur))
+            self.assertTrue(controller.record_motor_currents(cur))
+            self.assertFalse(controller.record_motor_currents("VBAT,0,12000"))
+        finally:
+            controller.close_hardware()
+
+if __name__ == '__main__':
+    print("Executing standalone headless validation suite...")
+    unittest.main()

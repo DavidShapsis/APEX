@@ -1,0 +1,2135 @@
+# Engineering Notes
+
+Defects found during a full read of the control path that were **not** fixed, with
+why they were deferred, plus the manual configuration steps the fixes introduced.
+Ordered by how badly they bite. Fixed defects are kept here too, marked
+**RESOLVED**, as a record of what broke and why the fix works — see git history
+for the actual diffs.
+
+## Read this first
+
+The two-minute version. Full detail is one click away on each line.
+
+- **[Join the two motor packs at the same voltage](#join-the-two-motor-packs-at-the-same-voltage)** — within about 0.1 V before connecting, or the fuller pack dumps current into the emptier one.
+- **[IMU roll/pitch signs are unverified](#imu-banner)** — if either axis reads
+  backwards, self-levelling pushes the tilt *further* over instead of correcting
+  it. [Bench-check it](#verify-the-imu-roll-pitch-signs-do-this-one-first) before
+  the first unsupported walk — do this one first.
+- **[Re-flash all 4 Picos](#reflash-banner)** — seven firmware fixes are sitting
+  in `Code/Pico/` and none of them exist on the robot until it's reflashed.
+- **[Set `LEG_ID` on each Pico](#set-leg-id-on-each-pico)** — all four boards
+  currently ship as `0`.
+- **[Calibrate `TOUCHDOWN_AMPS`](#ground-contact-current-sensing-replaced-the-fsr)** — the current-based touchdown abort ships with 3.0 A placeholders; too low aborts mid-walk, too high misses touchdowns.
+- **[Verify the `reverse` flags during an actual turn](#set-the-left-right-reverse-flags-now-matters-for-turning-verify-it)** — wrong polarity here now steers the wrong way, not just at boot.
+- **[PID `kp = 0.8` still needs bench tuning](#pid-kp-still-needs-bench-tuning-windup-ruled-out-kd-fixed)** — simulation favors a softer gain, but the sim has no gravity or load to fight.
+- **[IK clamps unreachable targets silently](#ik-clamps-unreachable-targets-silently)** — a bad command doesn't error, it just quietly clips.
+- **[Obstacle avoidance has never run on real hardware](#obstacle-avoidance-built-and-simulated-never-run-on-hardware)** — simulated and unit-tested only; tune thresholds on the bench first.
+- **[Compass hard/soft-iron calibration still isn't done](#compass-declination-tilt-now-handled-hard-soft-iron-calibration-still-not)** — declination and tilt compensation are in, calibration against local magnetic interference is not.
+- **[Current-sensing hardware assumptions are unconfirmed](#current-sensing-banner)** — joint-to-ADC-channel mapping, MCP3208 VREF = 3.3 V, and whether the driver boards carry their own 10 kΩ on `IS`.
+- **[Idea, not built: one generic preloaded UF2 for all 4 Picos](#planned-ship-one-generic-uf2-with-the-pico-files-preloaded)** — flash MicroPython and the default `.py` files in a single step; still editable in Thonny afterward.
+- **[Swing clearance is 4.76 cm, not the nominal 5.0](#swing-clearance-is-4-76-cm-not-the-nominal-5-0)** — small margin, worth knowing before assuming ground clearance.
+- **[Encoder zero must match `HOME_POSE`](#encoder-zero-must-match-home-pose-this-is-what-homing-top-of-doc-is-for)** — that's what the manual homing step (below) is for.
+- **[Protocol gaps accepted for now](#protocol-gaps-accepted-for-now)** — known wire-protocol rough edges that aren't worth fixing yet.
+
+<details>
+<summary><strong>Full section index</strong> (every heading in this document)</summary>
+
+- [RESOLVED — receiving a gait frame froze the gait (the robot would not walk)](#resolved-receiving-a-gait-frame-froze-the-gait-the-robot-would-not-walk)
+- [RESOLVED — pressing Go yanked three planted feet sideways](#resolved-pressing-go-yanked-three-planted-feet-sideways)
+- [RESOLVED — the Pico threw away every Stand and Go ramp (robot could not stand)](#resolved-the-pico-threw-away-every-stand-and-go-ramp-robot-could-not-stand)
+- [RESOLVED — every gait re-send teleported the feet (25.6° / 17.6 cm, full duty)](#resolved-every-gait-re-send-teleported-the-feet-25-6-17-6-cm-full-duty)
+- [RESOLVED — STAND while walking commanded a 68.6 cm lurch](#resolved-stand-while-walking-commanded-a-68-6-cm-lurch)
+- [RESOLVED — one InverseKinematics shared across threads returned wrong angles](#resolved-one-inversekinematics-shared-across-threads-returned-wrong-angles)
+- [Swing clearance is 4.76 cm, not the nominal 5.0](#swing-clearance-is-4-76-cm-not-the-nominal-5-0)
+- [Not a defect: stance y quantisation](#not-a-defect-stance-y-quantisation)
+- [Obstacle avoidance — built and simulated, never run on hardware](#obstacle-avoidance-built-and-simulated-never-run-on-hardware)
+  - [Tune these on the bench before trusting it outdoors](#tune-these-on-the-bench-before-trusting-it-outdoors)
+  - [RESOLVED — an absolute depth threshold read the ground as an obstacle](#resolved-an-absolute-depth-threshold-read-the-ground-as-an-obstacle)
+  - [Known limits of the approach itself](#known-limits-of-the-approach-itself)
+  - [Validated against real ground-robot imagery](#validated-against-real-ground-robot-imagery)
+  - [First hardware session should be, in order](#first-hardware-session-should-be-in-order)
+- [Ground contact — current sensing replaced the FSR](#ground-contact-current-sensing-replaced-the-fsr)
+- [PLANNED — ship one generic UF2 with the Pico files preloaded](#planned-ship-one-generic-uf2-with-the-pico-files-preloaded)
+- [Homing — a manual step you have to do, before every power-on](#homing-a-manual-step-you-have-to-do-before-every-power-on)
+  - [RESOLVED — Home button, one leg at a time](#resolved-home-button-one-leg-at-a-time)
+  - [RESOLVED — boot no longer moves the legs](#resolved-boot-no-longer-moves-the-legs)
+  - [RESOLVED — smooth ramps instead of one big jump: Stand and Go](#resolved-smooth-ramps-instead-of-one-big-jump-stand-and-go)
+  - [RESOLVED — Stop](#resolved-stop)
+  - [Bug caught while building Stand/Go, not previously exercised](#bug-caught-while-building-stand-go-not-previously-exercised)
+  - [Still open, and worth deciding before any of this is trusted](#still-open-and-worth-deciding-before-any-of-this-is-trusted)
+- [Before you walk it](#before-you-walk-it)
+  - [Set LEG_ID on each Pico](#set-leg-id-on-each-pico)
+  - [Set the left/right `reverse` flags — now matters for turning, verify it](#set-the-left-right-reverse-flags-now-matters-for-turning-verify-it)
+  - [Verify the IMU roll/pitch signs — do this one first](#verify-the-imu-roll-pitch-signs-do-this-one-first)
+  - [Front/rear mirroring is handled in software — verified](#front-rear-mirroring-is-handled-in-software-verified)
+  - [Body geometry (set — recorded here because it lives nowhere else)](#body-geometry-set-recorded-here-because-it-lives-nowhere-else)
+  - [Join the two motor packs at the same voltage](#join-the-two-motor-packs-at-the-same-voltage)
+- [Debug tool: per-leg deactivation](#debug-tool-per-leg-deactivation)
+- [Will make the robot fall over](#will-make-the-robot-fall-over)
+  - [OPEN — the IMU roll/pitch signs are unverified, and a wrong one is positive feedback](#open-the-imu-roll-pitch-signs-are-unverified-and-a-wrong-one-is-positive-feedback)
+  - [RESOLVED — body shift, phased with the lift sequence](#resolved-body-shift-phased-with-the-lift-sequence)
+  - [RESOLVED — `height2` (stance push) set to 0](#resolved-height2-stance-push-set-to-0)
+  - [RESOLVED — `STEP_TICK_MS` raised 20 → 40 ms](#resolved-step-tick-ms-raised-20-40-ms)
+  - [RESOLVED — `STEP_TICK_MS` raised 40 → 90 ms for the 188:1 knee](#resolved-step-tick-ms-raised-40-90-ms-for-the-188-1-knee)
+- [Will misbehave](#will-misbehave)
+  - [RESOLVED — `current_state` conflated operating mode with transient activity](#resolved-current-state-conflated-operating-mode-with-transient-activity)
+  - [RESOLVED — one leg recovers while the other three keep walking: policy is "go to neutral"](#resolved-one-leg-recovers-while-the-other-three-keep-walking-policy-is-go-to-neutral)
+  - [RESOLVED — steering is now a body twist (yaw), not differential stride](#resolved-steering-is-now-a-body-twist-yaw-not-differential-stride)
+  - [RESOLVED — mission end now holds position; route is editable from the dashboard](#resolved-mission-end-now-holds-position-route-is-editable-from-the-dashboard)
+  - [RESOLVED — blocking sensor reads moved off the control loop](#resolved-blocking-sensor-reads-moved-off-the-control-loop)
+  - [RESOLVED — IMU stabilization is now differential, not a common offset](#resolved-imu-stabilization-is-now-differential-not-a-common-offset)
+  - [RESOLVED — power monitor is an INA226 on the 5 V rail](#low-voltage-alarm-threshold-may-be-unreachable-check-which-rail-the-ina219-is-on)
+  - [RESOLVED — an out-of-range target left the motor at its last duty](#resolved-an-out-of-range-target-left-the-motor-at-its-last-duty)
+  - [Compass: declination + tilt now handled; hard/soft-iron calibration still not](#compass-declination-tilt-now-handled-hard-soft-iron-calibration-still-not)
+  - [RESOLVED — autonomous nav no longer drives on a dead sensor](#resolved-autonomous-nav-no-longer-drives-on-a-dead-sensor)
+  - [RESOLVED — a camera that fails to open no longer reads as healthy](#resolved-a-camera-that-fails-to-open-no-longer-reads-as-healthy)
+  - [RESOLVED — `port_by_leg` mutated without the serial lock](#resolved-port-by-leg-mutated-without-the-serial-lock)
+  - [RESOLVED — INA226 current reading](#ina219-voltage-only-for-now-confirm-the-wiring)
+  - [RESOLVED — two repo files could not run at all](#resolved-two-repo-files-could-not-run-at-all)
+  - [RESOLVED — Pico PID state was not reset when drive is cut](#resolved-pico-pid-state-was-not-reset-when-drive-is-cut)
+  - [RESOLVED — `fsr.py` interrupt helpers could not both be used](#resolved-fsr-py-interrupt-helpers-could-not-both-be-used)
+  - [IK clamps unreachable targets silently](#ik-clamps-unreachable-targets-silently)
+  - [RESOLVED — a blocked leg sat at 100% PWM indefinitely (needs a Pico reflash)](#resolved-a-blocked-leg-sat-at-100-pwm-indefinitely-needs-a-pico-reflash)
+  - [RESOLVED — FSR abort fired on the FIRST swing step of every leg](#resolved-fsr-abort-fired-on-the-first-swing-step-of-every-leg)
+  - [PID: `kp` still needs bench tuning (windup ruled out, `kd` fixed)](#pid-kp-still-needs-bench-tuning-windup-ruled-out-kd-fixed)
+  - [Minor: stale target for one tick](#minor-stale-target-for-one-tick)
+- [Verify on hardware](#verify-on-hardware)
+  - [RESOLVED — BNO085 constant names, and boot no longer dies on a bad hardware init](#resolved-bno085-constant-names-and-boot-no-longer-dies-on-a-bad-hardware-init)
+  - [RESOLVED — the IMU was on the HDMI bus, and absent sensors reported OK](#resolved-the-imu-was-on-the-hdmi-bus-and-absent-sensors-reported-ok)
+  - [RESOLVED — first-boot fixes: camera, GPS, OLED, shutdown](#resolved-first-boot-fixes-camera-gps-oled-shutdown)
+  - [RESOLVED — BTS7960 dual enable confirmed tied together on the PCB](#resolved-bts7960-dual-enable-confirmed-tied-together-on-the-pcb)
+  - [Encoder zero must match HOME_POSE — this is what homing (top of doc) is for](#encoder-zero-must-match-home-pose-this-is-what-homing-top-of-doc-is-for)
+  - [Dead branch in `imu.py`](#dead-branch-in-imu-py)
+- [Structural notes from the full review (no defect, worth knowing)](#structural-notes-from-the-full-review-no-defect-worth-knowing)
+  - [The IK cannot flip the knee to the other solution — verified](#the-ik-cannot-flip-the-knee-to-the-other-solution-verified)
+  - [Gait quality — one leg up, three legs pushing; turning really does use hip roll](#gait-quality-one-leg-up-three-legs-pushing-turning-really-does-use-hip-roll)
+  - [What `reverse` does and does not control](#what-reverse-does-and-does-not-control)
+- [Protocol gaps (accepted for now)](#protocol-gaps-accepted-for-now)
+
+</details>
+
+---
+
+<a id="reflash-banner"></a>
+> **RE-FLASH THE PICOS BEFORE THE NEXT POWERED TEST.** Seven firmware defects
+> have been fixed in `Code/Pico/` and none of them reach the robot until it is
+> reflashed — a Pi running the new code against old firmware still cannot stand,
+> and still will not walk:
+>
+> - the Stand and Go ramps were silently discarded (the robot could not stand at all)
+> - **receiving a frame froze the gait — measured 0 steps in 20 s at any re-send
+>   faster than 69 ms, i.e. the robot stands still while the dashboard says WALKING**
+> - the step clock's cadence tracked loop jitter instead of being a fixed 40 ms
+> - every gait re-send restarted the cycle from step 0, slamming the feet
+> - a blocked joint held 100% PWM forever, with nothing to stop it
+> - the FSR abort would have fired on every leg's first swing step (since
+>   superseded: the FSR is gone, current sensing replaced it)
+> - PID state survived a Stop, saturating the integrator on resume
+>
+> Also **set `LEG_ID`** (all four boards currently ship as `0`), and copy the new
+> `mcp3208.py`, `current_sense.py` and `contact_detect.py` onto every board along
+> with `pico_main.py`. Each is written up in its own section below.
+
+<a id="imu-banner"></a>
+> **VERIFY THE IMU ROLL/PITCH SIGNS BEFORE THE FIRST UNSUPPORTED WALK.** Body
+> levelling assumes right-side-down is a positive roll and nose-up a positive
+> pitch. Whether the BNO085 actually reads that way depends on how it is bolted
+> in, nothing in the code or the simulator can detect it, and if either axis is
+> inverted the correction is **positive feedback** — it grows the tilt to 8.6° of
+> self-inflicted lean against a 2.4 cm stability margin. Two-minute bench check in
+> *Will make the robot fall over → OPEN — the IMU roll/pitch signs are unverified*.
+
+<a id="current-sensing-banner"></a>
+> **BUILT, NOT YET RUN ON HARDWARE: per-motor current sensing replaced the FSR.**
+>
+> Each Pico reads all six BTS7960 `IS` outputs of its leg through an MCP3208 and
+> aborts on a sustained mid-swing current spike, read as an early touchdown.
+> Before trusting it, confirm on the bench:
+>
+> - `TOUCHDOWN_AMPS` — 3.0 A placeholders; set from logged readings
+> - joint-to-channel map (`channels=` in `pico_main.py`), and which of each pair is
+>   `R_IS` vs `L_IS`
+> - MCP3208 VREF really is 3.3 V (`MCP3208(vref=...)`); a 5 V supply would also put
+>   5 V on GP16
+> - whether the driver boards have their own `IS`-to-GND 10 kΩ (`DRIVER_IS_OHMS`)
+>
+> Full write-up: [Ground contact — current sensing replaced the
+> FSR](#ground-contact-current-sensing-replaced-the-fsr).
+
+**Verify the whole control path without hardware:**
+
+```bash
+cd Code/Pi5/inverse_kinematics && python quadruped_sim.py --report   # gait verdict
+cd Code/Pi5 && python vision_obstacle.py                             # avoidance planner
+cd Code/Pi5 && python sensor_hub.py                                  # sensor pollers
+```
+
+**Verify the gait before touching hardware:**
+
+```bash
+cd Code/Pi5/inverse_kinematics
+python quadruped_sim.py --report      # numeric verdict, no dependencies
+python quadruped_sim.py               # 3D animation, needs matplotlib
+```
+
+`matplotlib` is not currently installed (`pip install matplotlib`), which also means
+`gait_testing2.py` and `gait_testing3.py` cannot run as-is. `--report` works without
+it.
+
+---
+
+<a id="resolved-receiving-a-gait-frame-froze-the-gait-the-robot-would-not-walk"></a>
+## RESOLVED — receiving a gait frame froze the gait (the robot would not walk)
+
+**The worst defect found so far. It stopped the robot walking at all, silently.**
+Needs a Pico reflash *and* the Pi-side change.
+
+A gait frame is `2 + 20*16 + 16 = 338` bytes; at 115200 8N1 that is **29.3 ms of
+wire time** per port. Two things then conspired on the Pico:
+
+1. `gait_buffer` was cleared at `START_MARKER` and refilled in place, and step 3
+   was gated on `not is_receiving` — so for the whole 29.3 ms the leg had nothing
+   to step through and simply held its last target;
+2. `last_step_time` was reset to *now* on **every** end marker, restarting the
+   40 ms tick from zero each time a frame landed.
+
+So a frame had to arrive, and then a further 40 ms of silence had to pass, before
+the gait advanced by one step. The Pi's re-send trigger (steering moved >5°, tilt
+>1.5°, stride >0.05) is evaluated every ~10 ms and **nothing rate-limited it** —
+during a turn, or on any ground that moves the IMU, the Pi re-sent far faster than
+that. Measured in `wire_timing.py`, replaying the real parser logic against real
+baud timing:
+
+| Pi re-sends every | gait steps in 20 s | vs. commanded |
+|---|---|---|
+| 20 ms | **0** | 0% — *and frames truncated mid-flight* |
+| 50 ms | **0** | 0% |
+| 69 ms | **0** | 0% |
+| 100 ms | 200 | 40% |
+| 250 ms | 400 | 80% |
+| never | 499 | 100% |
+
+Below ~30 ms it got worse still: the worker's own send loop is ~22 ms against
+29.3 ms of wire time, so it began the next frame while the previous was still
+draining and `reset_output_buffer()` — `tcflush(TCOFLUSH)` on POSIX — **discarded
+the tail**, end marker included. The Pico then sat in `is_receiving` forever,
+eating the next `START_MARKER` as payload, until enough garbage arrived to trip
+`MAX_GAIT_STEPS`.
+
+Three fixes, and the gait now runs at 498–499 steps / 20 s at *every* re-send rate:
+
+- **Pico — staging buffer.** Frames land in `rx_buffer` and are swapped into
+  `gait_buffer` only once their end marker is parsed. Step 3 lost its
+  `not is_receiving` condition, so the leg keeps walking the last complete cycle
+  while the next one is on the wire. A truncated or desynced frame now discards
+  only the staged copy, so it can no longer freeze a leg either.
+- **Pico — `RESYNC_INTERVAL_MS = 5000`.** The step clock is re-aligned to a frame
+  boundary at most every 5 s instead of on every frame. Between re-syncs the
+  boards free-run on their crystals: at a worst-case 100 ppm spread that is 0.5 ms
+  of drift over 5 s, against a 90 ms tick (40 ms when this was written) and the
+  one-tick guard band between each leg's swing window. Cost is at most one
+  truncated tick per 5 s, under 2% of walking speed at 90 ms. A genuinely new trajectory (ramp, recovery, a cycle of a
+  different length) still re-syncs immediately, which is the moment it matters.
+- **Pi — `MIN_GAIT_RESEND_S = 0.10` and `_drain()`.** The control loop will not
+  push frames faster than 10 Hz, and the worker now `flush()`es each port before
+  the next `reset_output_buffer()` can run, which makes the truncation race
+  impossible rather than merely unlikely. Skipping a re-send loses nothing:
+  `last_sent_*` is only updated when a frame actually goes out, so the delta stays
+  tripped and the update leaves on the next eligible pass.
+
+Also fixed alongside: the tick advanced by `last_step_time = ticks_ms()`, making
+the real cadence 40 ms *plus* however long that pass took. Harmless while every
+end marker re-synced the clock; not harmless once re-syncs are 5 s apart. It now
+advances by exactly `STEP_TICK_MS`, snapping forward only if it has fallen more
+than a full tick behind.
+
+---
+
+<a id="resolved-pressing-go-yanked-three-planted-feet-sideways"></a>
+## RESOLVED — pressing Go yanked three planted feet sideways
+
+`engage_walking()` ramped every leg from the stand pose to `all_angles[0]`, then
+started the cyclic walk. But `_gait_serial_worker` rotates each leg's buffer by
+`phase_offsets()` — buffer index `j` for leg L is global tick `j - offset_L`,
+which is exactly what `apply_body_shift()` assumes — so leg L's first *commanded*
+frame is `all_angles[offsets[L]][L]`, not `all_angles[0][L]`.
+
+Ramping all four to index 0 put them at four different points of the cycle at
+once, a configuration the body never actually holds, and the first cyclic tick
+then snapped each leg to its real phase:
+
+| leg | phase offset | joint jump | foot moved | in one 40 ms tick |
+|---|---|---|---|---|
+| Front-Left | 0 | 0.00° | 0.00 cm | correct by luck — its offset is 0 |
+| Front-Right | 10 | 10.95° | 7.11 cm | |
+| Rear-Right | 15 | 11.42° | 6.93 cm | |
+| Rear-Left | 5 | **21.45°** | **13.15 cm** | |
+
+Normal stance travel is 0.67 cm per tick and the joint-rate budget behind
+`STEP_TICK_MS = 40` is 9.4°/tick, so this was ~20× over on both counts. All four
+feet are planted at that instant (swing is local indices 1–4, not 0), so nothing
+was airborne to absorb it — the three legs fought each other through the frame at
+full duty, either scrubbing the feet or lurching the body. This is precisely the
+slam the whole Home → Stand → Go sequence exists to prevent, and it fired on the
+first walking command every single time.
+
+`gait_entry_pose()` now returns each leg's own phase-shifted entry frame and the
+ramp targets that. Verified: worst residual jump 0.00°, and the first cyclic tick
+is 9.26° — inside budget.
+
+---
+
+<a id="resolved-the-pico-threw-away-every-stand-and-go-ramp-robot-could-not-stand"></a>
+## RESOLVED — the Pico threw away every Stand and Go ramp (robot could not stand)
+
+**This one stopped the robot working at all, and needs a Pico reflash to fix.**
+
+`pico_main.MAX_GAIT_STEPS` was **32**. It exists as a desync guard — an overlong
+frame means the byte stream lost sync mid-payload, and the cap stops the buffer
+growing until `MemoryError`:
+
+```python
+gait_buffer.append(parts)
+if len(gait_buffer) > MAX_GAIT_STEPS:
+    gait_buffer = []          # the WHOLE frame is thrown away
+    is_receiving = False
+```
+
+But the largest frame the Pi legitimately sends is the Stand/Go Cartesian ramp,
+and `build_ramp(steps=40)` → `cartesian_ramp` → `range(steps + 1)` = **41
+frames**. Every STAND and every GO therefore hit the guard at frame 33, had the
+whole buffer discarded, and the remaining 8 frames plus the end marker were
+rescanned as raw bytes looking for a start marker. The leg never left its homed
+pose. Nothing logged it — from the Pi's side the frame went out fine.
+
+The 20-frame walking gait, the 21-frame recovery path and the 2-frame
+`settle_to_stand` were all under the cap, which is why the bug hid: everything
+except the two ramps worked.
+
+**Fixed** by raising `MAX_GAIT_STEPS` to **48** (still a desync guard, now above
+every legitimate frame) and adding `PICO_MAX_FRAMES = 48` on the Pi, which
+`send_entire_gait()` checks — it now logs and returns `False` rather than
+believing an oversized frame was sent, and `request_stand` / `engage_walking` /
+`settle_to_stand` propagate that failure instead of setting `standing = True`
+regardless. Verified by replaying the real wire bytes through a copy of the
+Pico's parser: the 41-frame ramp is accepted and ends holding the stand pose.
+
+---
+
+<a id="resolved-every-gait-re-send-teleported-the-feet-25-6-17-6-cm-full-duty"></a>
+## RESOLVED — every gait re-send teleported the feet (25.6° / 17.6 cm, full duty)
+
+Also needs the Pico reflash. The Pi rebuilds and re-sends the entire gait
+whenever the steering command moves >5°, the IMU tilt moves >1.5°, or the
+avoidance stride changes — which in normal walking is often. The Pico's
+end-marker handler did:
+
+```python
+current_step_index = 0      # restart the cycle
+```
+
+So a foot that was mid-stance was told, in one 40 ms tick, to be at the start of
+swing instead. That is a phase jump, not a geometry change, and it is large:
+
+| re-send trigger | old (restart at 0) | now (phase kept) |
+|---|---|---|
+| straight → hard turn | 25.6° / 17.6 cm | **7.1° / 4.2 cm** |
+| straight → 45° arc | 20.5° / 12.8 cm | **7.6° / 4.6 cm** |
+| walk → march in place | 14.5° / 5.0 cm | **8.9° / 5.0 cm** |
+| IMU tilt nudge only | 21.5° / 13.1 cm | **0.0° / 0.00 cm** |
+
+At `kp = 0.8` (saturating above 1.25°) all of the left column is a full-duty slam
+— the same failure class as the STAND lurch below, but happening several times a
+second while walking rather than once on a button press.
+
+**Fixed** by keeping the buffer index across a re-send *of the same walking
+cycle* — same length, both cyclic — and resetting to 0 only for a genuinely new
+trajectory (a one-shot ramp, or a cycle of a different length, which must run
+from its first entry). `last_step_time` is still reset on every frame, which is
+worth keeping: all four boards get their end marker within a few ms of each
+other, so it re-aligns the gait tick across legs and stops them free-running
+apart. Verified in the wire simulation: all four legs keep the same index across
+a re-send and exactly one leg is still airborne immediately after.
+
+Note this is also *safer* for phase than the old behaviour. Previously, if one
+leg missed a frame, the three that received it reset to 0 while the fourth kept
+counting — a real desync. Now a leg that misses a frame simply keeps its place.
+
+---
+
+<a id="resolved-stand-while-walking-commanded-a-68-6-cm-lurch"></a>
+## RESOLVED — STAND while walking commanded a 68.6 cm lurch
+
+Found during a full-codebase review, not previously exercised. `request_stand()`
+always ramped from `HOME_POSE`, and **nothing anywhere refused it while the robot
+was walking** — not the dashboard (`standBtn` was gated only on all-legs-homed),
+not the `/stand` route, not the controller. Pressing STAND mid-walk therefore
+commanded step 0 of a HOME_POSE ramp — roll 90°, knee 180°, legs straight out —
+while the legs were actually near the gait pose:
+
+| | roll | pitch | knee | foot |
+|---|------|-------|------|------|
+| walking gait pose | −15.55° | +44.44° | 85.11° | — |
+| what STAND commanded | +90.00° | 0.00° | 180.00° | — |
+| instantaneous error | **+105.6°** | −44.4° | +94.9° | **68.6 cm** |
+
+`kp = 0.8` saturates above 1.25° of error, so that is full duty on every joint:
+precisely the slam the whole Home → Stand → Go sequence exists to prevent.
+
+**Fixed by making STAND mean the right thing in both states.** From rest it is
+still the Cartesian ramp out of HOME_POSE. While walking it now calls the new
+`settle_to_stand()`, a direct one-shot move of all four legs to `stand_pose` —
+the same 2-entry buffer `handle_recovery` already sends the non-aborting legs,
+and accepted there for the same reason. Measured worst case from *any* walking
+gait pose (15 cm steering stride, body shift on) is **16.3° at a joint / 9.2 cm
+at the foot**, against 105.6° / 68.6 cm before.
+
+Side effect worth knowing: this is the first way to halt a robot that is on its
+feet without dropping it. STOP cuts holding torque and lets it sag; STAND now
+stops the walk and holds the stance powered. The dashboard says so.
+
+Not a full fix for the missing zero-velocity state (see "No stop command
+mid-turn" below) — there is still no "keep walking forward at 0 speed".
+
+---
+
+<a id="resolved-one-inversekinematics-shared-across-threads-returned-wrong-angles"></a>
+## RESOLVED — one InverseKinematics shared across threads returned wrong angles
+
+`calculate()` stored its answer on the engine (`self.roll/pitch/knee`) and
+returned `self`, so the caller read the angles off shared mutable state *after*
+the call returned. `pi5_main` has a single `self.ik_engine`, used from:
+
+- the main control loop — `build_gait()` → `GaitIK` → `calculate()`
+- ROS executor threads — `stand_callback`/`go_callback` → `build_ramp()` →
+  `cartesian_ramp()` → `calculate()`
+
+Those genuinely overlap (the STAND-while-walking path above is exactly such a
+case), and when they do, one thread reads the other thread's joint targets —
+which then go straight to a motor. Measured with the GIL switch interval forced
+low: **60% of solves corrupted** (24066 of 40000). At the default 5 ms switch
+interval it is rare rather than impossible, which is the worst kind of bug.
+
+**Fixed:** `calculate()` now returns an `IKSolution` — a small `__slots__`
+object carrying its own roll/pitch/knee — and every intermediate in the solve is
+a local. The engine holds only the segment lengths, which are read-only after
+construction, so it is safe to share. Attribute names are unchanged, so all four
+call sites needed no edit. Re-measured after the fix: **0 of 40000 corrupted.**
+
+Related and also fixed: `request_stand()` and `engage_walking()` were writing
+`self.standing` / `self.walking_enabled` without holding `serial_lock`, while
+`publish_homing_status()` reads them under it.
+
+---
+
+<a id="swing-clearance-is-4-76-cm-not-the-nominal-5-0"></a>
+## Swing clearance is 4.76 cm, not the nominal 5.0
+
+`SWING_HEIGHT = 5.0` is the *continuous* peak of `h1·sin(πs)`, but the swing is
+sampled at only 5 points — `s = 0, 0.2, 0.4, 0.6, 0.8` — which never lands on
+the `s = 0.5` peak. The highest commanded lift is `5.0·sin(0.4π) = 4.755 cm`.
+
+This matters because it appears in a safety argument: the PID tuning section
+below reasons that 9.4° of peak tracking error is "~4 cm at the foot, against
+5 cm of commanded swing clearance". The real figure is **4.76 cm**, so the
+margin is 0.76 cm rather than 1.0 — about 25% thinner than stated. Still
+positive, still needs the bench check that section already asks for.
+
+Raising the swing sample count (a larger `num_steps`, or a finer swing fraction)
+would both recover the nominal clearance and soften the liftoff/touchdown corner
+that drives the peak joint rate — see `STEP_TICK_MS` below, which wants the same
+thing for a different reason.
+
+---
+
+<a id="not-a-defect-stance-y-quantisation"></a>
+## Not a defect: stance y quantisation
+
+Recorded because it looks like one. `GaitPath.generate_path` rounds each
+coordinate to 2 dp, so consecutive stance steps differ by −0.66 or −0.67 cm
+rather than a constant −0.667. The underlying formula is exactly linear
+(verified: unrounded deltas are a single value); the variation is 0.005 cm of
+rounding, 0.05 mm at the foot. The elliptical-stance scrub the design
+deliberately rejects is 0.85 cm/tick — **170× larger**. Nothing to do here.
+
+---
+
+<a id="obstacle-avoidance-built-and-simulated-never-run-on-hardware"></a>
+## Obstacle avoidance — built and simulated, never run on hardware
+
+`vision_obstacle.py` plus the dashboard toggle. The planner logic is verified
+(`python vision_obstacle.py` runs a self-test; a closed-loop sim against the real
+`Navigator` showed obstacles struck by 0.95 m with avoidance off cleared by
+0.25–0.50 m with it on, no oscillation). **None of the perception side has been
+checked against a real camera on the real robot**, and several numbers are
+educated guesses until it is.
+
+<a id="tune-these-on-the-bench-before-trusting-it-outdoors"></a>
+### Tune these on the bench before trusting it outdoors
+
+- **`ROI_TOP` / `ROI_BOTTOM` (0.45 / 0.95).** Which band of the frame counts as
+  "the ground ahead". Depends entirely on where the camera is physically mounted
+  and at what angle — a guess until checked against a real still. Too high and it
+  reads the sky as clear; too low and it stares at the robot's own nose. Turn
+  avoidance on and look at the overlay on the dashboard feed.
+- **`OBSTACLE_MARGIN` (0.12).** How much nearer than its own row's ground a pixel
+  must read before it counts. Measured insensitive between 0.05 and 0.25 on the
+  synthetic scenes, so it is not a knife edge, but it has never met real terrain
+  texture. Raise it if grass or gravel trips it, lower it if low obstacles slip
+  through. (This replaced an absolute `NEAR_THRESH` — see below.)
+- **`FLAT_GRADIENT_MIN` (0.10).** Only fires for a column with no near/far
+  contrast at all, i.e. something filling the view. A camera angled further down
+  sees less depth range in the band, which shrinks every column's gradient and
+  makes false "blocked" more likely — check this once the mount is final.
+  Raising it halts more readily, which is the safe direction.
+- **`FOV_DEG` (60.0).** Assumed, not measured. Only scales bin index → steering
+  angle, so an error here makes turns consistently too shallow or too sharp
+  rather than breaking detection.
+- **`CLEAR_HOLD_S` (20.0).** How long to drive straight after the obstacle leaves
+  view before handing steering back to the navigator. This is the number that
+  decides clearing vs. grazing — see the comment on it for the swept data. It is
+  a time standing in for a distance because there is no odometry, so it is only
+  correct at the assumed ~10 cm/s avoidance speed. **If `STEP_TICK_MS` or the
+  base stride changes, this needs re-deriving.** `STEP_TICK_MS` has since gone
+  40 → 90 ms, so every speed is ×0.44 and 20 s now covers ~0.9 m, not ~2 m. **Not
+  yet re-derived** — scaling alone suggests ~45 s; re-run the clearance sweep.
+
+<a id="resolved-an-absolute-depth-threshold-read-the-ground-as-an-obstacle"></a>
+### RESOLVED — an absolute depth threshold read the ground as an obstacle
+
+Found on a real capture: a person standing in the middle of an otherwise clear
+path, with both sides plainly open, reported **fully blocked**. The depth model
+was fine — the figure was cleanly segmented — the costmap was wrong.
+
+For a forward-facing camera on flat ground, the distance to the ground at image
+row `r` goes as `1/(r - horizon)`, so the inverse depth the model emits ramps
+smoothly from far at the top of the frame to near at the bottom. The bottom of
+the ROI is therefore *always* near: it is the ground half a metre in front of the
+feet. `NEAR_THRESH = 0.55` flagged that ground everywhere. Reproduced on a
+synthetic scene built from the flat-ground equation: **bare open ground scored
+0.42 in every bin** against a 0.25 block threshold.
+
+**Fixed** by making detection ground-relative: a pixel is an obstacle when it
+reads `OBSTACLE_MARGIN` nearer than that row's own `GROUND_REF_PCT` percentile.
+An upright object occupies rows that would otherwise show ground far away, so it
+stands out sharply. The reference percentile sits below the median deliberately,
+so a wide object cannot drag it up to its own depth and hide itself. A separate
+per-bin flat-gradient test catches the one thing the relative test cannot see —
+something filling a column top to bottom, leaving no contrast to find.
+
+| scene | before | after |
+|---|---|---|
+| open ground | `#########` | `.........` |
+| figure dead centre | `#########` | `....#....` |
+| figure on the right | `#########` | `.......#.` |
+| wall filling the view | `#########` | `#########` |
+
+A useful property that fell out of it: because the reference comes from the row
+itself, a **uniform slope shifts the whole row together and is not flagged**.
+Only localised protrusions are, which is what you want on terrain.
+
+These four scenes are now a regression test in `python vision_obstacle.py`, and
+the tuning notebook imports the module rather than keeping its own copy of the
+pipeline — the two had already diverged once.
+
+<a id="known-limits-of-the-approach-itself"></a>
+### Known limits of the approach itself
+
+- **Monocular depth is relative, not metric.** No true distances, and the scale
+  shifts frame to frame. Fine for "something bulky is close", weak for judging
+  gap widths.
+- **Drop-offs and holes read as *farther* than the ground, never nearer, so the
+  detector cannot flag them at all.** This is inherent to the method, not a
+  tuning problem: the test asks "is anything closer than the ground should be",
+  and a hole is the opposite. The current-sensing touchdown / `ABORTED` recovery
+  path is the only backstop, and it only fires on contact.
+- **Body width is handled by a fixed angle, but the correct angle depends on
+  range.** What has to fit through a gap is ~72 cm (53 cm hip spacing plus the
+  abductor sticking out ~9.65 cm each side — *not* the 53 cm `BODY_WIDTH_CM`).
+  That subtends 71.7° at 0.5 m but only 20.5° at 2 m — 10.8 bins down to 3.1 —
+  and the costmap has no depth axis to tell those apart, since the ROI band
+  flattens roughly 0.5–2 m into one row of bins. `CORRIDOR_BINS=3` plus
+  `INFLATE_BINS=1` enforces a flat 33.3°, which matches the true width only
+  beyond **~1.2 m**; nearer than that it under-provisions on paper, and relies
+  on a close obstacle filling enough bins to trip `BLOCKED` instead. Fixing this
+  properly needs a range-resolved costmap (split the ROI into near/far rows and
+  require a wider corridor in the near row), not a bigger constant — raising
+  `CORRIDOR_BINS` to 5 demands 46.7° of a 60° view and leaves almost nothing
+  passable.
+- **Thin obstacles are unreliable.** Table legs and wires are close to the
+  resolution limit at `INPUT_SIZE = 266` and may not survive the bin averaging.
+- **No reverse.** Steering is a body yaw now (see the steering entry below), so
+  the robot *can* spin in place — `ESCAPE` and a hard turn command both do — but
+  it still cannot walk backward. A robot nose-first in a dead end can rotate to
+  face out, which the old differential steering could not do, but if it is
+  wedged it still needs a human.
+- **`BLOCKED` halts by setting stride to 0**, which makes the feet lift and land
+  in the same spot — it keeps standing and stays IMU-levelled. This is
+  deliberately *not* the dashboard STOP, which cuts holding torque and would let
+  a standing robot sag. Verified: `GaitPath` with `length=0` gives all feet
+  `y = 0.0` with 4 airborne steps still in the cycle.
+- **Fails open, not closed.** A stale costmap (camera died, worker stalled,
+  older than `STALE_AFTER_S`) drops back to normal walking rather than halting.
+  That is the right call for a slow robot with a human nearby, but it does mean
+  a silently dead camera looks like "avoidance is on and the path is clear".
+  Watch the dashboard state readout.
+- **CPU contention is unmeasured.** Inference is capped at
+  `cpu_count - 2` threads to leave room for the 100 Hz control loop and the four
+  serial writers, but the effect on control-loop timing has not been measured on
+  a loaded Pi 5.
+
+<a id="validated-against-real-ground-robot-imagery"></a>
+### Validated against real ground-robot imagery
+
+The tuning notebook's Test 1 now runs eight photographs taken from actual ground
+robots — camera low, pointed straight ahead, ground plane filling the lower
+frame — rather than scenic stills. Two results are worth carrying forward:
+
+- **`INFLATE_BINS = 1` is load-bearing.** Dropping it to 0 makes an indoor
+  corridor with a wall down each side report CLEAR. Confirmed on real imagery,
+  not just simulation.
+- **A trail that looks walkable reports BLOCKED, correctly.** Its clear gap
+  measures 26.7°, which against the 72 cm body is 47 cm at 1 m, 71 cm at 1.5 m,
+  95 cm at 2 m — genuinely too tight near, fine further out. A good illustration
+  of the range-dependence limitation above: the costmap has no depth axis, so it
+  cannot express "tight now, fine in a metre" and halts instead.
+- **A low cardboard box on paving, several metres out, is missed.** Too few
+  pixels clear `OBSTACLE_MARGIN` for its bin to reach `BLOCK_FRAC`. It would be
+  seen on approach. Low obstacles at distance are the weak spot, with the
+  `ABORTED` foot-contact path as the only backstop.
+
+<a id="first-hardware-session-should-be-in-order"></a>
+### First hardware session should be, in order
+
+1. Robot on a stand, off the ground. Toggle avoidance on, watch the overlay, and
+   tune `ROI_*` and `NEAR_THRESH` against real obstacles at real distances.
+2. Check the reported inference time on the dashboard; confirm the control loop
+   is not visibly stuttering.
+3. Only then, on the ground, in manual mode, walk it at a single obstacle.
+4. GPS/autonomous mode last.
+
+---
+
+<a id="ground-contact-current-sensing-replaced-the-fsr"></a>
+## Ground contact — current sensing replaced the FSR
+
+Built and simulated, **not yet run on hardware**. Motor current now drives the
+early-touchdown abort (a foot touching down mid-swing triggers `handle_recovery`)
+and the dashboard's Motor Currents panel. The FSR is gone: its pin, GP16, is now
+the ADC's data line.
+
+**Hardware, per leg board:**
+
+- MCP3208 12-bit ADC on SPI0: DOUT → GP16, CS → GP17, CLK → GP18, DIN → GP19.
+  VREF assumed 3.3 V.
+- CH0–CH5 carry the three BTS7960s' `R_IS` / `L_IS` pairs (roll 0/1, pitch 2/3,
+  knee 4/5 — **unconfirmed**). CH6/CH7 are not connected.
+- Each of the 24 `IS` lines: `IS` → 680 Ω to GND → 5.1 kΩ → ADC input → 10 kΩ to GND.
+
+**Why the 680 Ω is required.** `IS` is a current source, not a voltage output
+(BTS7960 datasheet §4.4.4: "the maximum voltage at the IS pin is determined by the
+choice of the external resistor and the supply voltage"; rated to 45 V). With only
+the 15.1 kΩ divider to ground, the ADC input passes the MCP3208's VDD + 0.6 V
+absolute maximum at about 3.3 A of motor current, and a fault drives it toward
+the battery voltage. With the 680 Ω in parallel:
+
+| Case | `IS` current | ADC input |
+|---|---|---|
+| 9.5 A motor (max), typical ratio 8500 | 1.12 mA | 0.48 V |
+| 9.5 A motor, worst-case ratio ~3000 | ~3.2 mA | 1.37 V |
+| Fault current, max 7 mA (§4.4.7) | 7 mA | 3.02 V |
+
+Resolution is about 16 mA of motor current per ADC count. Keep the resistor at or
+below ~700 Ω or a fault clips at full scale. The sense ratio is only guaranteed
+to 3000–14000 at 5 A, so absolute amps are indicative; thresholds come from
+measured readings. If the driver boards carry their own `IS`-to-GND resistor
+(IBT-2 boards usually have a 10 kΩ "103"), set `DRIVER_IS_OHMS`; it shifts the
+scale ~6%.
+
+**Code:**
+
+- `Pico/mcp3208.py` — `MCP3208`, SPI driver only: `read_raw(ch)`, `read_voltage(ch)`.
+- `Pico/current_sense.py` — `CurrentSense`, one joint: zero-load offset taken at
+  boot (`tare()`, all PWMs still 0), per-side smoothed amps in `channel_amps`,
+  their sum in `amps`, and `valid = False` when a channel reads full scale (a dead
+  or unpowered ADC, which no real current can produce with the 680 Ω).
+- `Pico/contact_detect.py` — `TouchdownDetector`. Assumes a normal gait, upright:
+  a joint current above its threshold mid-swing is the foot touching down early.
+  It does not try to tell a touchdown from walking into something. Ignores the
+  first 40 ms after liftoff (the leg is still pushing off) and needs the spike to
+  last 10 ms. Both are absolute times, so the 90 ms tick left them unchanged. Swing
+  is 4 flagged steps × 90 ms = 360 ms, so 320 ms of each swing is checked. The
+  slower 188:1 knee may stay saturated past 40 ms at push-off; if touchdowns trip
+  right after liftoff, lengthen `blank_ms`. `TOUCHDOWN_AMPS` is still uncalibrated.
+- `Pico/pico_main.py` — resistor values and `TOUCHDOWN_AMPS` at the top. On a trip
+  it sends `CONTACT,<leg>,<joint>` then the usual `ABORTED,...`. Sends
+  `ADCFAULT,<leg>` once if the ADC reads dead (that leg then has no touchdown
+  check, but keeps walking), and `CUR,<leg>,<6 × mA>` every 200 ms for the
+  dashboard. `CURRENT_LOG = True` also prints readings to Thonny over USB; leave it
+  off for real runs, since a USB host holding the port without reading can block
+  `print()`.
+- Pi side — `pi5_main.py` logs `CONTACT` / `ADCFAULT` and appends the 24 currents
+  (mA, `-1` = no report in 1 s) to the status message at indices 20–43;
+  `stream_server.py` exposes them as `currents`, shown in the dashboard's
+  collapsible **Motor Currents** card.
+
+**Carried over from the FSR:** the abort's meaning and its whole path (`ABORTED`,
+drive cut, `handle_recovery`, re-arm on the next frame), and the gait's `is_swing`
+flag, which already leaves the liftoff and touchdown instants unflagged. Nothing
+else from the FSR needed migrating; `fsr.py` and the FSR code in `pico_main.py`
+have been deleted.
+
+**Calibrating `TOUCHDOWN_AMPS`** (3.0 A placeholders, uncalibrated): set
+`CURRENT_LOG = True`, watch Thonny, and record each joint through free swing,
+loaded stance, a hand pressed on the foot mid-swing, and a held joint. The
+threshold has to sit clearly between "free swing" and "foot hit something". Too
+low aborts the leg mid-walk; too high misses touchdowns.
+
+**Open:**
+
+- No IMU gating. The detector assumes the robot is upright; whether it should only
+  fire when the IMU reads near-level is undecided (it would have to be the Pi's
+  call, since the IMU isn't on the Picos).
+- `tare()` runs with the motors off, so it can't remove `IS` leakage with the high
+  side on: up to 200 µA by the datasheet (§4.4.9), typically 1 µA. Worst case that
+  reads as ~1.7 A of phantom current; calibration will show whether it matters.
+- Smoothing is per loop pass, so its time constant shifts slightly when a gait
+  frame arrives. The filter capacitor below would make this moot.
+
+**Undecided (PCB still in CAD): a filter capacitor on each ADC input.** Each of
+the 24 `IS` lines runs `IS` → 680 Ω to GND → 5.1 kΩ → ADC node → 10 kΩ to GND.
+A 1 µF cap from each ADC node to GND (24 total, 0603/0805) would:
+
+- average the `IS` signal, which pulses at the 1 kHz PWM rate because `IS` only
+  reports while the high side conducts. Time constant is ~3.6 ms (≈3.65 kΩ
+  Thévenin × 1 µF), fast next to the 90 ms gait tick;
+- give the MCP3208 a low-impedance source at its sample instant, which its
+  datasheet recommends (§4.1, §6.3) — the divider alone is ~3.6 kΩ.
+
+Cost of skipping it: noisier readings, smoothed only by `SMOOTHING` in
+`current_sense.py`. No code change either way.
+
+---
+
+<a id="planned-ship-one-generic-uf2-with-the-pico-files-preloaded"></a>
+## PLANNED — ship one generic UF2 with the Pico files preloaded
+
+Idea, not built. Right now, setting up a Pico is two steps: flash a stock
+MicroPython `.uf2` (drag-and-drop in BOOTSEL mode), then copy `pico_main.py`
+(as `main.py`), `motor_control.py`, `mcp3208.py`, `current_sense.py` and
+`contact_detect.py` onto it separately (Thonny, `mpremote`, or similar). The second
+step is also where `LEG_ID` and the per-joint `reverse` flags get set for that
+specific leg before copying.
+
+The idea is to collapse the first step into the second: build one combined
+`.uf2` that already contains both the MicroPython interpreter and the default
+copies of these files, so flashing it is a single drag-and-drop and the
+Pico boots with the files already in place — as ordinary files on its real
+filesystem, not compiled in, so they're still just as editable in Thonny
+afterward. Each of the 4 boards would still need someone to open `main.py` and
+change `LEG_ID`/`reverse` for that leg, same as today; this only
+removes the separate copy step, not the per-board configuration.
+
+**This is not the same as freezing the code into firmware**, which was also
+considered and rejected earlier in this project for the same reason: frozen
+modules are compiled into read-only program flash, not visible or editable as
+files, so anyone tuning `LEG_ID` or a `reverse` flag would need a full firmware
+rebuild instead of an edit in Thonny. A preloaded filesystem avoids that —
+the files are real, writable files from the moment the board boots.
+
+**How it would actually work:** a `.uf2` file is a sequence of independent,
+self-addressed 512-byte blocks — each block carries its own target flash
+address, so a valid `.uf2` can be assembled by writing to different regions in
+one file. Concretely:
+
+1. Take the stock MicroPython `.uf2` for the RP2040 (interpreter only, empty
+   filesystem).
+2. Separately build a small littlefs filesystem image — MicroPython's default
+   internal filesystem format on RP2040 — containing the three files above with
+   their default values already in place.
+3. Convert that filesystem image into `.uf2` blocks targeting the flash address
+   where that specific MicroPython build expects its filesystem to live.
+4. Concatenate the firmware `.uf2` and the filesystem `.uf2` into one file.
+   Flashing the combined file performs both writes in the one BOOTSEL
+   drag-and-drop.
+
+**The real cost, and why this is parked rather than built:** the filesystem's
+flash offset in step 3 is specific to the exact MicroPython firmware build the
+combined image starts from. Pull a newer MicroPython release later and that
+offset can shift, silently landing the preloaded files in the wrong place —
+so a combined image has to be treated as a build artifact pinned to one named
+MicroPython version, not a file to hand out and forget. Given all 4 boards
+still need per-board hand-editing regardless, this buys back exactly one
+drag-and-drop step per board, at the cost of maintaining and re-verifying that
+pin every time the MicroPython version changes. Worth doing if reflashing
+boards from scratch becomes routine (a build run, new hardware); not worth it
+for the occasional reflash this project does today.
+
+---
+
+<a id="homing-a-manual-step-you-have-to-do-before-every-power-on"></a>
+## Homing — a manual step you have to do, before every power-on
+
+Every Pico's encoder starts counting from wherever the leg physically is when it
+boots — the firmware has no way to know the real angle on its own. It currently
+assumes `initial_angle=0`, but the IK's neutral standing pose is
+**roll −15.55°, pitch 44.4°, knee 85.1°**, not zero. So the first gait frame used to
+command ~45° and ~95° of travel from a wrong assumed position, at effectively full
+PWM. **Resolved below — the whole flow (Home → Stand → Go → Stop) is built and
+verified; one open question about mechanical confirmation remains at the end.**
+
+**Manual, mechanical, not automated: before powering on, position each leg by hand**
+into this reference pose, one leg at a time, and treat that as the zero point:
+
+- **Hip roll = 90°** — abductor perpendicular to the body, pointing up.
+- **Knee = 180°** — locked straight, thigh and shin colinear.
+- **Hip pitch = 0°** — the leg (thigh+shin, straight) perpendicular to the body's
+  lengthwise axis, no fore/aft lean.
+
+This isn't a guess — it's derived from that description using the actual IK/FK code:
+with the knee locked straight the thigh-shin triangle degenerates, which forces the
+knee-side interior angle to exactly 0° regardless of segment length, which in turn
+forces pitch = 0° to be the *exact* angle with zero fore/aft foot offset (verified:
+`calculate_fk(90, 0, 180)` gives y = 0.0000 cm, and round-trips back through
+`calculate()` to the same three angles). See `HOME_POSE` in `ik_and_gait.py`.
+
+All four legs get commanded the identical standardized angles here — it's each
+joint's `reverse` flag on the Pico that makes the same command swing each leg out to
+its own correct physical side.
+
+<a id="resolved-home-button-one-leg-at-a-time"></a>
+### RESOLVED — Home button, one leg at a time
+How does the firmware know a leg has been placed and is ready to be zeroed? It
+doesn't, on its own — the human says so, one leg at a time, from the web dashboard.
+Each Pico recognizes a 2-byte `HOME_MARKER` (`0xAB 0xAB`, distinct from the gait
+protocol's `0xAA 0xAA` start marker) that means "wherever I physically am right now
+IS HOME_POSE" — it calls `zero_at()` on all three joints (new on `JointController`,
+same formula as the `initial_angle` setup in `__init__`, just callable after boot),
+then acks `HOMED,<id>\n`. **Nothing moves when this runs** — it only redefines what
+the encoder count means.
+
+The dashboard has a `Home FL` / `Home FR` / `Home RR` / `Home RL` button, one per
+leg, exactly as planned ("each leg gets homed independently 1 by 1"). `pi5_main.py`
+tracks `self.homed[leg_id]`, sourced only from the Pico's ack (not just "we sent the
+command"), and `request_stand()` / `engage_walking()` both hard-refuse — server-side,
+not just a greyed-out button — unless every leg reports homed.
+
+<a id="resolved-boot-no-longer-moves-the-legs"></a>
+### RESOLVED — boot no longer moves the legs
+It used to ramp straight into the walking gait as soon as it powered up, which —
+combined with the fact that nothing verified homing had actually happened — meant an
+unhomed robot would still slam its legs to wherever the gait's first frame put them.
+Boot now only runs leg identification and prints a reminder; every Pico just holds
+its power-on position (target 0,0,0) under light PID, which is what produces the
+small holding jiggle rather than a real move. Motion only starts once the operator,
+in order: homes all four legs, presses **Stand**, then **Go** (both below).
+
+<a id="resolved-smooth-ramps-instead-of-one-big-jump-stand-and-go"></a>
+### RESOLVED — smooth ramps instead of one big jump: Stand and Go
+Even with homing done correctly, going straight from HOME_POSE into the walking
+gait's first step is itself a big move (**105° of roll, 44° of pitch, 95° of knee**
+— see the table below). `ik_and_gait.cartesian_ramp()` interpolates a move like that
+in a straight line in foot-position space over 40 steps; `pi5_main.build_ramp()`
+wraps it for any fixed start pose → per-leg target. Verified: a ramp starts exactly
+at its start pose, ends at its target, and the intermediate foot path is a straight
+line to within 0.02 cm (rounding).
+
+That one big jump is now split into two smaller, explicitly user-triggered moves
+instead of a single automatic one at boot:
+
+- **Stand** (`request_stand()`) ramps every leg from HOME_POSE into a static,
+  feet-under-hips pose (`self.stand_pose`) — refuses unless every leg is homed.
+- **Go** (`engage_walking()`) ramps from `self.stand_pose` into the walking gait's
+  first frame, then starts the continuous cyclic walk — refuses unless the robot is
+  already standing.
+
+| joint | HOME_POSE | gait neutral stance | travel |
+|-------|-----------|---------------------|--------|
+| roll  | 90.0°  | −15.55° | −105.5° |
+| pitch | 0.0°   | 44.44°  | +44.4°  |
+| knee  | 180.0° | 85.11°  | −94.9°  |
+
+(Table is the original single HOME_POSE → gait-neutral jump that motivated building
+a ramp at all — the numbers above show why slamming straight there was the problem
+in the first place. Stand and Go now cover that distance in two separately-gated
+hops rather than one.)
+
+Sending a one-shot ramp to all four legs at once (rather than one leg's recovery
+path) needed a small worker change: the normal cyclic-gait path always phase-offsets
+each leg's buffer index and always ends with the *cycle* marker. A one-shot,
+multi-leg send needs neither — the four ramps are independent point-to-point paths,
+not a shared cycle sampled at different phases, so applying the phase rotation would
+have each leg read a different, wrong ramp entry (verified this directly: with the
+real offsets applied, a nonzero-offset leg samples the wrong entry; with offsets
+zeroed, every leg samples its own ramp correctly). `send_entire_gait()` takes a
+`cycle` flag, and the worker picks offsets `[0,0,0,0]` and the one-shot marker when
+`cycle=False`.
+
+<a id="resolved-stop"></a>
+### RESOLVED — Stop
+Every Pico recognizes a third 2-byte command, `RELAX_MARKER` (`0xAC 0xAC`), that cuts
+PWM to zero on all three joints without touching `gait_buffer`, `current_targets`, or
+the encoder ISR. Pressing **STOP** on the dashboard sends this to every identified
+leg, and also clears `walking_enabled`/`standing` on the Pi so the cyclic gait stops
+being re-sent. Power resumes automatically — no separate "resume" command — the
+moment either a `HOME` command or a complete gait/ramp frame arrives, which is what
+pressing **Home** or **Stand** again naturally does.
+
+**Read this before using it:** Stop does not lower the robot into any kind of
+resting pose first. If the robot is standing or walking under its own weight when
+you press it, cutting power will let the legs sag or the robot collapse the instant
+torque drops — there is no sit-down sequence. It's built for "the robot is already
+off the ground or otherwise supported and I want to relax the motors without losing
+homing," not as a safe way to halt a walking robot mid-stride.
+
+<a id="bug-caught-while-building-stand-go-not-previously-exercised"></a>
+### Bug caught while building Stand/Go, not previously exercised
+`cartesian_ramp()` unpacked its target with `calculate_fk(*target_angles)`. A
+gait-frame entry is `[roll, pitch, knee, is_swing]` — 4 elements — so this raised
+`TypeError` the moment it ran against a real gait frame instead of the 3-element
+tuples the one existing test used. It would have crashed the first `engage_walking()`
+call (and, before that, the original boot-time ramp) the first time it actually ran,
+on hardware, with `rclpy` installed. Fixed by slicing to `[:3]` before unpacking.
+
+<a id="still-open-and-worth-deciding-before-any-of-this-is-trusted"></a>
+### Still open, and worth deciding before any of this is trusted
+Homing has no mechanical confirmation at all — if a leg is 10° off from the real
+pose when you press its button, the firmware has no way to notice. It's a straight
+trust-the-human step, just now a button press instead of "power on and hope." A hard
+stop or limit switch would close this gap; not built here since it needs a decision
+about the mechanism.
+
+---
+
+<a id="before-you-walk-it"></a>
+## Before you walk it
+
+<a id="set-leg-id-on-each-pico"></a>
+### Set LEG_ID on each Pico
+`pico_main.py` has a `LEG_ID` constant at the top. Each of the four boards needs a
+**different** value matching the corner it is bolted to:
+
+| `LEG_ID` | Corner |
+|----------|--------|
+| `0` | Front Left |
+| `1` | Front Right |
+| `2` | Rear Right |
+| `3` | Rear Left |
+
+Each board announces `LEG,<id>` over UART every 500ms until it receives its first
+gait frame, and the Pi builds the port→corner map from that — so UART wiring order
+no longer matters. But two boards sharing an ID, or one set to the wrong corner,
+produces a wrong gait phase and the robot falls. **The Pi logs the map it detects at
+startup; check it before any powered walking.**
+
+Confirmed on re-review that a *duplicate* ID fails safe rather than dangerously:
+the second board to claim an ID is logged as an error and never enters
+`port_by_leg`, so `request_home_leg` refuses it, `all(self.homed.values())` never
+becomes true, and STAND is refused. You get a robot that will not stand, not one
+that walks on three legs. A *wrong but unique* ID does not fail safe — all four
+home, and the gait phases go to the wrong corners. Check the logged map.
+
+<a id="set-the-left-right-reverse-flags-now-matters-for-turning-verify-it"></a>
+### Set the left/right `reverse` flags — now matters for turning, verify it
+The joint setup in `pico_main.py` takes a `reverse` argument per joint, currently
+`False` everywhere. Left and right legs are mirror-image copies — the abductor
+segment sticks outboard on both sides — and a reflection reverses handedness, so
+one side needs its motor polarity flipped. Manual per-board setting, like `LEG_ID`.
+
+**"The commanded angles are identical either way" is only true while walking
+straight.** Verified: `build_gait` commands FL ≡ FR and RL ≡ RR joint-for-joint
+at `yaw_deg == 0`, so `reverse` does the entire left/right mirror. But a **turn**
+commands left ≠ right — a body spin rotates every foot the *same* angular
+direction about the centre, which is a rotation between the two sides, not a
+reflection, so `reverse` alone cannot produce it. `body_twist_xy_path` converts
+the arc into each leg's own local frame with `LEG_SIGN_X`, and `reverse` then
+maps that to physical motion. The turn *kinematics* are verified in
+`quadruped_sim --report` (body spins the correct direction, margin/rate hold),
+but the sim does not model `reverse`, so **whether the `reverse` flags compose
+correctly with a turn is a bench check** — do it on a stand, off the ground,
+before any powered turning.
+
+<a id="verify-the-imu-roll-pitch-signs-do-this-one-first"></a>
+### Verify the IMU roll/pitch signs — do this one first
+On a stand, legs off the ground, watch the `[IMU Reflex] Levelling. Roll ...
+pitch ...` line: tipping the chassis **right side down** must print a **positive
+roll**, and **nose up** must print a **positive pitch**. If either is backwards,
+flip that term's sign in `ik_and_gait.attitude_height_offsets()`.
+
+Get this wrong and the levelling is positive feedback — it grows the tilt instead
+of cancelling it, up to 8.6° of self-inflicted lean against a 2.4 cm stability
+margin. Full write-up and the numbers: *Will make the robot fall over → OPEN — the
+IMU roll/pitch signs are unverified*.
+
+<a id="front-rear-mirroring-is-handled-in-software-verified"></a>
+### Front/rear mirroring is handled in software — verified
+The IK solves a **knee-forward** leg: at neutral stance the knee node sits at
+local y = +18.8 cm. That matches the **rear** pair. The **front** pair is bolted
+on turned round so its knees point back (toward the rear knees, as on a real
+dog), so the front legs' stride is mirrored in software: `LEG_SIGN_Y = -1` for
+the front pair, applied inside `body_twist_xy_path` (this replaced the old
+`mirror_y=(leg_id in FRONT_LEGS)` flag; the two are equivalent and
+`body_twist_xy_path` at `yaw == 0` reproduces the old gait term for term).
+
+Verified numerically: during stance the front feet travel one way in their
+*local* frame and the rear feet the opposite way, but `LEG_SIGN_Y` makes all
+four move **backward in the body frame** together — which is what drives the
+body forward. Without the flip the front legs would push against the rear.
+
+It is a spatial mirror, **not** a time reversal. Reversing the cycle would also
+shift each flipped leg half a cycle and scramble the FL → RR → FR → RL crawl
+order.
+
+**One thing `LEG_SIGN_Y` does NOT do, and must not be confused with:** it mirrors
+the *stride direction*, not the *knee bend direction*. Whether a given knee angle
+bends the joint fore or aft is a property of the assembly and the `reverse` flag
+on that joint's `JointController`, not of the gait. So "the front knees face the
+rear knees" is handled in two separate places — stride by `LEG_SIGN_Y` (verified
+above, in software), bend direction by the per-joint `reverse` flags (still all
+`False`, still a bench check — see the entry above this one). Getting
+`LEG_SIGN_Y` right does not tell you the `reverse` flags are right.
+
+A stale docstring on `GaitPath.update_params` used to say `mirror_y` applied to
+"the rear pair, whose knees point forward", contradicting `FRONT_LEGS` three
+screens above it. The code was always right (front pair mirrored); the comment
+has been corrected.
+
+<a id="body-geometry-set-recorded-here-because-it-lives-nowhere-else"></a>
+### Body geometry (set — recorded here because it lives nowhere else)
+`quadruped_sim.py` uses `BODY_LENGTH = 67.5`, `BODY_WIDTH = 53.0` cm. Both are
+**hip-pivot spacings**, which is what the support polygon is built from — the shell
+is 950mm end to end, but the hip pitch axes are only 675mm apart. Using the outer
+length here would flatter the stability margin.
+
+Same file has `LEG_FLIP_X` / `LEG_FLIP_Y`, modelling left-right mirroring and the
+front pair's reversed mounting. `mirror_y` is derived from `LEG_FLIP_Y`, so the
+mount model and the gait cannot silently disagree — but if your mechanical layout
+differs from what those tables say, fix them or the sim will lie to you.
+
+### Join the two motor packs at the same voltage
+
+The motor supply is two LiperiAir 5000 mAh 3S packs wired in parallel (XT90
+parallel harness). Joining two packs at different voltages sends a large
+current from the fuller pack into the emptier one, limited only by the packs'
+internal resistance and the wiring.
+
+- Charge both packs to the same voltage on the same charger settings, and
+  measure each with a meter before connecting. Join them only if they are
+  within about 0.1 V of each other.
+- Buy both packs together, and do not mix a new pack with a worn one.
+- One fuse on the combined output, ahead of the PCB's per-branch fuses.
+- Disconnect both packs before charging, and charge them one at a time, never
+  while they are joined.
+- Nothing in the code monitors the 3S motor pack (the INA226 is on the 5 V
+  rail), so check pack voltage by hand between runs.
+
+---
+
+<a id="debug-tool-per-leg-deactivation"></a>
+## Debug tool: per-leg deactivation
+
+The dashboard has a `Deactivate <leg>` / `Reactivate <leg>` toggle per leg, for
+bench testing. Deactivating a leg does **not** change the gait loop in any way —
+`pi5_main.py` still computes that leg's target every tick exactly as if nothing
+were deactivated — it only skips the wire write (open marker, per-step payload, and
+close marker, all three) for that leg's Pico. That Pico is left completely alone:
+no empty frame, no reset, it just keeps holding whatever it was last actually told.
+The other three keep walking normally.
+
+Does not touch `self.homed` — deactivating and reactivating a leg never requires
+re-homing it. Intended for isolating one leg's Pico on the bench (or watching the
+other three walk without one leg's motion muddying the picture), not for anything
+load-bearing: a deactivated leg gets no updated commands at all, so if it was mid-air
+when deactivated, it stays exactly there.
+
+---
+
+<a id="will-make-the-robot-fall-over"></a>
+## Will make the robot fall over
+
+<a id="open-the-imu-roll-pitch-signs-are-unverified-and-a-wrong-one-is-positive-feedback"></a>
+### OPEN — the IMU roll/pitch signs are unverified, and a wrong one is positive feedback
+
+**The only open item in this section, and the most dangerous unverified thing in
+the codebase.** Nothing in the code or the simulator can detect it; it needs two
+minutes on a stand.
+
+`attitude_height_offsets()` levels the body by making the legs on the low side
+longer and the legs on the high side shorter. To know which side is low it trusts
+a convention: **positive roll = right side down, positive pitch = nose up.** The
+maths is correct *for that convention* — `dz = gain * (hx*tan(r) - hy*tan(p))`
+extends the right legs when `r > 0` (`hx` is +26.5 cm there) and shortens the
+front legs when `p > 0` (`hy` is +33.75 cm), both restoring.
+
+But roll and pitch come out of `IMU._quat_to_pitch_roll()` in the **BNO085's own
+body frame**, and which physical direction that frame's axes point depends
+entirely on how the breakout is bolted into the chassis. Rotate the board 180°
+about its vertical axis and both signs flip. Mount it on its side and they swap.
+The quaternion maths is standard and correct — the question is not "is the
+conversion right", it is "does the board's +X actually point forward".
+
+If either axis is inverted the correction runs the wrong way, which is **positive
+feedback**: a small tilt produces a correction that increases the tilt, which
+produces a bigger correction, until it saturates at `ATTITUDE_LIMIT_CM = 4.0`.
+
+| | |
+|---|---|
+| Limit | 4.0 cm of differential leg height |
+| Track width | 53.0 cm (`BODY_WIDTH_CM`) |
+| Induced roll at the limit | `atan(8/53)` ≈ **8.6°** |
+| Worst-case stance margin | +2.38 cm (`quadruped_sim --report`) |
+
+8.6° of self-inflicted lean, added to whatever tilt started it, against a support
+triangle with 2.4 cm of margin. The robot puts itself over, and it does it faster
+the harder it tries to correct.
+
+Why it has not bitten yet: `ATTITUDE_GAIN = 0.6` and the 12-sample IMU average
+make the runaway take a second or two rather than being instant, and the robot has
+never walked unsupported. It is also completely invisible in simulation —
+`quadruped_sim` feeds `attitude_height_offsets` a *commanded* tilt, so the sign
+convention is true by construction there and the sim will report a clean margin no
+matter which way the real board is mounted.
+
+**Bench check — on a stand, legs off the ground, before the robot ever carries its
+own weight while walking:**
+
+1. Bring the Pi up and watch the `[IMU Reflex] Levelling. Roll ... pitch ...` line.
+2. Tip the chassis **right side down**. `Roll` must print **positive**.
+3. Tip it **nose up**. `pitch` must print **positive**.
+4. If either is backwards, flip that term's sign inside
+   `ik_and_gait.attitude_height_offsets()` — the docstring says to fix it there
+   and not anywhere downstream, so that `pi5_main` and `quadruped_sim` keep
+   agreeing. Re-run `quadruped_sim.py --report` afterwards.
+
+The same "we assume it, we have never measured it" gap applies to the compass axis
+signs (see *Compass* below) and to the per-joint `reverse` flags during a turn (see
+*Before you walk it*). This one is the worst of the three because its failure mode
+is divergent rather than merely wrong.
+
+<a id="resolved-body-shift-phased-with-the-lift-sequence"></a>
+### RESOLVED — body shift, phased with the lift sequence
+The sim reported 100% "statically stable" but that was a binary in/out test hiding
+the real number: the **margin** — distance from the body centre to the nearest edge
+of the support triangle — had a worst case of **+0.42 cm** at 67.5 × 53 cm. The cause
+is geometric: with feet directly under the hips, lifting one leg leaves a triangle
+whose hypotenuse runs corner-to-corner *through* the body centre, on the edge by
+construction. 4 mm gets consumed instantly by payload offset, the swinging leg's own
+mass, or any ground unevenness.
+
+`ik_and_gait.py` now has `body_shift_profile()`: it leans the body 2 cm toward the
+diagonally-opposite hip from whichever leg is about to lift, one tick ahead of the
+lift (during the four-feet-down beat), then leans back. `apply_body_shift()` folds
+that into each leg's foot path in its own local frame. `pi5_main.build_gait()` calls
+both; `quadruped_sim.py` calls the identical functions, so the two cannot disagree.
+
+The first attempt used a box filter to smooth the profile and only reached +0.81 cm
+— worse than expected. The filter was straddling the sign flip at each lift boundary,
+which is also the instant the margin is thinnest, diluting the lean exactly when it
+mattered. **No smoothing (`smooth_width=1`) is now the default**, verified against the
+alternative — see the comment on `body_shift_profile` for the measured numbers.
+
+Result: **worst-case margin is now +2.38 cm**, clearing the 2 cm bar, at a joint-rate
+cost of 235 → 266 deg/s (65% → 74% of the motor's free speed — still 26% headroom).
+`quadruped_sim.py --report` now shows `VERDICT: gait is viable`.
+
+<a id="resolved-height2-stance-push-set-to-0"></a>
+### RESOLVED — `height2` (stance push) set to 0
+Three feet are planted at different points in the stance phase, so a nonzero
+`height2` commanded them to depths spanning 2.17 cm — on flat rigid ground they
+cannot all be there, and it becomes body bob or lost contact. `STANCE_PUSH` is now
+`0.0` in `pi5_main.py`, `quadruped_sim.py`, and `single_leg_test.py`. Downward reach
+for uneven terrain would need closed-loop foot contact (the current sensing could
+supply it) to do properly, not a fixed
+per-step push — left for later, deliberately not brought back as a blind default.
+
+<a id="resolved-step-tick-ms-raised-20-40-ms"></a>
+### RESOLVED — `STEP_TICK_MS` raised 20 → 40 ms
+Kept here because the tradeoff is worth understanding before anyone lowers it again.
+**Superseded:** the 188:1 knee moved it to 90 ms — see [the 40 → 90 ms entry](#resolved-step-tick-ms-raised-40-90-ms-for-the-188-1-knee). The table below is for the 99.5:1 knee.
+40 ms gives a peak of 235 deg/s (65% of free speed) at 16.7 cm/s. The simulator now
+checks this every run and fails if the commanded rate exceeds the motor.
+
+Peak commanded joint rate, per phase, at the old 20 ms tick:
+
+| phase | roll | pitch | knee |
+|-------|------|-------|------|
+| stance | 11 dps | 91 dps | 69 dps |
+| **liftoff** | 71 dps | 253 dps | **469 dps** |
+| swing | 51 dps | 345 dps | 299 dps |
+| **touchdown** | 71 dps | 163 dps | **469 dps** |
+
+The goBILDA 5203 at 99.5:1 / 60 RPM gives **360 deg/s at the output shaft, free
+running**. The gait asks for **1.30x that** at liftoff and touchdown, and under the
+load of a real quadruped nothing like 60 RPM is available. The PID will simply
+saturate and the leg will lag its target — the foot lands late and in the wrong place.
+
+The peaks are at the phase boundaries, not mid-swing: the foot reverses direction
+there, and with only 4 swing samples that corner is sharp.
+
+| `STEP_TICK_MS` | cycle | speed | peak rate | |
+|----------------|-------|-------|-----------|---|
+| 20 (current) | 0.40 s | 33.3 cm/s | 469 dps | too fast |
+| 25 | 0.50 s | 26.7 cm/s | 375 dps | too fast |
+| 30 | 0.60 s | 22.2 cm/s | 313 dps | 87% of free speed — still tight |
+| **40** | 0.80 s | 16.7 cm/s | 235 dps | 65% — realistic under load |
+| 50 | 1.00 s | 13.3 cm/s | 188 dps | conservative |
+
+Not changed, because the right value depends on what the motors actually deliver
+under load, which is a bench measurement rather than something derivable. **Start at
+40 ms** and work down while watching whether the legs track their targets.
+
+#### Knee motor change: 188:1 / 30 RPM
+
+The knees are being moved to the goBILDA 5203 **188:1 (30 RPM, ~250 kg·cm)**; roll
+and pitch stay on the 99.5:1 (60 RPM). The torque figures below are quasi-static
+estimates (18.1 kg robot, 1:1 knee belt, one leg lifted at a time) as a percent of
+stall torque. They have not been measured on hardware.
+
+| Knee motor | Stall torque | Knee peak | Knee mean | Standing still | Free speed |
+|------------|--------------|-----------|-----------|----------------|------------|
+| 99.5:1 (old) | 133.2 kg·cm | 122% (past stall) | 61% | 64% | 360 deg/s |
+| **188:1 (new)** | ~250 kg·cm | **65%** | **33%** | **34%** | **180 deg/s** |
+
+- **Gear ratio:** `KNEE_GEAR_RATIO = 188.6` in `pico_main.py`. A 99.5:1 knee driven
+  with this value moves about 1.9x too far, so fit the new motors before flashing.
+- **Speed:** the gait's peak knee rate at a 40 ms tick is 266 deg/s, which is 148% of
+  the knee's free speed. `quadruped_sim.py` checks each joint against its own free
+  speed and needs `STEP_TICK_MS` of at least about 59 ms for the knee. **Now set to
+  90 ms** — see the next section.
+- **Mass:** the four heavier motors add about 168 g (~0.9% of the robot), which moves
+  the knee load by about 1 percentage point. At 22 kg, scale every figure by 1.22.
+- **Stall and belt:** the knee now stalls at about 24.5 N·m, against 13.1 N·m before,
+  so the knee belt, pulleys and motor mount must be checked for that load. The 9 mm
+  5M HTD belt is likely too narrow (tooth shear is roughly 5 to 13 N·m depending on
+  pulley size). Check against the belt maker's rating tables.
+- **Touchdown threshold:** the 3.0 A knee touchdown current now needs about 1.9x the
+  foot force to trigger. Revisit it once the knee current is measured.
+
+Softening the corner would also help — more swing samples, or easing the velocity
+into liftoff/touchdown rather than starting the arc at full horizontal speed.
+
+Note the same argument in Y is already handled — stance `y` is deliberately linear in
+time so all planted feet travel at identical speed. An elliptical stance would make
+them differ by up to 0.85 cm/tick (127% of a step) and scrub against the ground.
+
+---
+
+
+<a id="resolved-step-tick-ms-raised-40-90-ms-for-the-188-1-knee"></a>
+### RESOLVED — `STEP_TICK_MS` raised 40 → 90 ms for the 188:1 knee
+
+The 188:1 knee is free-running at 180 deg/s, half the 99.5:1's speed. The gait asks
+for up to ~10.6 deg per tick at the knee around liftoff and touchdown, which at
+40 ms was 266 deg/s (148% of free speed): the PID would saturate and the foot would
+land late. `STEP_TICK_MS = 90` in `pico_main.py` and `quadruped_sim.py`, and
+`STEP_TICK_S = 0.090` in `pi5_main.py` (all three must match).
+
+`quadruped_sim.py --report` at 90 ms:
+
+| | 40 ms (before) | 90 ms (now) |
+|---|---|---|
+| cycle | 0.80 s | 1.80 s |
+| speed | 17.4 cm/s | 7.8 cm/s |
+| peak joint rate | 266 deg/s, 148% of knee free speed — FAIL | 118 deg/s, 66% — PASS |
+| turns ±30/60/90 | 146–148% — FAIL | 65–66% — PASS |
+| full spin | ~13 deg/cycle, ~16 deg/s | ~13 deg/cycle, ~7.3 deg/s (90° in ~12 s) |
+| verdict | walks straight, turns fail | gait is viable (straight and turning) |
+
+Stability margin (+2.38 cm worst case) and travel per cycle (13.95 cm) do not
+depend on the tick and are unchanged. Side effects:
+
+- The Stand/Go ramp is still 40 steps, so it now takes ~3.6 s instead of ~1.6 s.
+- Anything that stands in time for distance slows by ×0.44. `CLEAR_HOLD_S` in
+  `vision_obstacle.py` is the one that matters — see its note above; not yet
+  re-derived.
+- `contact_detect.py` times are absolute and unchanged; see the note there.
+- The Pi's pack-cutoff hold (3 s) is wall-clock and unaffected.
+
+66% leaves the usual margin for load, but free speed is unloaded. Check on the
+bench that the knee tracks its targets before lowering the tick.
+
+<a id="will-misbehave"></a>
+## Will misbehave
+
+<a id="resolved-current-state-conflated-operating-mode-with-transient-activity"></a>
+### RESOLVED — `current_state` conflated operating mode with transient activity
+
+`RobotState` was one field used for two unrelated things: MANUAL/AUTONOMOUS
+(what the operator asked for) and RECOVERY (what the robot is doing right now).
+Three bugs followed, the middle one able to drop the robot:
+
+1. After any recovery the worker hard-set `current_state = MANUAL`, so a stumble
+   silently dropped the robot out of GPS nav while the dashboard still read
+   NAV: ON.
+2. `nav_mode_callback` overwrote `current_state` unconditionally from a ROS
+   executor thread. A NAV toggle landing between `handle_recovery()` staging a
+   recovery and `_gait_serial_worker` reading it flipped the worker's
+   `== RECOVERY` test false — **the recovery was never transmitted, and the
+   aborted leg stayed frozen at zero PWM with `has_aborted` latched while the
+   other three kept walking.** That is a fall.
+3. The worker's state check raced that same callback.
+
+**Fixed** by splitting into two fields with one writer each:
+`current_mode` (`RobotMode.MANUAL` / `AUTONOMOUS`) written only by
+`nav_mode_callback`, and `current_activity` (`RobotActivity.NORMAL` /
+`RECOVERY`) written only by the recovery path. The worker gates on
+`current_activity`, which the nav toggle cannot touch, so (2) is structurally
+impossible now; clearing a recovery no longer resets the mode, so (1) is gone;
+and there is no longer a single field two threads fight over, so (3) is gone.
+`RobotState` remains as a back-compat alias of `RobotMode` — `.RECOVERY` was
+deliberately removed from it so a stale reference raises instead of silently
+comparing a mode against an activity. Verified against the source: no
+`current_state` in executable code, nav callback touches only `current_mode`,
+recovery touches only `current_activity`.
+
+<a id="resolved-one-leg-recovers-while-the-other-three-keep-walking-policy-is-go-to-neutral"></a>
+### RESOLVED — one leg recovers while the other three keep walking: policy is "go to neutral"
+`handle_recovery` used to send the recovery path only to `trigger_serial`, leaving
+the other three legs cycling their existing walking buffer — trying to keep walking
+on three legs while the fourth recovers. Policy decided: **go to neutral**, not
+freeze in place. The other three are now sent, in the same recovery pass, a direct
+one-shot move to `self.stand_pose` (the same static point the aborting leg's own
+`get_recovery_gait` already targets) — so all four legs converge on the same
+feet-under-hips pose. `standing`/`walking_enabled` are cleared when recovery starts
+and `standing` is set once it completes, so **Go** is required to resume walking
+rather than the robot silently continuing on whatever it was doing.
+
+**Caveat, not fully solved:** the other three legs have no live position feedback —
+the Pi only learns a leg's actual angle when *that* leg is the one that aborts and
+reports it. So unlike the Home→Stand→Go ramps, this can't be a smooth Cartesian
+interpolation from a known start; it's a direct PID move to `stand_pose`, bounded by
+the same PWM limits as any ordinary gait step. Walking-gait poses stay close to
+`stand_pose` by construction (that's the whole point of the stand height), so the
+jump should be small, but it hasn't been measured on hardware.
+
+<a id="resolved-steering-is-now-a-body-twist-yaw-not-differential-stride"></a>
+### RESOLVED — steering is now a body twist (yaw), not differential stride
+
+Was: `chosen_direction` mapped to a left/right stride-length difference, which
+turned the robot like a skid-steer — every foot moving straight fore/aft, the
+two sides covering different ground, the feet scrubbing sideways as the body
+yawed. The hip-roll joint did almost nothing during a turn. `GaitPath`'s
+`direction_angle` — nominally the omnidirectional mechanism — was hardcoded to
+`0` everywhere and, tested, only strafed the body (translated it diagonally)
+without ever yawing it.
+
+Now: `ik_and_gait.body_twist_xy_path()` takes a forward stride **and** a yaw per
+cycle. Each planted foot arcs about the body centre — its neutral (hip) position
+rotated `± yaw/2` across the stroke — so the four feet phased together drive the
+body through a real rotation, with the hip-roll joint carrying the lateral part
+of each arc (this is how CHAMP / MIT-Cheetah-lineage controllers turn).
+`pi5_main`'s loop maps `chosen_direction` (+ = turn right) to a yaw rate plus a
+forward stride that tapers to zero by `YAW_FULL_SPIN_DEG` (90°), so a hard
+LEFT/RIGHT spins in place and a moderate heading error arcs while still
+advancing.
+
+Verified in `quadruped_sim.py --report` across the full command range:
+`yaw_deg == 0` reproduces the old straight gait **term for term** (margin
++2.38 cm, 266 deg/s, 55.8 cm/4 cyc — unchanged); every turn keeps one leg
+airborne, the FL→RR→FR→RL crawl order, joint rate ≤ 283 deg/s (79%), and all
+foot targets reachable. Full spin is ~13 deg/cycle → ~16 deg/s → a 90° turn in
+~5.5 s. (All at the 40 ms tick of the time; at 90 ms the same ~13 deg/cycle is
+~7.3 deg/s, a 90° turn in ~12 s, and joint rate ≤ 66% of the knee's free speed.)
+
+**Still open / notes:**
+- *There is still no zero-velocity "keep standing, hold heading" travel state.*
+  `chosen_direction = 0` means walk forward. STOP de-powers; a large obstacle,
+  or a completed mission, makes the loop march in place (stride 0) — feet lift,
+  body holds, no ground covered. That covers mission end (now RESOLVED, below),
+  but it is not a true "stand still and hold this heading" state.
+- *A "spin in place" drifts.* The phased crawl means only 3 feet are planted at
+  any instant, so each single-leg lift during a spin leaves a few mm of
+  un-cancelled translation — measured 3–8 cm of drift over a 53° spin, and
+  slightly asymmetric left vs right (the front-leg mirror). Nav recomputes the
+  bearing from GPS every cycle so it self-corrects; a true zero-drift spin would
+  need the arc centred on the support-triangle centroid, not the body centre.
+- *`direction_angle` in `GaitPath` is now dead* for production (still used by
+  `gait_testing3.py`). Left in place; `build_gait` no longer calls `GaitPath`
+  for the gait itself, only `swing_steps()` uses it (for the lift schedule).
+- The `TURN_BODY_SHIFT_CM` ramp (2 → 4 cm of tripod lean as the turn tightens)
+  is what keeps the margin up during a turn — see its comment. Straight walking
+  is untouched.
+- `chosen_direction` still means "travel direction" in MANUAL and "heading
+  error" in AUTONOMOUS — one variable, two meanings. Harmless with the yaw
+  mapping (both want "yaw toward this"), but the `current_state` conflation
+  above is the related cleanup.
+
+<a id="resolved-mission-end-now-holds-position-route-is-editable-from-the-dashboard"></a>
+### RESOLVED — mission end now holds position; route is editable from the dashboard
+
+`Navigator.calculate_nav` returns `None` once the waypoints are exhausted. The
+control loop used to let `chosen_direction` fall through to the last manual
+value, so the robot walked off forever. It now sets `chosen_direction = 0` and
+`stride_scale = 0.0` on that `None` — the march-in-place command from the
+avoidance work — so the robot picks its feet up on the spot, stays standing and
+IMU-levelled, and waits for STAND or STOP. The avoidance planner's stride is
+folded in with `min()` now, not assignment, so a CLEAR decision (1.0) can no
+longer undo that hold.
+
+This also depended on there being a route at all. There wasn't a way to enter
+one — `MISSION_WAYPOINTS` was two hardcoded pairs in `main()`. Now:
+
+- `Navigator` takes an optional list, defaults to empty, and is fully
+  lock-guarded (`set_waypoints` / `get_waypoints` / `progress` /
+  `mission_complete`) because the control loop reads it at ~100 Hz while a ROS
+  executor thread may be rewriting it. `set_waypoints` validates lat/lon range
+  and always restarts the route at index 0.
+- New topic `/apex/navigation/waypoints` (`Float32MultiArray`, flat
+  `[lat, lon, ...]`, empty = "no route"). `waypoints_callback` on the
+  controller hands it to `Navigator`.
+- New topic `/apex/navigation/nav_cmd` (`Int32`: 1 START, 2 PAUSE, 3 STOP).
+  START sets `AUTONOMOUS` + `reset_progress()` + clears pause; PAUSE sets
+  `nav_paused` (the loop then marches in place without advancing the route);
+  STOP returns to `MANUAL` + rewinds. `nav_paused` is a separate field, touched
+  only by `nav_cmd_callback` and the loop.
+- `stream_server` gains `/waypoints`, `/set_waypoints` and `/nav_control`
+  (POST `action=start|pause|stop`). The status array grew four appended fields
+  — `wp_index`, `wp_total` (`len >= 17`) then `nav_mode`, `nav_paused`
+  (`len >= 19`) — so an older dashboard still parses.
+- The dashboard's old standalone **Route** and **Obstacle Avoidance** cards are
+  now one **Navigation** card with two collapsible sections (both start closed):
+  *GPS Waypoints & Routing* (the NAV MODE master toggle, the point editor, and a
+  **Start / Pause / Stop** transport row that greys out per state) and
+  *Obstacle Avoidance* (the avoidance toggle + state readout, unchanged). The
+  route status line reads e.g. "PAUSED — driving to waypoint 2 of 3".
+
+NAV MODE and Start are now refused outright until a route is loaded, rather than
+flipping AUTONOMOUS on to march in place. Three layers: the dashboard greys the
+toggle out (`wp_total === 0`), `stream_server.toggle_nav` / `nav_control` return
+409 without publishing, and `nav_mode_callback` / `nav_cmd_callback` in the
+controller bail on `_route_loaded()` — so a message that bypasses the UI (replayed
+topic, direct publish) still can't put the robot in nav mode with nowhere to go.
+Verified end to end without hardware (`Navigator` editing, arrival advance,
+concurrent-access smoke, `stream_server` route + `nav_control` publish, the
+no-route refusals at every layer, 19-field status parse, and the preview server
+driving a route through start → pause → stop).
+
+Note the drift caveat from the steering entry above still applies to any turn,
+and there is still no separate "hold heading while stationary" state — but
+mission end is no longer one of the things that needs it.
+
+<a id="resolved-blocking-sensor-reads-moved-off-the-control-loop"></a>
+### RESOLVED — blocking sensor reads moved off the control loop
+The `while rclpy.ok()` loop in `pi5_main.main()` used to call `imu.update()`,
+`compass.get_heading()` and (once a second) the power-monitor reads **inline, every
+iteration**. Those are synchronous I2C transactions — a few ms on a healthy bus,
+but on a NAKing or wedged bus the kernel blocks for its I2C timeout, and while it
+blocked so did steering resends, the IMU reflex and the avoidance stride command.
+
+`sensor_hub.SensorHub` now runs one poller thread per sensor (IMU 50 Hz, GPS +
+compass 10 Hz, INA226 1 Hz); each thread owns its hardware object exclusively and
+publishes into a lock-protected snapshot. The loop reads `imu_snapshot()` /
+`nav_snapshot()` / `power_snapshot()` — dict copies, never hardware — each with a
+staleness cutoff, so a dead or hung sensor degrades to the safe default (flat
+attitude, hold last heading, skip the battery check) instead of stalling the
+gait. Two failure signals: snapshot freshness (poll ran, reading was bad/old) and
+`thread_alive()` (poller blocked inside a hardware call right now); the loop logs
+which poller is stalled every ~5 s via `SensorHub.health()`.
+
+`GPSReader.update()` was already non-blocking (drains the UART buffer only) — it
+rides the nav poller just to keep all sensor I/O in one place.
+`CompassReader.get_heading()` now returns `None` (not `0.0`) on an I2C failure so
+a wedged bus is distinguishable from a genuine due-north reading; the hub holds
+the last good heading across a `None`. Self-test: `python sensor_hub.py` →
+`SENSOR HUB OK` (covers a failing sensor and a hung poller).
+
+Still inline and still blocking, but sub-millisecond so not worth threading:
+`controller.read_pico_lines()` (non-blocking by construction, same buffered-drain
+pattern as GPS) and `audio_engine.play()` (already fire-and-forget — it spawns
+its own daemon thread, `play()` itself just does an `os.path.exists` and a thread
+start).
+
+<a id="resolved-imu-stabilization-is-now-differential-not-a-common-offset"></a>
+### RESOLVED — IMU stabilization is now differential, not a common offset
+It used to feed pitch into `center_stride_y` and roll into `lateral_roll_offset`,
+applying **the same offset to all four legs**. Measured directly: at the maximum
+correction values, the change in every foot's Z was **0.0000 cm** — a body
+*translation* with zero restoring moment, so no gain would ever have made it work.
+
+`ik_and_gait.attitude_height_offsets(roll_deg, pitch_deg)` now computes a **per-leg**
+height change from each hip's position: `dz = gain * (hx*tan(roll) - hy*tan(pitch))`.
+Raising the low corners and lowering the high ones is what produces an actual
+restoring moment. `build_gait()` feeds this into `center_height_z` per leg. Verified
+in the simulator: 15° of simulated roll now produces a measurable left/right foot
+height difference; 15° of pitch produces a front/rear difference; zero tilt gives
+identical heights across all four legs (as it must).
+
+`gain = 0.6` (damped, not a full correction in one update — avoids overshoot) and
+`limit_cm = 4.0` (caps how far one corner can be driven from stand height) are in
+`pi5_main.py`; both are guesses that need bench tuning against the real BNO085.
+`max_tilt_deg = 30` in the function itself clamps the input before it reaches
+`tan()`, which blows up near 90°.
+
+Sign convention: positive roll is taken as right-side-down, positive pitch as
+nose-up. **If the BNO085 is mounted with either axis flipped relative to that, the
+correction will actively tip the robot the wrong way — check this on the bench
+before trusting it, ideally with the robot held up off the ground first.**
+
+<a id="low-voltage-alarm-threshold-may-be-unreachable-check-which-rail-the-ina219-is-on"></a>
+### RESOLVED — power monitor is an INA226 on the 5 V rail
+
+The board is a TI INA226 (2 mΩ shunt, marked R002) on the **5 V regulated
+rail**, not an INA219 on the battery. `power_monitor.INA226` checks the
+manufacturer and die IDs at start-up (so a wrong chip raises and boot reports
+Power FAIL) and scales voltage (1.25 mV/LSB) and shunt current (2.5 µV/LSB over
+2 mΩ) itself; `INA219` is kept as an alias for the import in `pi5_main`. The old
+INA219 scaling read the wrong voltage on this chip.
+
+`LOW_VOLT_THRESHOLD = 4.75` V is therefore correct: it trips on regulator sag.
+It is not a battery alarm, and nothing monitors the 3S motor pack. Still worth a
+bench check of `SHUNT_OHMS` (shunt mV against a known load) before trusting the
+current figure.
+
+<a id="resolved-an-out-of-range-target-left-the-motor-at-its-last-duty"></a>
+### RESOLVED — an out-of-range target left the motor at its last duty
+
+`JointController.move_to()` returned early — before touching the PWM registers —
+when `target_angle` was non-finite or outside ±360°. The guard itself is right
+(it is what stops NaN surviving the clamp as full duty), but the bare `return`
+meant the joint kept driving at whatever duty the previous call set. On a
+saturated PID that is full duty into a stop, held until a good target arrives.
+
+It also left `self.last_time` untouched, so the first good call after a run of
+bad ones saw a `dt` inflated by the whole gap and dumped a large `error * dt`
+straight into the integrator.
+
+**Fixed:** the guard now zeroes both PWMs (coast), clears `integral` and
+`prev_error` so nothing carries across the gap, and advances `last_time`. Still
+low-likelihood — `pico_main` range-checks every payload before it reaches the
+buffer — but it is now a safe failure rather than a latched one.
+
+<a id="compass-declination-tilt-now-handled-hard-soft-iron-calibration-still-not"></a>
+### Compass: declination + tilt now handled; hard/soft-iron calibration still not
+
+Fixed:
+
+- **Declination.** `CompassReader(declination_deg=...)` is fed
+  `MAGNETIC_DECLINATION_DEG` (pi5_main, currently `-13.0` for northern NJ) and
+  added to every reading, so `get_heading()` now returns *true* north to match
+  the GPS bearings and Google-Maps coordinates. Edit the constant for your area.
+- **Tilt compensation.** `get_heading(roll_deg, pitch_deg)` de-rotates the field
+  into the horizontal plane (Honeywell AN3192 form) using the latest IMU
+  attitude, which `SensorHub._nav_poll` now passes in. At roll = pitch = 0 it is
+  byte-identical to the old `atan2(y, x)`, so there is no regression when level;
+  it only removes the per-stride heading wobble when the body tilts.
+- **Bad-sample rejection.** Returns `None` (not `0.0`, and not a garbage angle)
+  on I2C `OSError`, on the QMC5883 overflow bit, and on an all-`0x0000` /
+  all-`0xFFFF` block. Init does a soft reset first and records `configured`.
+- **Frozen-heading detection.** `nav_snapshot()` exposes `heading_age` (time
+  since the last *good* read — the shared nav poller keeps ticking on GPS alone,
+  so `heading` staying non-None can't reveal a dead compass). Under AUTONOMOUS,
+  `heading_age > HEADING_MAX_AGE_S` (3 s) makes the robot hold position instead
+  of driving on a stale bearing, and drops the `compass` health bit live so the
+  dashboard shows the amber "compass offline" banner.
+
+Still open (descoped on purpose):
+
+- **No hard/soft-iron calibration.** Raw `atan2` on a frame full of servo
+  magnets and battery current carries a large *heading-dependent* offset that
+  declination cannot remove. Needs a "spin 360° and collect min/max" routine
+  writing a cal file. Until then, absolute heading accuracy is poor; the closed
+  nav loop still converges because `calculate_nav` re-derives the bearing from
+  the live GPS every pass and `ARRIVE_RADIUS_M` is 4 m.
+- **Axis / sign not bench-verified.** The tilt-comp math assumes x-forward,
+  y-right (or the pre-existing frame the old `atan2(y, x)` implied), z-down, with
+  the BNO085 roll/pitch signs matching. If a bench heading check ever shows the
+  robot turning *away* from a waypoint, the heading runs the wrong way and the
+  `atan2` / roll / pitch signs in `CompassReader.get_heading` need flipping.
+  (This is a no-op-at-level change, so it did not make anything worse.)
+
+<a id="resolved-autonomous-nav-no-longer-drives-on-a-dead-sensor"></a>
+### RESOLVED — autonomous nav no longer drives on a dead sensor
+
+Three related failures, all the same shape as the compass frozen-heading bug:
+
+- **GPS goes silent → frozen fix.** `GPSReader` left `has_fix` / `lat` / `lon`
+  latched at their last values when the receiver stopped sending, and the
+  `AUTONOMOUS` gate only checked `has_fix` and the *poller* age (which the shared
+  GPS+compass poller keeps fresh). Now `GPSReader.fix_t` timestamps the last
+  positional GGA, `nav_snapshot()` exposes `fix_age`, and a fix older than
+  `GPS_FIX_MAX_AGE_S` (5 s) counts as no fix.
+- **No-fix `AUTONOMOUS` walked off blindly.** The "no usable GPS fix" branch
+  printed a message but did **not** set `chosen_direction` / `stride_scale`, so
+  they fell through carrying the last *manual* steering value at full stride —
+  an autonomous robot that lost its fix drove forward in whatever direction the
+  slider was last on. It now holds position, like the paused / mission-complete
+  / heading-stale branches.
+- **Dead sensors reported healthy.** `subsystem_health['gps']` / `['compass']`
+  are updated live from the loop now (not just at boot), so a receiver or
+  magnetometer that quits mid-run lights the dashboard degrade banner.
+
+<a id="resolved-a-camera-that-fails-to-open-no-longer-reads-as-healthy"></a>
+### RESOLVED — a camera that fails to open no longer reads as healthy
+
+`USBWebcam.__init__` used to set `self.running = False` and return an object.
+`_bring_up()` saw a successful construction, marked the camera up, and
+`camera_loop` spun forever on `get_frame()` returning `None` while obstacle
+avoidance silently starved. It now `raise`s, so `_bring_up` catches it, the
+camera subsystem is marked down (degrade banner), and `camera_loop` returns
+immediately — same as every other missing sensor.
+
+<a id="resolved-port-by-leg-mutated-without-the-serial-lock"></a>
+### RESOLVED — `port_by_leg` mutated without the serial lock
+
+`register_leg_announcement` inserts into `self.port_by_leg` from the control-loop
+thread (a Pico that resets mid-run re-announces on every pass), while the gait
+worker reads it via `active_legs()` on its own thread. An insert during the
+worker's `sorted(port_by_leg.items())` is a "dict changed size during iteration".
+Both sides are under `serial_lock` now, matching what `handle_recovery` and
+`request_stop` already did.
+
+<a id="ina219-voltage-only-for-now-confirm-the-wiring"></a>
+### RESOLVED — INA226 current reading
+
+`get_current()` / `get_power()` now work: the INA226 shunt is in the 5 V load
+path, `sensor_hub._power_poll` reads both voltage and current at 1 Hz, and the
+dashboard shows the rail current in the `5V` pill. The alarm stays voltage-only.
+The old ±3.2 A / 0.1 Ω INA219 calibration notes no longer apply.
+
+<a id="resolved-two-repo-files-could-not-run-at-all"></a>
+### RESOLVED — two repo files could not run at all
+
+- **`single_leg_test.py` could not import on the Pi.** Line 19 was
+  `from InverseKinematics.ik_and_gait import ...`, but the directory is
+  `inverse_kinematics`. Linux is case-sensitive, so this was an immediate
+  `ModuleNotFoundError` — and the README recommends this file as *the* way to
+  test without ROS. Fixed. Still worth knowing it drives the legacy `GaitPath` /
+  `direction_angle` steering, not `body_twist_xy_path`, so it is a joint-level
+  bench tool and not a preview of how the robot actually walks.
+- **`test_pi_quadruped.py` tested an API that no longer exists.** It asserted on
+  `controller.current_state` and `RobotState.RECOVERY`, both removed when the
+  state machine was split into `current_mode` / `current_activity`, so it failed
+  at the first assertion. Updated to the split fields, and it now also asserts
+  the thing the split was *for*: that recovery clears the activity and leaves the
+  operating mode alone.
+
+<a id="resolved-pico-pid-state-was-not-reset-when-drive-is-cut"></a>
+### RESOLVED — Pico PID state was not reset when drive is cut
+
+`pico_main`'s `if has_aborted or not powered:` branch zeroes all six PWM
+registers but leaves each `JointController`'s `integral`, `prev_error` and
+`last_time` untouched. On resume, `dt` is the entire time drive was off.
+
+Measured: after a 120 s Stop, the first `move_to()` put the integrator straight
+to its clamp in a single call, because `error * dt` = 20 × 120. Bounded by the
+clamp so nothing ran away, but it is the identical stale-`dt` failure mode the
+out-of-range guard already fixes (RESOLVED, above).
+
+**Fixed:** `JointController.reset_pid()` drops the integral and derivative state
+and restarts the `dt` clock. `pico_main` tracks `drive_was_cut` and calls it once
+on the transition back to driving, so it runs on the edge rather than every pass.
+Verified: integral 0.040 after a 120 s gap, against 50.0 (the clamp) before.
+
+<a id="resolved-fsr-py-interrupt-helpers-could-not-both-be-used"></a>
+### RESOLVED — `fsr.py` interrupt helpers could not both be used
+
+`on_touchdown()` and `on_liftoff()` each called `self._pin.irq(...)`, and a Pin
+holds only one handler — registering the second silently replaced the first.
+Both also passed a `lambda`, which allocates, and MicroPython forbids allocation
+inside a hard IRQ, so the handler could fail at the worst possible moment.
+
+Replaced with a single `on_edge(callback, rising=, falling=)` that registers one
+bound method (`_on_irq`, no allocation) and reports which edge fired via
+`callback(is_touchdown)`. Moot now: the FSR has been replaced by current sensing
+and `fsr.py` has been deleted (see [Ground contact — current sensing replaced the
+FSR](#ground-contact-current-sensing-replaced-the-fsr)).
+
+<a id="ik-clamps-unreachable-targets-silently"></a>
+### IK clamps unreachable targets silently
+`InverseKinematics.calculate` clamps out-of-range law-of-cosines arguments and the
+shoulder-to-foot distance instead of reporting that a target cannot be reached. Ask
+for z = 55 cm and the foot lands at 52.11 with no exception and no flag, so the
+caller cannot tell the difference between "done" and "as close as I could get".
+
+Harmless for the current gait (it uses z = 31–38.5 cm, well inside the 2.47–51.21 cm
+annulus) but it will hide mistakes in any future terrain or body-shift work. A
+`reachable` flag on the result would fix it; not added because nothing reads it yet.
+
+<a id="resolved-a-blocked-leg-sat-at-100-pwm-indefinitely-needs-a-pico-reflash"></a>
+### RESOLVED — a blocked leg sat at 100% PWM indefinitely (needs a Pico reflash)
+
+**This was the most dangerous thing in the firmware.** Measured by running the
+real `JointController` against a frozen encoder (leg jammed at 10°, target 30°):
+
+| t | integral | I term | forward duty |
+|---|---|---|---|
+| 0.05 s | 1.0 | 0.02 | **65535 (100%)** |
+| 1.0 s | 20.1 | 0.40 | **65535 (100%)** |
+| 5.0 s | 50.0 (clamp) | 1.00 | **65535 (100%)** |
+| 10 s+ | 50.0 | 1.00 | **65535 (100%)** |
+
+The windup itself is fine — that is not the problem (see the entry below). The
+problem is `kp = 0.8`: at 20° of error the P term alone is **16.0** against an
+output range of ±1.0, so the duty pins at full and *stays* there. Nothing ever
+takes it down. There is no stall timeout, no current limit, no thermal cutout,
+and no "error stopped changing" check anywhere in `move_to()` or `pico_main`.
+
+A goBILDA 5203 at 99.5:1 stalls around 9 A. Held indefinitely, that cooks the
+motor, the BTS7960, or the pack — whichever gives first.
+
+**Fixed with a software stall guard**, no new hardware needed.
+`JointController._update_stall()` watches for the output being saturated
+(pre-clamp `|output| >= 1.0`) while `|error|` stays above the deadband and
+refuses to fall by `STALL_PROGRESS_DEG` (2°). After `STALL_TIMEOUT_S` (1.5 s) it
+latches `self.stalled`, zeroes both PWMs, and stays latched until `clear_stall()`
+or `zero_at()`. `pico_main` polls the three joints and raises the existing
+`ABORTED` path (plus a `STALL,<leg>,<joint>` line for the log), so the Pi runs
+its normal recovery instead of leaving three legs walking. A new frame from the
+Pi clears the latch, so a jam retries every 1.5 s rather than spinning at full duty.
+
+**Progress, not duty, is the discriminator** — a legitimate large move also
+saturates, it just closes its error.
+
+**Progress is now two signals, either of which clears the window:** the error
+fell by 2°, *or* the encoder moved by 2° worth of ticks. The encoder term was
+added on re-review and is what makes a false latch structurally impossible rather
+than merely unlikely. Without it, a joint that tracks a fast swing with a
+permanent several-degree lag is saturated the whole time and its error never
+falls 2° below the ratchet floor, so the 1.5 s timer would run out mid-stride and
+abort a perfectly healthy leg into a three-legged recovery — itself a fall risk.
+A jammed motor has a stationary encoder by definition, so requiring both costs
+nothing on a real jam: it still latches at exactly 1.50 s. Re-verified with a
+joint driven at 120°/s against a target running away at 200°/s — 720° of travel,
+never latched.
+
+Verified against a first-order motor model running the real controller
+(`scratchpad/verify_stall.py`):
+
+| case | result |
+|---|---|
+| jammed joint | latches at 1.50 s, both PWMs zeroed |
+| 90° free move | completes, never latches |
+| 10 s of walking gait | never latches |
+| 2°/s creep toward target | never latches |
+| jam cleared + `clear_stall()` | drives normally again |
+
+The BTS7960 `IS` current sensing now exists (see the callout at the top), but it
+only drives the touchdown abort so far. Using it for jams too would catch one in
+milliseconds rather than 1.5 s, and tell a jam from a joint that is merely loaded.
+This guard stays as the backstop either way.
+
+<a id="resolved-fsr-abort-fired-on-the-first-swing-step-of-every-leg"></a>
+### RESOLVED — FSR abort fired on the FIRST swing step of every leg
+
+`pico_main.py` line ~200:
+
+```python
+any_touchdown = any(f.state for f in fsrs)     # fsrs = FSR(16..19), FOUR of them
+...
+if any_touchdown and current_step_swing:       # current_step_swing is THIS leg's
+    → ABORTED
+```
+
+Each Pico drives **one** leg but reads **four** FSR pins, and `any()` collapses
+them. The gait is a crawl: whenever one leg is swinging, the other **three are
+planted by construction**. So `any_touchdown` is True for the entire duration of
+every swing phase, and the condition reduces to "abort whenever this leg swings."
+
+Leg L would have aborted on its first swing tick, every cycle, forever. It never
+bit only because nothing is wired to GP16–19, so the pins read low.
+
+**Fixed:** the board now reads one sensor — `foot = FSR(FSR_PIN)`, tested as
+`own_touchdown` — which is what *"my own foot touched down while I should be
+airborne"* actually means. `FSR_PIN` is a documented constant next to `LEG_ID`.
+
+**Superseded:** the FSR has since been replaced by current sensing, and
+`FSR_PIN` is gone (GP16 is now the MCP3208's data line). The lesson
+carried over: `TouchdownDetector` reads only this board's own three joints.
+
+<a id="pid-kp-still-needs-bench-tuning-windup-ruled-out-kd-fixed"></a>
+### PID: `kp` still needs bench tuning (windup ruled out, `kd` fixed)
+Simulated against a motor model (360 deg/s free speed, first-order response,
+stiction, and real encoder quantisation), running the actual `JointController` code:
+
+- **No windup, and it is genuinely bounded.** In normal walking the I term peaks at
+  0.2–2.2 against its clamp of 50 (0.4–4%): the deadband zeroes it whenever
+  |error| < 1° and the error changes sign every cycle. Re-measured against a
+  *stalled* leg, where the error never changes sign, the integrator does ramp —
+  but only to its clamp (I term 1.00 after ~5 s), and on overshoot the P term
+  dominates so windup never inverts the direction of travel. The anti-windup is
+  correct. What is not safe about a stall is the full-duty hold, which is the
+  separate entry above.
+- **`kd = 0.05` was provably wrong and is now 0.** The encoder resolves 0.129°, so at
+  the ~2 ms loop rate a single count reads as 64.6 deg/s — times `kd = 0.05` that is
+  **3.23 of output**, past full duty from one tick of quantisation. Removing it cut
+  direction reversals from ~260/s to ~12/s and time at full duty from 58% to 20%,
+  and improved tracking as well. Reinstate only with a filtered derivative.
+- **`kp = 0.8` remains aggressive.** It saturates for any error above 1.25°, so with
+  the 1.0° deadband there is only a 0.25° sliver of proportional control. In
+  simulation `kp = 0.30` tracked better (stance mean error 0.82° vs 2.33°), but the
+  model has **no gravity or load torque**, which is exactly what `kp` fights — a
+  softer gain could sag on the real robot. Left alone deliberately; tune on the bench.
+
+Residual tracking error at 40 ms/step, `kp` 0.30 / `kd` 0 in simulation:
+
+| | stance | swing |
+|---|--------|-------|
+| max | 7.85° | 9.40° |
+| mean | 0.82° | 2.78° |
+
+Stance mean of 0.82° is ~0.35 cm of foot error, which is fine. The maxima are at
+liftoff and touchdown, where the target reverses direction; 9.4° is ~4 cm at the
+foot, against **4.76 cm** of commanded swing clearance (not the nominal 5.0 —
+see "Swing clearance is 4.76 cm" above) — so the margin is ~0.76 cm.
+**Verify the foot actually clears the ground on the bench.** Easing the velocity through those corners would help more
+than gain tuning.
+
+<a id="minor-stale-target-for-one-tick"></a>
+### Minor: stale target for one tick
+`pico_main.py` resets `current_step_index = 0` when a frame completes, but
+`current_targets` isn't refreshed until the next `STEP_TICK_MS` tick (90 ms) — so the
+leg drives toward the *previous* frame's last target for up to 90 ms. Also means step
+0 of every buffer is skipped, since the first tick advances to index 1. The
+recovery "go to neutral" move for the other three legs (a 2-entry one-shot buffer
+holding `stand_pose` twice) relies on exactly this behavior to settle onto its
+target within one tick — harmless there since both entries are identical, but worth
+knowing this mechanism is now load-bearing elsewhere, not just a latent quirk.
+`HOME_MARKER` is unaffected — it sets `current_targets` directly, bypassing the
+buffer entirely.
+
+---
+
+<a id="verify-on-hardware"></a>
+## Verify on hardware
+
+<a id="resolved-bno085-constant-names-and-boot-no-longer-dies-on-a-bad-hardware-init"></a>
+### RESOLVED — BNO085 constant names, and boot no longer dies on a bad hardware init
+
+`imu.py` used `BNO08X.REPORT_LINEAR_ACCELERATION` / `...REPORT_ROTATION_VECTOR`.
+Newer Adafruit library versions moved those to **module-level** names
+(`BNO_REPORT_*`). Where the installed version has the module-level layout, the
+old code raised `AttributeError` in the `IMU` constructor — and `main()` had no
+guard, so **the robot would not boot at all.**
+
+Two independent fixes:
+
+1. **`imu.py` accepts either layout.** It now imports `BNO_REPORT_*` and falls
+   back to `BNO08X.REPORT_*`, so which library version is installed stops
+   mattering.
+
+2. **Hardware init in `main()` is non-fatal.** IMU, GPS, compass, camera, power
+   monitor and audio are each brought up through `_bring_up(name, factory, ...)`,
+   which on failure logs the exception, marks that subsystem down, and returns
+   `None`. `SensorHub` already tolerates a `None` sensor; `camera_loop` returns
+   early with no camera; every `audio_engine.play()` is guarded. The robot boots
+   **degraded** instead of not at all. The one exception is the Flask dashboard
+   itself — without it you cannot home the legs — which still stops the boot, but
+   only after announcing "FATAL: no dashboard" on the OLED.
+
+The degraded state is surfaced:
+
+- **On the dashboard:** the status array gained a 6-bit health mask at index 19
+  (`imu, gps, compass, power, camera, audio`; behind `len >= 20`). The page
+  shows an amber "Running degraded — camera did not start" banner, distinct from
+  the red not-homed banner.
+- **On an optional OLED:** `Code/Pi5/boot_display.py` drives a 1.3" SH1106 I2C
+  panel — boot progress line by line ("IMU ... / IMU OK / Camera FAIL"), then the
+  dashboard URL and the down-list once running. If `luma.oled` or the panel is
+  absent every call is a no-op that echoes to stdout, so the error display can
+  never itself become a boot blocker. Wiring and the one-line install are in
+  `HARDWARE.md` at the repo root — it has I2C1 (pins 3/5, 0x3C) to itself.
+
+Still worth a bench check: that the IMU axis/sign conventions match (see the
+IMU-levelling entry above) — but a wrong answer there degrades to "IMU down,
+flat-footed walking", not a dead boot. The bus itself is now confirmed; see the
+next entry.
+
+<a id="resolved-the-imu-was-on-the-hdmi-bus-and-absent-sensors-reported-ok"></a>
+### RESOLVED — the IMU was on the HDMI bus, and absent sensors reported OK
+
+Found on the first boot with the OLED fitted. Several separate problems, all
+showing up as a boot log that said OK for hardware that was not answering.
+
+**I2C bus layout.** `IMU(bus_id=13)` could never work: on the Pi 5,
+`/dev/i2c-13` and `i2c-14` are the HDMI ports' DDC buses, not header pins
+(`i2cdetect -l` labels them `107d508200.i2c` / `107d508280.i2c`). config.txt
+meant the IMU for I2C0 (`dtparam=i2c0=on`, GPIO0/1, pins 27/28), but it also
+had `dtoverlay=uart1`, which claims the same two pins, so `/dev/i2c-0` never
+appeared. Nothing uses UART1 (the Picos are on ttyAMA0/2/3/4), so that line was
+removed. The bus map is now one device per bus, apart from the two that share:
+
+| Bus | Pins | Device |
+|---|---|---|
+| I2C0 | 27 / 28 | BNO085 IMU (`bus_id=0`) |
+| I2C1 | 3 / 5 | OLED |
+| I2C3 | 15 / 16 | compass (`explicit_bus_id=3`) + INA226 |
+
+The compass is the QMC5883P (0x2C; the driver also handles a QMC5883L at 0x0D) built into the HGLRC M100 GPS (its SDA/SCL leads;
+the GPS itself stays on TX/RX through the USB‑TTL adapter). It used to be
+pointed at I2C1 by inference from `sda_pin=2`. Full pin table and the
+config.txt lines are in `HARDWARE.md`.
+
+**False OKs at boot.** `_bring_up()` only reports FAIL when the constructor
+raises, and three constructors swallowed their errors:
+
+- `CompassReader` printed "Compass not found" and returned normally.
+- `INA219` (now `INA226`) printed the error and set `available = False`, after which
+  `get_voltage()` returned a made-up 5.0 V — so the low-voltage alarm could
+  never fire, and the dashboard showed power as healthy.
+- `QuadrupedAudio` called `bluetoothctl connect`, which does not exist inside
+  the container, so `connected` was always False and every `play()` was
+  silently dropped — while boot said Audio OK.
+
+All three now raise, so each shows as FAIL at boot, `DOWN:` on the OLED and in
+the dashboard's degraded banner.
+
+**Audio from the container.** The container is privileged with host
+networking but has no bind mounts, so it cannot see the host's PipeWire socket
+or D-Bus. Rather than recreate it, `audio.py` points SDL at the host's
+pulse-compatible server over local TCP (`PULSE_SERVER=tcp:127.0.0.1:4713`,
+enabled once on the host). The Bluetooth link is the host's job: the speaker is
+trusted there, so bluez reconnects it. `QuadrupedAudio` now checks that
+`pactl get-default-sink` is that speaker and raises if not. Setup is in
+`HARDWARE.md` → *Speaker*. The speaker's MAC is read from `APEX_SPEAKER_MAC` in
+the gitignored `Code/Pi5/.env` (template: `.env.example`), not hardcoded.
+
+**Log flood.** Main-loop warnings were gated on `int(current_time) % 2 == 0`,
+which is true for the *whole* even second; at ~100 Hz that printed each warning
+~100 times a second (the compass one filled the terminal). They now go through
+`_log_every(key, msg)`, a real once-per-2-s limiter, and warnings for a sensor
+that already failed at boot are not repeated.
+
+<a id="resolved-first-boot-fixes-camera-gps-oled-shutdown"></a>
+### RESOLVED — first-boot fixes: camera, GPS, OLED, shutdown
+
+Smaller problems found on the same first boots, each confirmed on the robot.
+
+- **Camera index.** `USBWebcam()` opened index 0, but the Pi 5 registers ~17
+  `/dev/video*` nodes of its own (ISP, decoder), so 0 is not reliably the
+  webcam, and `/dev/v4l/by-id` is made by udev on the host and does not exist in
+  the container. `webcam.find_usb_camera()` scans `/sys/class/video4linux` (visible
+  in both) for the first node on the USB bus with `index` 0 — the picture node;
+  index 1 is the camera's metadata node. `USBWebcam()` with no argument uses it
+  and raises "no USB camera found" if there is none.
+- **GPS baud.** `GPSReader` was opened at 9600; the M100 talks 115200 (at 9600
+  it reads as garbage). `pi5_main` now passes 115200.
+- **OLED.** Four display bugs in `boot_display.py`:
+  - 5 log rows were kept but only 4 fit under the heading, so the *newest* line
+    was cut off — now `_MAX_LOG = 4`;
+  - the dashboard address was looked up from the default route, which fails
+    with the Pi as its own hotspot, and `http://ip:5000` overflowed the
+    21-character row — the summary now just shows `apex.local`, the name the
+    host announces on the hotspot (the dashboard also answers on port 80);
+  - a full repaint is ~100 ms on a 100 kHz bus and ran on the control loop —
+    `summary()` now returns at once and a worker thread paints the latest frame.
+- **Screen left looking live after exit.** luma blanks the panel in an atexit
+  hook, which never ran on `pkill` / `docker stop`: Python's default SIGTERM
+  action exits without running `finally`, so hardware was never released and the
+  last status frame stayed up. `main()` now turns SIGTERM into the same
+  `KeyboardInterrupt` path as Ctrl+C, and the first cleanup step paints a final
+  `stopped / at HH:MM` frame (`BootDisplay.shutdown()`), which blocks any later
+  repaint. The panel is set `persist` so that frame — or a boot `FATAL` line —
+  stays visible after the process ends.
+
+<a id="resolved-bts7960-dual-enable-confirmed-tied-together-on-the-pcb"></a>
+### RESOLVED — BTS7960 dual enable confirmed tied together on the PCB
+`JointController` drives a single `en_pin`; the chip has separate R_EN and L_EN (as
+`BTS7960_Test.py` correctly does), which would have been a problem if they were
+wired independently — one half of the bridge could stay disabled while the code
+thinks the joint is live. **Confirmed on the real board: R_EN and L_EN are tied
+together**, so a single `en_pin` is correct and nothing needs to change here.
+
+Separate, still true: the abort path only zeroes PWM and leaves the bridge enabled —
+there's no hard disable on fault. Not blocking, just worth knowing if a fault needs
+to cut power at the driver rather than just at the PWM signal.
+
+<a id="encoder-zero-must-match-home-pose-this-is-what-homing-top-of-doc-is-for"></a>
+### Encoder zero must match HOME_POSE — this is what homing (top of doc) is for
+Every joint's mechanical zero needs to be set at `HOME_POSE` (roll 90°, pitch 0°,
+knee 180°) via the manual Home-button procedure at the top of this document, not at
+the IK's neutral standing pose. If it's off, `calculate_fk` — used by the Stand/Go
+ramps (`build_ramp()`) and by the recovery path alike — reconstructs the wrong
+Cartesian position from reported joint angles, and all of them compute a path to the
+wrong place. Nothing in the firmware currently verifies homing was done correctly
+before Stand/Go accept it (see "Still open" in the Homing section).
+
+<a id="dead-branch-in-imu-py"></a>
+### Dead branch in `imu.py`
+The `bus_id is None` path calls `busio.I2C(scl_pin, sda_pin, ...)` with the string
+pin names `"D1"` / `"D0"` rather than board pin objects. It would fail if used;
+currently `bus_id=0` is always passed, so the branch is dead.
+
+---
+
+<a id="structural-notes-from-the-full-review-no-defect-worth-knowing"></a>
+## Structural notes from the full review (no defect, worth knowing)
+
+<a id="the-ik-cannot-flip-the-knee-to-the-other-solution-verified"></a>
+### The IK cannot flip the knee to the other solution — verified
+
+A 2-link arm reaching a point always has two answers, knee-forward and
+knee-back, so "does the solver ever jump between them mid-gait" is a fair
+question. It cannot. Three independent reasons, all checked in
+`scratchpad/verify_branch.py` over 141,120 foot targets (every yaw, stride,
+tilt, body-shift and leg combination):
+
+**1. The other branch is not expressible in code.** The two solutions are
+`knee = ±acos(...)` and `pitch = alpha ± beta`. `math.acos` returns the
+principal value only, in `[0, π]`, and `calculate()` takes `+acos` and
+`alpha + beta` — no `±`, no sign variable, no conditional anywhere in the
+solve. The same is true of the abductor: `roll = phi1 + phi2` with
+`phi2 = acos(a/r_xz)`, never `phi1 - phi2`. The knee-back family has no path
+through this function. At the stand point the two branches are **88.9° of pitch
+and 170.2° of knee apart**.
+
+**2. It never gets near the only place a swap is possible.** The branches merge
+only where `beta` is 0 or π — the leg fully straight or fully folded. Note the
+convention: **knee = 180° is straight** (which is why `HOME_POSE` locks it
+there) and knee = 0° is folded.
+
+| | value | gait's actual range | clearance |
+|---|---|---|---|
+| hip-to-foot distance `d` | — | 25.47 – 41.31 cm | — |
+| straight, `d = b+c` | 51.21 cm (z ≈ 52.1 cm) | max z 40.0 cm | **12.1 cm** |
+| folded, `d = \|b−c\|` | 2.47 cm (z ≈ 10.0 cm) | min z 27.2 cm | **17.3 cm** |
+| knee angle | — | 59.4° – 107.4° | 59° / 73° from either limit |
+
+Closest the two branches ever come is **68.5° apart**. And past the limit the
+`d` clamp catches it first: the solve saturates at knee 180° (or 0°) rather than
+crossing, because `acos` has nowhere else to go.
+
+**3. Nothing discontinuous happens along the way.** Over the same sweep: zero
+clamp or clip activations (`r_xz < a`, the `d` clamp, all three `_clip` calls —
+none ever fire); `z` stays ≥ 27.2 cm and `z_rel` ≥ 25.5 cm so neither `atan2`
+can wrap; largest step-to-step change is roll 9.67°, pitch 15.33°, knee 16.88°;
+and the IK→FK round-trip closes to **0.057 mm**, which confirms the angles
+actually put the foot on the commanded point via the intended branch.
+
+<a id="gait-quality-one-leg-up-three-legs-pushing-turning-really-does-use-hip-roll"></a>
+### Gait quality — one leg up, three legs pushing; turning really does use hip roll
+
+Separate question from "does it fall over", and checked separately in
+`scratchpad/verify_gait_quality.py`.
+
+**Straight walk.** Never more than one leg airborne, with four four-feet-down
+beats per cycle and the lift order `FL → RR → FR → RL`. Every leg's hip pitch
+sweeps **16.41°** monotonically across its stance, and all four feet travel
+**−10.00 cm** fore/aft in the body frame — exactly the commanded 10 cm stride,
+so the propulsion is real and shared, not one leg dragging the others. The swing
+leg recovers **+8.10 cm** forward against that. Planted feet: **zero** ticks
+where any two moved in opposing directions, worst per-tick disagreement
+**0.100 mm** (that is the `round(x, 2)` quantisation in `body_twist_xy_path`,
+already noted above, not scrub), and **0.000 mm** of height deviation.
+
+The body sway is measured separately on purpose: it is a 2 cm lean of the whole
+body toward the supporting tripod, so it moves every planted foot together. That
+is a translation, not scrub, and folding it into the propulsion numbers hides
+the actual stroke.
+
+**Turning.** Hip roll is the only joint that can move a foot sideways —
+`x = r_xz·sin(roll − phi2)`, while pitch and knee only set `r_xz` and the
+fore/aft reach. Measured over **stance only**, where `x` and `z` are both
+constant so any roll movement is lateral placement and nothing else:
+
+| yaw cmd | fwd stride | hip-roll sweep over stance | lateral foot travel | |
+|---|---|---|---|---|
+| 0.0 | 10.0 | **0.0000°** | 0.00 cm | straight |
+| −3.3 | 6.7 | 3.09° | 1.94 cm | arc |
+| −6.7 | 3.3 | 6.28° | 3.95 cm | arc |
+| −10.0 | 0.0 | **9.33°** | 5.88 cm | spin in place |
+
+Freeze the roll joint at its mid-stroke value and re-solve the FK and the foot
+lands up to **3.20 cm off its commanded arc** — that displacement is roll's
+doing and nothing else's. Direction is right too: the feet sweep −10° about the
+body centre for a left (CCW) turn and +10° for a right, i.e. opposite the body,
+which is what yaws it.
+
+**Do not read the raw roll sweep across the whole cycle as steering.** Over a
+full cycle even straight walking shows ~2.6° of roll movement, because the swing
+lifts the foot 5 cm and the abductor offset `a = 9.65 cm` is perpendicular to the
+leg plane — shortening the leg rotates the abductor on its own. Real kinematics,
+nothing to do with turning. Stance-only is the honest measurement.
+
+<a id="what-reverse-does-and-does-not-control"></a>
+### What `reverse` does and does not control
+
+**`reverse` cannot set which way a knee points.** It flips one joint's motor
+polarity and encoder sign — nothing more. Knee direction is fixed in software:
+the IK always solves a knee-forward leg in that leg's local frame, and
+`LEG_SIGN_Y = -1` for `FRONT_LEGS` is what turns that into "front knees point
+aft".
+
+So the intended build — **knees facing inward, front knees back and rear knees
+forward on each side** — is exactly the geometry already modelled, and needs no
+code change. If the legs end up mounted the other way (knees facing outward),
+the fix is to invert `LEG_SIGN_Y`, *not* to touch the `reverse` flags. Getting
+`LEG_SIGN_Y` right does not tell you the `reverse` flags are right, and vice
+versa — they are independent, and each needs its own bench check.
+
+
+
+Verified correct during the review, recorded so nobody re-derives them:
+
+- **Quadrature decode table is right.** `_QUAD_TABLE` covers exactly the eight
+  valid single-step transitions with the correct signs; invalid/skipped
+  transitions map to 0 rather than corrupting the count. `ppr = 28` is already
+  the 4×-decoded count per motor revolution, which is what the both-edges
+  both-channels ISR produces — so 28 × 99.5 / 360 = 7.74 ticks/deg is consistent
+  and the resolution really is 0.129°.
+- **Quaternion axis order is right.** Adafruit's `bno.quaternion` returns
+  `(i, j, k, real)` and `_quat_to_pitch_roll(i, j, k, real)` takes them in that
+  order.
+- **The `GaitIK` roll-discontinuity guard never fires on a real gait.** Checked
+  every step of all four legs with body shift on: 0 of 80 steps differed from
+  the raw IK solution, so it is not silently freezing roll anywhere.
+- **`GaitPath` is shared mutable state, used safely — by ordering, not design.**
+  `build_gait()` calls `swing_steps()` (which mutates `self.path_gen`) and reads
+  the result out *before* the per-leg loop mutates it again. Correct today,
+  fragile if anyone reorders those lines. Same object is also reached from
+  `single_leg_test`, but that is a separate process.
+- **Deactivated legs still receive recovery and abort cleanup.** `handle_recovery`
+  and the aborted-frame close both use `active_legs()` / `ser_list` rather than
+  filtering deactivated ones. That is the safe direction — a debug flag should
+  not suppress a fault response — but it is inconsistent with the normal gait
+  path, which does skip them.
+- **`engage_walking()` sleeps ~1.8 s inside a ROS callback.** It is on an
+  executor thread and `MultiThreadedExecutor` has others, so nothing deadlocks,
+  but that thread is blocked for the duration of the ramp.
+
+From the second review pass (2026-08-29), all re-verified by running:
+
+- **Nothing winds up at power-on.** `JointController(initial_angle=0)` and
+  `current_targets = [0.0, 0.0, 0.0]` mean the first `move_to()` sees error = 0,
+  which is inside the 1° deadband, so `output = 0` and `integral = 0`. Both PWMs
+  stay at zero. The legs hold under nothing at all until the first Home press,
+  which is the intent. `zero_at()` then clears `integral`/`prev_error`, so homing
+  cannot carry a stale term into the first real move either.
+- **Body-shift phase alignment is exact.** `apply_body_shift` samples the profile
+  at `(j - offset_L) % N` and `_gait_serial_worker` writes buffer index
+  `(i + offset_L) % N`, so at Pico tick `i` every leg uses profile index `i`. The
+  two rotations cancel. Checked for all four legs at all 20 ticks.
+- **March-in-place is genuinely a march.** At `stride_scale = 0` (BLOCKED),
+  `body_twist_xy_path(fwd_cm=0, yaw_rad=0)` gives exactly zero horizontal foot
+  travel — `max(|x|, |y|) = 0.0` — while the swing lift still peaks at 4.76 cm.
+  The robot picks its feet up in place and stays IMU-levelled, which is the
+  documented difference from STOP.
+- **The avoidance planner cannot make the robot fall.** Its only outputs are a
+  steering angle and a stride multiplier, both of which feed the same
+  `build_gait()` path as manual steering; the stability margin and joint-rate
+  checks in `quadruped_sim.py --report` cover the whole commanded range. A dead
+  camera fails *open* (`reset()` + `AvoidState.OFF`, stride 1.0), so it degrades
+  to ordinary walking rather than halting in a field.
+- **A missing depth model degrades cleanly.** `ObstacleAvoider` constructs with
+  `depth = None` rather than raising, `available` is False, `start()` no-ops,
+  `plan()` returns the desired heading unchanged at stride 1.0, and the dashboard
+  shows `AVOIDANCE: NO MODEL` with the toggle disabled.
+- **`Decision`'s docstring said "saturating at +/-45"** while `MAX_STEER_DEG` is
+  90. Comment only — corrected.
+
+---
+
+<a id="protocol-gaps-accepted-for-now"></a>
+## Protocol gaps (accepted for now)
+
+The Pi→Pico link has **no length field, no checksum, no sequence number, and no
+ACK**. A corrupted frame produces wrong motion silently, and the Pi has no way to
+know a leg is desynced.
+
+Current mitigations, all added rather than the protocol being redesigned:
+- byte-at-a-time start-marker scanning, so odd-byte misalignment recovers
+- per-payload range validation, so non-finite/garbage angles are dropped
+- `MAX_GAIT_STEPS` cap, so a straddled terminator can't grow the buffer to MemoryError
+
+A frame truncated **mid-payload** can still desync the parser for up to a few frames
+before the cap forces a rescan. The Pi no longer truncates its own frames, so this
+should not arise in normal operation.

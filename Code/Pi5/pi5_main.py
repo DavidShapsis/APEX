@@ -1,0 +1,1773 @@
+import threading
+import math
+import time
+import serial
+import struct
+import rclpy
+from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from std_msgs.msg import Float32MultiArray, Int32, Int32MultiArray, Bool
+import os
+import signal
+
+WAV_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_env_file(path):
+    """KEY=VALUE lines from a gitignored .env into os.environ, for per-robot
+    private settings (see .env.example). Variables already set win."""
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"\''))
+    except FileNotFoundError:
+        pass
+
+
+_load_env_file(os.path.join(WAV_DIR, '.env'))
+
+
+_last_logged = {}
+
+
+def _log_every(key, msg, every_s=2.0):
+    """Print msg at most once per every_s seconds per key. The control loop
+    runs at ~100 Hz, so the old `int(time) % 2 == 0` gate printed every pass
+    for the whole even second -- ~100 copies of each warning."""
+    now = time.monotonic()
+    if now - _last_logged.get(key, -1e9) >= every_s:
+        _last_logged[key] = now
+        print(msg)
+
+# Core hardware and engine imports
+from power_monitor import INA219
+from inverse_kinematics.ik_and_gait import (
+    InverseKinematics, GaitPath, GaitIK, RecoveryPath,
+    LEG_FL, LEG_FR, LEG_RR, LEG_RL, LEG_ORDER, LEG_NAMES,
+    HIP_POSITIONS, LEG_SIGN_X, LEG_SIGN_Y,
+    phase_offsets, HOME_POSE, cartesian_ramp, body_twist_xy_path,
+    body_shift_profile, apply_body_shift, attitude_height_offsets,
+)
+from audio import QuadrupedAudio
+from webcam import USBWebcam
+from stream_server import RobodogStreamer
+from navigation import GPSReader, CompassReader, Navigator
+from imu import IMU
+from sensor_hub import SensorHub
+from boot_display import BootDisplay
+
+# Vision-based obstacle avoidance is optional and guarded: it pulls in
+# onnxruntime and a ~100MB model file, neither of which is needed to walk. A
+# missing or broken install has to degrade to "no avoidance", never to a robot
+# that will not boot.
+try:
+    from vision_obstacle import ObstacleAvoider, AvoidState
+except Exception as _vision_err:
+    ObstacleAvoider, AvoidState = None, None
+    print(f"[VISION] obstacle avoidance unavailable: {_vision_err}")
+
+class RobotMode:
+    """What the operator asked for. Only nav_mode_callback writes this."""
+    MANUAL = 0
+    AUTONOMOUS = 1
+
+
+class RobotActivity:
+    """What the robot is doing right now. Only the recovery path writes this.
+
+    Split out of the old single `current_state` field, which used one variable
+    for both meanings. That caused a real hazard: nav_mode_callback overwrote
+    it unconditionally from a ROS executor thread, so a NAV toggle landing
+    between handle_recovery() staging a recovery and _gait_serial_worker
+    reading it made the worker's `== RECOVERY` test fail. The recovery was then
+    never transmitted and the aborted leg stayed frozen at zero PWM with
+    has_aborted latched, while the other three kept walking -- i.e. the robot
+    falls. It also meant every recovery silently reset the mode to MANUAL,
+    dropping the robot out of GPS nav while the dashboard still read NAV: ON.
+    """
+    NORMAL = 0
+    RECOVERY = 1
+
+
+# Back-compat alias: RobotState.MANUAL / .AUTONOMOUS still resolve for anything
+# that imports them. RECOVERY deliberately does NOT exist here any more, so a
+# stale reference fails loudly instead of silently comparing against a mode.
+RobotState = RobotMode
+
+# Leg identity, body geometry and mounting all live in ik_and_gait.py so that
+# pi5_main and quadruped_sim cannot drift apart. build_gait() lays the second
+# axis out in LEG_ORDER and _gait_serial_worker indexes it by leg id, which only
+# lines up while LEG_ORDER is sorted.
+assert LEG_ORDER == tuple(range(len(LEG_ORDER))), "LEG_ORDER must stay in leg-id order"
+
+# Portion of the cycle a foot spends airborne. 0.25 keeps three feet planted at
+# all times, which is what the [0, N/2, 3N/4, N/4] crawl sequencing needs.
+SWING_FRACTION = 0.25
+GAIT_STEPS = 20
+STAND_HEIGHT = 36.0
+SWING_HEIGHT = 5.0
+
+# Must match Pico/pico_main.py STEP_TICK_MS (and quadruped_sim.py) -- used to
+# time the startup ramp. 90 ms is set by the 188:1 knee's speed; see pico_main.
+STEP_TICK_S = 0.090
+
+# Floor on how often the control loop may push a rebuilt gait to the legs.
+#
+# A frame is 2 + 20*16 + 16 = 338 bytes; at 115200 8N1 that is 29.3 ms of wire
+# time per port. The resend trigger (steering moved >5 deg, tilt >1.5 deg,
+# stride >0.05) is evaluated every ~10 ms and nothing rate-limited it, so a
+# turn or a bit of uneven ground could queue frames faster than the wire could
+# carry them. Two failures, both measured in scratchpad/wire_timing.py:
+#
+#   * under ~30 ms the worker starts the next frame while the previous is still
+#     draining, and its reset_output_buffer() (POSIX tcflush) DISCARDS the tail
+#     -- including the end marker, which leaves the Pico stuck in is_receiving;
+#   * under ~69 ms (29.3 wire + the then-40 ms tick) the old firmware never advanced a
+#     single gait step, because it reset its step clock on every end marker:
+#     0 steps in 20 s, i.e. the robot stands still while the dashboard says
+#     WALKING.
+#
+# 100 ms keeps steering latency at 10 Hz -- 0.8 cm of travel at ~7.8 cm/s -- and
+# leaves 3.4x margin over the wire time. The Pico-side staging fix removes the
+# 69 ms floor as well, but this stays as the wire-level backstop and so that
+# newer Pi code against un-reflashed firmware degrades rather than freezes.
+MIN_GAIT_RESEND_S = 0.10
+
+# Must match Pico/pico_main.py MAX_GAIT_STEPS. The Pico treats an overlong frame
+# as a desynced stream and throws the whole thing away, so a frame that exceeds
+# this does not degrade -- it silently does nothing. send_entire_gait() refuses
+# to transmit past it rather than letting that happen unnoticed. The largest
+# legitimate frame is the Stand/Go ramp at RAMP_STEPS + 1.
+PICO_MAX_FRAMES = 48
+# Cartesian ramp resolution for Stand and Go. steps+1 entries are sent.
+RAMP_STEPS = 40
+
+# Zero, not 2.5. Three feet are planted at different points in the stance phase,
+# so any downward push commands them to depths spanning ~2.2 cm -- on flat rigid
+# ground they cannot all be there, and it becomes body bob or lost contact.
+# Raise it only alongside closed-loop FSR contact for uneven terrain.
+STANCE_PUSH = 0.0
+
+# How far the body leans toward the supporting tripod before each lift. Without
+# it the centre of mass rides the support triangle's edge with ~4 mm of margin;
+# 2 cm takes that to ~2.2 cm. Costs foot workspace, so do not inflate it.
+BODY_SHIFT_CM = 2.0
+# During a turn the feet arc off their nominal positions, which the 2 cm lean no
+# longer covers -- quadruped_sim --report shows the margin falling to +0.7 cm at
+# a full spin. Ramping the lean to 4 cm as the turn tightens restores it to
+# +2.6 cm, and the reduced forward stride keeps the joint rate in bounds (79%).
+# Straight walking (yaw 0) is untouched -- it still uses BODY_SHIFT_CM exactly.
+TURN_BODY_SHIFT_CM = 4.0
+
+# IMU levelling. gain 1.0 would fully cancel the measured tilt in one update,
+# which invites overshoot; 0.6 damps it. The limit caps how far one corner can
+# be driven from the nominal stand height.
+ATTITUDE_GAIN = 0.6
+ATTITUDE_LIMIT_CM = 4.0
+
+# --- Body-twist steering ---
+# Steering is by yawing the body (each foot arcs about the body centre), not by
+# differential stride length. See ik_and_gait.body_twist_xy_path.
+#
+# MAX_YAW_PER_CYCLE: commanded body yaw at a full turn, per gait cycle. One
+# cycle is GAIT_STEPS * STEP_TICK_S = 1.8 s. The phased crawl over-rotates a
+# little, so 10 commanded gives ~13 deg/cycle measured in quadruped_sim -->
+# ~7.3 deg/s, a 90 deg turn in ~12 s. Turning lays a lateral hip-roll sweep on
+# top of the forward gait, which costs stability margin and joint-rate
+# headroom, so this is set from quadruped_sim.py --report (spin case), not
+# guessed. Raise it only after re-running that.
+MAX_YAW_PER_CYCLE = 10.0
+# Turn command (deg) at or above which the forward stride collapses to zero
+# and the robot spins in place; below it, forward travel and yaw blend into an
+# arc. 90 means only a hard LEFT/RIGHT button or a ~180 deg heading reversal
+# spins -- moderate heading errors are corrected on the move, which is what the
+# obstacle-avoidance planner wants (it commits to gaps 20-40 deg off and needs
+# to keep progressing past them, not stop and pirouette).
+YAW_FULL_SPIN_DEG = 90.0
+
+# Order of the subsystem-health bitmask published in the status array
+# (bit i set = subsystem i came up at boot). The dashboard decodes this to
+# show a 'running degraded' banner. Obstacle avoidance is NOT here -- the
+# existing avoid_available field already carries it.
+HEALTH_BITS = ('imu', 'gps', 'compass', 'power', 'camera', 'audio')
+
+# Magnetic declination at the operating area, degrees, EAST positive. The
+# compass measures magnetic north; GPS waypoint bearings -- and the lat/lon you
+# copy off Google Maps -- are true north. CompassReader adds this to every
+# heading. Look yours up (magnetic-declination.com / NOAA) and set it here;
+# northern NJ is about -13 (13 W) in 2026. It is small enough that the closed
+# nav loop still converges without it, but every straight leg crabs ~this many
+# degrees off course until it is set.
+MAGNETIC_DECLINATION_DEG = -13.0
+
+# Under AUTONOMOUS, if the last good compass read is older than this the robot
+# holds position instead of driving on a frozen heading (which curves it off
+# course while it believes it is tracking). The nav poller runs at 10 Hz.
+HEADING_MAX_AGE_S = 3.0
+# Likewise for the GPS: a receiver that goes silent leaves has_fix latched True
+# with a frozen lat/lon, so bearing-to-waypoint stops changing. GGA is 1 Hz;
+# allow a few missed sentences before treating the fix as stale.
+GPS_FIX_MAX_AGE_S = 5.0
+# Picos report currents every 200 ms; older than this shows as "no data".
+MOTOR_CURRENT_MAX_AGE_S = 1.0
+# 3S pack (VBAT lines, averaged). Separate from LOW_VOLT_THRESHOLD, which is
+# the 5 V rail. Warn at 3.5 V/cell. At 3.3 V/cell, once it has stayed that low
+# for PACK_CUTOFF_HOLD_S (so a load sag mid-stride doesn't trip it), stop
+# walking and hold the stand pose under power -- the robot stays up, it just
+# stops going anywhere -- and Go is refused until the pack recovers.
+PACK_LOW_MV = 10500
+PACK_CUTOFF_MV = 9900
+PACK_CUTOFF_HOLD_S = 3.0
+# low_battery.wav is ~0.65 s. It repeats faster as the pack gets worse.
+PACK_LOW_AUDIO_EVERY_S = 10.0
+PACK_CUTOFF_AUDIO_EVERY_S = 3.0
+
+class PiQuadrupedController(Node):
+    def __init__(self):
+        super().__init__('pi5_main_node')
+        
+        # --- ROS 2 Publishers & Subscribers ---
+        self.joint_pub = self.create_publisher(Float32MultiArray, '/apex/kinematics/joint_targets', 10)
+        self.dir_sub = self.create_subscription(Int32, '/apex/navigation/cmd_dir', self.direction_callback, 10)
+        self.nav_mode_sub = self.create_subscription(Bool, '/apex/navigation/nav_mode', self.nav_mode_callback, 10)
+        self.avoid_sub = self.create_subscription(Bool, '/apex/vision/cmd_avoid', self.avoid_callback, 10)
+        # Route editing from the dashboard. Flat [lat0, lon0, lat1, lon1, ...];
+        # an empty array is a valid message meaning "no route", which parks the
+        # robot at the next AUTONOMOUS pass rather than leaving a stale one.
+        self.waypoints_sub = self.create_subscription(
+            Float32MultiArray, '/apex/navigation/waypoints', self.waypoints_callback, 10)
+        # Route transport from the dashboard: 1 START, 2 PAUSE, 3 STOP. Separate
+        # from nav_mode (the master MANUAL/AUTONOMOUS switch) so Start can also
+        # rewind the route and Pause can hold without leaving autonomous mode.
+        self.nav_cmd_sub = self.create_subscription(
+            Int32, '/apex/navigation/nav_cmd', self.nav_cmd_callback, 10)
+
+        # --- Homing / stand / go / stop / per-leg debug deactivation, driven
+        # from the web dashboard ---
+        self.home_leg_sub = self.create_subscription(Int32, '/apex/homing/cmd_home_leg', self.home_leg_callback, 10)
+        self.stand_sub = self.create_subscription(Bool, '/apex/homing/cmd_stand', self.stand_callback, 10)
+        self.go_sub = self.create_subscription(Bool, '/apex/homing/cmd_go', self.go_callback, 10)
+        self.stop_sub = self.create_subscription(Bool, '/apex/homing/cmd_stop', self.stop_callback, 10)
+        self.deactivate_leg_sub = self.create_subscription(
+            Int32, '/apex/homing/cmd_deactivate_leg', self.deactivate_leg_callback, 10)
+        self.reactivate_leg_sub = self.create_subscription(
+            Int32, '/apex/homing/cmd_reactivate_leg', self.reactivate_leg_callback, 10)
+        self.homing_status_pub = self.create_publisher(Int32MultiArray, '/apex/homing/status', 10)
+
+        # --- Hardware Serial Setup ---
+        self.pico_ports = ['/dev/ttyAMA0', '/dev/ttyAMA2', '/dev/ttyAMA3', '/dev/ttyAMA4']
+        self.ser_list = []
+        self.rx_buffers = []
+        self.port_by_leg = {}   # leg id -> serial, filled from Pico announcements
+        self.init_serial_ports()
+        self.end_marker = b'\xFF' * 16          # gait: Pico loops the buffer
+        self.oneshot_end_marker = b'\xFE' * 16  # recovery: Pico holds the final step
+        self.home_marker = b'\xAB\xAB'          # zero one leg's encoder to HOME_POSE
+        self.relax_marker = b'\xAC\xAC'         # cut holding torque, keep encoder tracking
+
+        # --- Sub-Engine Initializations (Standardized to Centimeters) ---
+        self.ik_engine = InverseKinematics({'a': 9.65, 'b': 26.84, 'c': 24.37})
+        self.path_gen = GaitPath()
+        self.recovery_engine = RecoveryPath(self.ik_engine)
+
+        # Default straight-ahead gait (fwd 10 cm/cycle, no yaw), already in
+        # per-leg format so the rear pair is mirrored from the very first frame.
+        # Nothing is sent to hardware yet -- see main(): the robot stays put
+        # until every leg is homed via the web UI.
+        self.all_angles = self.build_gait(10.0, 0.0)
+
+        # Static, feet-under-hips pose, identical for all four legs for the same
+        # reason HOME_POSE is: the per-joint reverse flags handle the mirroring.
+        stand_ik = self.ik_engine.calculate(0.0, 0.0, STAND_HEIGHT)
+        self.stand_pose = (stand_ik.roll, stand_ik.pitch, stand_ik.knee)
+
+        # --- Homing / stand / walk gating ---
+        # No leg starts homed, so request_stand()/engage_walking() refuse to run
+        # until the operator has homed every leg from the web UI. This is the
+        # actual answer to "how does firmware know a leg is at HOME_POSE" --
+        # it doesn't, the human says so by pressing the button.
+        self.homed = {leg_id: False for leg_id in LEG_ORDER}
+        self.standing = False
+        self.walking_enabled = False
+
+        # Debug/testing only: a deactivated leg is still fully computed every
+        # gait tick (nothing about the loop changes), it just never receives
+        # the resulting wire signal, so it holds whatever it was last told
+        # while the other three keep walking normally.
+        self.deactivated_legs = set()
+
+        # Latest motor currents per leg, from each Pico's CUR line: leg_id ->
+        # (monotonic time, [roll R, roll L, pitch R, pitch L, knee R, knee L] mA,
+        # -1 where that joint's ADC reads as dead). Dashboard display only.
+        self.motor_currents = {}
+        # Latest pack voltage per leg, from the Picos whose ADC has the CH6
+        # divider (one per board, so normally two): leg_id -> (monotonic time,
+        # mV), mV = -1 when that ADC reads as dead.
+        self.pack_voltage = {}
+
+        # Live position/heading for the dashboard's GPS readout, refreshed by
+        # the control loop: [has_fix, satellites, lat*1e7, lon*1e7,
+        # heading*10 (true north, filtered; -1 = no compass)]. Replaced as a
+        # whole list, so a reader never sees half an update.
+        self.nav_readout = [0, 0, 0, 0, -1]
+        # [valid, current mA, voltage mV] from the INA226, set by the control loop.
+        self.power_readout = [0, 0, 0]
+
+        # System State Tracking Management
+        self.current_mode = RobotMode.MANUAL
+        self.current_activity = RobotActivity.NORMAL
+        # Pause holds position (march in place) while staying in AUTONOMOUS, so
+        # Resume picks the route straight back up. Only nav_cmd_callback and the
+        # control loop touch it.
+        self.nav_paused = False
+        self.last_sent_direction = 0
+        self.last_sent_pitch = 0.0
+        self.last_sent_roll = 0.0
+        self.last_sent_stride_scale = 1.0
+        self.target_direction = 0
+        self.filtered_heading = 0.0
+
+        # --- Vision obstacle avoidance ---
+        # Kept in its own fields rather than as another RobotState value on
+        # purpose. That enum already conflates operating mode (MANUAL/
+        # AUTONOMOUS) with transient activity (RECOVERY), which ENGINEERING_NOTES
+        # flags as the cause of three separate bugs -- and avoidance is
+        # orthogonal to both anyway: it modifies the steering command in either
+        # mode without changing which mode is active.
+        # Set by main() once it exists; the dashboard edits the route through
+        # this rather than main() owning it privately.
+        self.nav_engine = None
+
+        self.avoider = None          # set by main() once the camera exists
+        # {name: bool} filled by main() from the boot sequence. Missing keys
+        # read as healthy, so an older main() reports all-ok rather than
+        # tripping a false alarm on the dashboard.
+        self.subsystem_health = {}
+        self.avoid_enabled = False
+        self.avoid_state_code = 0    # AvoidState.CODES value, for the dashboard
+        self.avoid_steer = 0.0
+        self.avoid_stride_scale = 1.0
+
+        # --- Background Serial Worker Thread Management ---
+        self.serial_lock = threading.Lock()
+        self.gait_update_queue = None
+        self.emergency_queue = None
+        # FIFO of (marker_bytes, [(leg_id, serial), ...]) jobs -- Home (one leg)
+        # and Stop (all legs) both go through this, so every wire write still
+        # comes from the single worker thread.
+        self.command_queue = []
+        self.is_running = True
+        
+        self.gait_worker_thread = threading.Thread(target=self._gait_serial_worker, daemon=True)
+        self.gait_worker_thread.start()
+
+    def init_serial_ports(self):
+        """Initializes connection to all 4 leg Picos."""
+        for port in self.pico_ports:
+            try:
+                s = serial.Serial(port, baudrate=115200, timeout=0.1)
+                self.ser_list.append(s)
+                self.rx_buffers.append(b'')
+                self.get_logger().info(f"UART setup successful: {port}")
+            except Exception as e:
+                self.get_logger().error(f"Failed to open {port}: {e}")
+
+    def read_pico_lines(self):
+        """Drains every Pico UART without blocking, returning [(serial, line), ...].
+
+        readline() is unusable here: in_waiting > 0 does not mean a full line is
+        present, so a partial one blocks for the whole 0.1s timeout -- up to 0.4s
+        across four ports, inside a loop that is meant to run at 100Hz.
+        """
+        messages = []
+        for idx, s in enumerate(self.ser_list):
+            try:
+                pending = s.in_waiting
+                if pending:
+                    self.rx_buffers[idx] += s.read(pending)
+                while b'\n' in self.rx_buffers[idx]:
+                    raw, self.rx_buffers[idx] = self.rx_buffers[idx].split(b'\n', 1)
+                    line = raw.decode('utf-8', errors='ignore').strip()
+                    if line:
+                        messages.append((s, line))
+            except Exception as e:
+                self.get_logger().error(f"Serial read error on {s.port}: {e}")
+        return messages
+
+    def build_gait(self, fwd_stride, yaw_deg, roll_tilt=0.0, pitch_tilt=0.0,
+                   height_z=STAND_HEIGHT, body_shift_cm=BODY_SHIFT_CM):
+        """Builds a [step][leg_id][roll, pitch, knee, is_swing] matrix for a body
+        twist: the robot advances `fwd_stride` cm and yaws `yaw_deg` degrees
+        (CCW / turning left positive) per gait cycle.
+
+        `body_shift_cm` is the lift-phase lean toward the supporting tripod;
+        the caller raises it above BODY_SHIFT_CM while turning (see
+        TURN_BODY_SHIFT_CM) because the arced feet need more margin.
+
+        Steering is by yaw, not differential stride -- each foot arcs about the
+        body centre (see ik_and_gait.body_twist_xy_path), which is what pulls the
+        hip-roll joint into the turn. `yaw_deg == 0` reproduces the old
+        straight-line gait exactly.
+
+        On top of the twist:
+
+          * body sway, phased with the lift sequence, so the centre of mass stays
+            inside the support triangle instead of riding its edge;
+          * differential leg height from the IMU, which actually levels the body
+            (a common offset on all four legs only translates it).
+
+        The second axis is ordered by LEG_ORDER, which is how
+        _gait_serial_worker indexes it.
+        """
+        offsets = phase_offsets(GAIT_STEPS)
+        swing_steps = self.swing_steps(height_z)
+        shift = body_shift_profile(swing_steps, offsets, GAIT_STEPS, body_shift_cm)
+        dz = attitude_height_offsets(roll_tilt, pitch_tilt,
+                                     gain=ATTITUDE_GAIN, limit_cm=ATTITUDE_LIMIT_CM)
+        yaw_rad = math.radians(yaw_deg)
+
+        per_leg = {}
+        for leg_id in LEG_ORDER:
+            xy = body_twist_xy_path(
+                HIP_POSITIONS[leg_id], LEG_SIGN_X[leg_id], LEG_SIGN_Y[leg_id],
+                num_steps=GAIT_STEPS, swing_fraction=SWING_FRACTION,
+                fwd_cm=fwd_stride, yaw_rad=yaw_rad,
+                center_height_z=height_z + dz[leg_id],
+                swing_height=SWING_HEIGHT, stance_push=STANCE_PUSH,
+            )
+            path = apply_body_shift(xy, leg_id, offsets, shift, GAIT_STEPS)
+            per_leg[leg_id] = GaitIK(self.ik_engine, path).get_gait_ik()
+
+        num_steps = len(per_leg[LEG_FL])
+        return [[per_leg[leg_id][i] for leg_id in LEG_ORDER] for i in range(num_steps)]
+
+    def build_ramp(self, start_pose, target_by_leg, steps=RAMP_STEPS):
+        """One-shot Cartesian ramp from a single fixed joint pose into a per-leg
+        target, e.g. HOME_POSE into the stand pose, or the stand pose into the
+        gait's first step. target_by_leg entries may carry a trailing is_swing
+        flag (gait frames do) -- cartesian_ramp only looks at the first three.
+        """
+        ramp = {
+            leg_id: cartesian_ramp(self.ik_engine, start_pose,
+                                   target_by_leg[leg_id], steps=steps)
+            for leg_id in LEG_ORDER
+        }
+        num_steps = len(ramp[LEG_FL])
+        return [[ramp[leg_id][i] for leg_id in LEG_ORDER] for i in range(num_steps)]
+
+    def home_leg_callback(self, msg):
+        self.request_home_leg(msg.data)
+
+    def stand_callback(self, msg):
+        if msg.data:
+            self.request_stand()
+
+    def go_callback(self, msg):
+        if msg.data:
+            self.engage_walking()
+
+    def stop_callback(self, msg):
+        if msg.data:
+            self.request_stop()
+
+    def deactivate_leg_callback(self, msg):
+        self.request_deactivate_leg(msg.data)
+
+    def reactivate_leg_callback(self, msg):
+        self.request_reactivate_leg(msg.data)
+
+    def request_home_leg(self, leg_id):
+        """Queues the wire command that zeroes one leg's encoders to HOME_POSE
+        where it currently, physically is. Fire-and-forget: the Pico's
+        HOMED,<id> ack, picked up by read_pico_lines() in the main loop, is
+        what actually flips self.homed[leg_id].
+        """
+        if leg_id not in LEG_ORDER:
+            self.get_logger().error(f"Cannot home unknown leg id {leg_id}")
+            return
+        s = self.port_by_leg.get(leg_id)
+        if s is None:
+            self.get_logger().error(
+                f"Cannot home {LEG_NAMES.get(leg_id, leg_id)}: leg not identified yet.")
+            return
+        with self.serial_lock:
+            self.command_queue.append((self.home_marker, [(leg_id, s)]))
+
+    def request_stop(self):
+        """Ends the active walk and cuts holding torque on every identified
+        leg -- no active power, but the Pico's encoder ISR keeps counting
+        regardless, so re-homing is NOT required to resume.
+
+        This does not lower the robot into any kind of resting pose first. If
+        it is standing or walking under its own weight when this is sent, the
+        legs will sag or the robot may collapse the instant power is cut --
+        there is no sit-down sequence. Safe once it is off the ground or
+        otherwise supported; use with that in mind while it's load-bearing.
+        """
+        with self.serial_lock:
+            self.walking_enabled = False
+            self.standing = False
+            targets = self.active_legs()
+            if targets:
+                self.command_queue.append((self.relax_marker, targets))
+
+    def request_deactivate_leg(self, leg_id):
+        """Debug/testing only: the gait loop keeps computing this leg's path
+        exactly as before, it just stops being written to the wire, so the
+        Pico holds whatever it was last told while the other three keep
+        walking. Does not touch self.homed -- deactivating and reactivating a
+        leg never requires re-homing it.
+        """
+        if leg_id not in LEG_ORDER:
+            self.get_logger().error(f"Cannot deactivate unknown leg id {leg_id}")
+            return
+        with self.serial_lock:
+            self.deactivated_legs.add(leg_id)
+
+    def request_reactivate_leg(self, leg_id):
+        if leg_id not in LEG_ORDER:
+            return
+        with self.serial_lock:
+            self.deactivated_legs.discard(leg_id)
+
+    def settle_to_stand(self):
+        """Direct one-shot move of all four legs to the stand pose, for when the
+        robot is ALREADY up and we just want it to stop moving and hold.
+
+        No Cartesian ramp, because there is nothing to ramp from: the Pi never
+        learns a leg's actual angle unless that leg aborts, so mid-walk the
+        start pose is unknown. Same reasoning -- and the same 2-entry one-shot
+        buffer -- as the neutral move handle_recovery sends the non-aborting
+        legs. Measured worst case from any walking-gait pose (15 cm steering
+        stride, body shift on) is 16.3 deg at a joint / 9.2 cm at the foot,
+        against 105.6 deg / 68.6 cm for a HOME_POSE ramp from the same place.
+
+        Two identical entries, not one, because the Pico skips index 0 of every
+        buffer -- it advances to index 1 on the first tick (see the "stale
+        target for one tick" note in ENGINEERING_NOTES).
+        """
+        hold = list(self.stand_pose) + [0.0]
+        frame = [[list(hold) for _ in LEG_ORDER] for _ in range(2)]
+        if not self.send_entire_gait(frame, cycle=False):
+            return False
+        with self.serial_lock:
+            self.standing = True
+            self.walking_enabled = False
+        self.get_logger().info("Settling to stand pose; walking stopped.")
+        return True
+
+    def request_stand(self):
+        """Bring the robot to the static stand pose.
+
+        From rest this is a Cartesian ramp out of HOME_POSE. If the robot is
+        already walking it is a direct settle instead -- ramping from HOME_POSE
+        here would first command the legs to straighten (roll 90, knee 180),
+        a 105 deg / 68.6 cm lurch at full duty, which is precisely the slam the
+        whole Home -> Stand -> Go sequence exists to prevent. Nothing gated
+        that before: the dashboard leaves STAND enabled while walking.
+
+        Refuses unless every leg has been homed either way -- otherwise the ramp
+        starts from a pose the firmware only assumes, which is what homing
+        exists to establish.
+        """
+        if not all(self.homed.values()):
+            self.get_logger().error("Refusing to stand: not every leg is homed yet.")
+            return False
+        if self.walking_enabled:
+            return self.settle_to_stand()
+        target = {leg_id: self.stand_pose for leg_id in LEG_ORDER}
+        ramp = self.build_ramp(HOME_POSE, target)
+        if not self.send_entire_gait(ramp, cycle=False):
+            return False
+        with self.serial_lock:
+            self.standing = True
+            self.walking_enabled = False
+        return True
+
+    def gait_entry_pose(self, gait):
+        """{leg_id: first frame that leg will actually be commanded} for a cyclic gait.
+
+        NOT gait[0] for every leg. _gait_serial_worker rotates each leg's buffer
+        by phase_offsets(), so leg L's Pico receives gait[offsets[L]][L] at its
+        buffer position 0 -- buffer index j for leg L is global tick j - offset_L,
+        which is exactly what apply_body_shift() assumes.
+
+        Ramping all four legs to gait[0] instead put them at four DIFFERENT
+        global ticks at once, an attitude the body never actually holds, and the
+        first cyclic tick then snapped each one to its real phase: measured 11.0,
+        11.4 and 21.5 deg at a joint for FR/RR/RL, i.e. a planted foot yanked
+        7.1, 6.9 and 13.2 cm sideways in a single tick (40 ms then) against 0.67 cm of
+        normal stance travel. All four feet are on the ground at that moment, so
+        the legs fight each other through the frame at full duty. FL was the only
+        leg the old ramp aimed at correctly, because its offset is 0.
+        """
+        offsets = phase_offsets(len(gait))
+        return {leg_id: gait[offsets[leg_id] % len(gait)][leg_id]
+                for leg_id in LEG_ORDER}
+
+    def engage_walking(self):
+        """Ramps from the stand pose into the gait's first frame, then starts
+        the continuous cyclic walk. Refuses unless the robot is already
+        standing (which itself requires every leg homed) -- Home and Stand
+        exist so this never has to guess where the legs physically are.
+        """
+        if self.walking_enabled:
+            return True
+        if not (self.standing and all(self.homed.values())):
+            self.get_logger().error("Refusing to walk: home every leg and Stand first.")
+            return False
+        pack_mv = self.pack_voltage_mv()
+        if 0 <= pack_mv < PACK_CUTOFF_MV:
+            self.get_logger().error(
+                f"Refusing to walk: pack at {pack_mv / 1000:.2f} V, below the "
+                f"{PACK_CUTOFF_MV / 1000:.1f} V cutoff. Charge the battery.")
+            return False
+
+        ramp = self.build_ramp(self.stand_pose, self.gait_entry_pose(self.all_angles))
+        if not self.send_entire_gait(ramp, cycle=False):
+            return False
+        time.sleep((len(ramp) - 1) * STEP_TICK_S + 0.2)
+        if not self.send_entire_gait(self.all_angles):
+            return False
+
+        with self.serial_lock:
+            self.walking_enabled = True
+        return True
+
+    def record_motor_currents(self, line):
+        """Stores a 'CUR,<leg>,<6 x mA>' line. True if the line was consumed."""
+        if not line.startswith("CUR,"):
+            return False
+        try:
+            parts = [int(p) for p in line.split(',')[1:]]
+        except ValueError:
+            return True
+        if len(parts) == 7 and parts[0] in LEG_NAMES:
+            with self.serial_lock:
+                self.motor_currents[parts[0]] = (time.monotonic(), parts[1:])
+        return True
+
+    def record_pack_voltage(self, line):
+        """Stores a 'VBAT,<leg>,<mV>' line. True if the line was consumed."""
+        if not line.startswith("VBAT,"):
+            return False
+        try:
+            parts = [int(p) for p in line.split(',')[1:]]
+        except ValueError:
+            return True
+        if len(parts) == 2 and parts[0] in LEG_NAMES:
+            with self.serial_lock:
+                self.pack_voltage[parts[0]] = (time.monotonic(), parts[1])
+        return True
+
+    def pack_voltage_mv(self):
+        """Pack voltage in mV: the mean of every leg's valid reading from the
+        last MOTOR_CURRENT_MAX_AGE_S (same 200 ms schedule as CUR). Every board
+        measures the same common B+, so the readings should agree within
+        calibration. -1 if no leg has a fresh valid reading."""
+        now = time.monotonic()
+        with self.serial_lock:
+            entries = list(self.pack_voltage.values())
+        fresh = [mv for t, mv in entries
+                 if mv >= 0 and now - t <= MOTOR_CURRENT_MAX_AGE_S]
+        if not fresh:
+            return -1
+        return int(round(sum(fresh) / len(fresh)))
+
+    def motor_current_block(self):
+        """24 ints for the status message: LEG_ORDER x (roll, pitch, knee) x
+        (R, L), in mA. -1 for a leg with no report in the last second."""
+        now = time.monotonic()
+        out = []
+        with self.serial_lock:
+            for leg_id in LEG_ORDER:
+                entry = self.motor_currents.get(leg_id)
+                if entry is None or now - entry[0] > MOTOR_CURRENT_MAX_AGE_S:
+                    out.extend([-1] * 6)
+                else:
+                    out.extend(entry[1])
+        return out
+
+    def publish_homing_status(self):
+        """Wire layout: [homed x4, standing, walking, deactivated x4,
+        avoid_available, avoid_enabled, avoid_state_code, avoid_steer_deg,
+        avoid_stride_pct, wp_index, wp_total, nav_mode, nav_paused,
+         health_mask, motor currents x24 (see motor_current_block),
+         has_fix, satellites, lat*1e7, lon*1e7, heading*10 (see nav_readout),
+         power_valid, current_mA, voltage_mV (see power_readout; the 5 V rail),
+         pack_mV (battery pack from the VBAT line, -1 = invalid or stale)].
+
+        Fields are only ever APPENDED, never inserted: stream_server reads each
+        block by fixed index behind a length check, so an older dashboard against
+        a newer controller still works.
+        """
+        with self.serial_lock:
+            homed = [int(self.homed[leg_id]) for leg_id in LEG_ORDER]
+            standing = int(self.standing)
+            walking = int(self.walking_enabled)
+            deactivated = [int(leg_id in self.deactivated_legs) for leg_id in LEG_ORDER]
+            avoid = [
+                int(self.avoider is not None and self.avoider.available),
+                int(self.avoid_enabled),
+                int(self.avoid_state_code),
+                int(round(self.avoid_steer)),
+                int(round(self.avoid_stride_scale * 100)),
+            ]
+        # Outside the lock: Navigator has its own, and nesting the two in one
+        # order here while another path takes them in the other is how deadlocks
+        # get written.
+        wp_idx, wp_total = (self.nav_engine.progress()
+                            if self.nav_engine is not None else (0, 0))
+        with self.serial_lock:
+            nav_mode = int(self.current_mode == RobotMode.AUTONOMOUS)
+            nav_paused = int(self.nav_paused)
+        health_mask = 0
+        for i, key in enumerate(HEALTH_BITS):
+            if self.subsystem_health.get(key, True):
+                health_mask |= (1 << i)
+        msg = Int32MultiArray()
+        msg.data = (homed + [standing, walking] + deactivated + avoid
+                    + [int(wp_idx), int(wp_total), nav_mode, nav_paused,
+                       int(health_mask)]
+                    + self.motor_current_block()
+                    + list(self.nav_readout)
+                    + list(self.power_readout)
+                    + [int(self.pack_voltage_mv())])
+        self.homing_status_pub.publish(msg)
+
+    def swing_steps(self, height_z):
+        """Buffer indices where the foot is clear of the ground."""
+        self.path_gen.update_params(
+            center_stride_y=0.0, center_height_z=height_z, length=10.0,
+            height1=SWING_HEIGHT, height2=STANCE_PUSH, direction_angle=0,
+            swing_fraction=SWING_FRACTION)
+        return [i for i, s in enumerate(self.path_gen.gait_xy_path) if s[3]]
+
+    def register_leg_announcement(self, s, line):
+        """Handles a 'LEG,<id>' line from a Pico. True if the line was consumed."""
+        if not line.startswith("LEG,"):
+            return False
+        try:
+            leg_id = int(line.split(',')[1])
+        except (IndexError, ValueError):
+            self.get_logger().warn(f"Malformed leg announcement on {s.port}: {line}")
+            return True
+
+        if leg_id not in LEG_NAMES:
+            self.get_logger().error(f"Pico on {s.port} announced invalid LEG_ID {leg_id}")
+            return True
+
+        # serial_lock: this runs from the control-loop thread on every pass
+        # (a Pico that resets mid-run re-announces), while the gait worker
+        # reads port_by_leg via active_legs() on another thread -- an
+        # unguarded insert there is a "dict changed size during iteration".
+        with self.serial_lock:
+            claimed = self.port_by_leg.get(leg_id)
+            if claimed is None:
+                self.port_by_leg[leg_id] = s
+                self.get_logger().info(f"Identified {LEG_NAMES[leg_id]} on {s.port}")
+            elif claimed is not s:
+                self.get_logger().error(
+                    f"Two Picos both claim {LEG_NAMES[leg_id]}: {claimed.port} and {s.port}. "
+                    "Set a unique LEG_ID on each board before walking.")
+        return True
+
+    def identify_legs(self, timeout=5.0):
+        """Waits at startup for each Pico to announce which corner it drives.
+
+        Boards repeat their announcement every 500ms until they receive a gait
+        frame, so this works whether the Pi or the Picos powered up first.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline and len(self.port_by_leg) < len(self.ser_list):
+            for s, line in self.read_pico_lines():
+                self.register_leg_announcement(s, line)
+            time.sleep(0.02)
+
+        missing = [LEG_NAMES[i] for i in LEG_ORDER if i not in self.port_by_leg]
+        if missing:
+            self.get_logger().error(
+                f"No LEG_ID announcement from: {', '.join(missing)}. "
+                "Those legs will not be driven -- check each Pico's LEG_ID constant.")
+        else:
+            self.get_logger().info("All four legs identified.")
+        return not missing
+
+    def active_legs(self):
+        """[(leg_id, serial), ...] for every identified leg.
+
+        Falls back to ser_list order only when nothing announced itself, so a bench
+        setup running older firmware still moves -- but in that mode the corner
+        mapping is a guess, which identify_legs has already logged as an error.
+        """
+        if self.port_by_leg:
+            return sorted(self.port_by_leg.items())
+        return list(enumerate(self.ser_list))
+
+    def direction_callback(self, msg):
+        """Callback to handle arriving steering targets from other ROS 2 nodes."""
+        with self.serial_lock:
+            self.target_direction = msg.data
+
+    def _route_loaded(self):
+        """True when the Navigator holds at least one waypoint. NAV MODE is
+        refused otherwise -- an empty route used to flip AUTONOMOUS on and just
+        march in place, which looks like the toggle is broken."""
+        return self.nav_engine is not None and len(self.nav_engine.get_waypoints()) > 0
+
+    def nav_mode_callback(self, msg):
+        """Changes the robot's primary operating state machine channel."""
+        with self.serial_lock:
+            if msg.data:
+                if not self._route_loaded():
+                    self.get_logger().warn(
+                        "NAV MODE ignored: no waypoints. Send a route first.")
+                    return
+                self.current_mode = RobotMode.AUTONOMOUS
+                self.get_logger().info("Robot State Transited to: AUTONOMOUS_NAV")
+            else:
+                self.current_mode = RobotMode.MANUAL
+                self.nav_paused = False
+                self.get_logger().info("Robot State Transited to: MANUAL")
+
+    def nav_cmd_callback(self, msg):
+        """Route transport. 1 START (autonomous + rewind + unpause),
+        2 PAUSE (hold in place, stay autonomous), 3 STOP (back to manual +
+        rewind + unpause)."""
+        cmd = int(msg.data)
+        with self.serial_lock:
+            if cmd == 1:
+                if not self._route_loaded():
+                    self.get_logger().warn(
+                        "NAV: start ignored, no waypoints loaded.")
+                    return
+                self.current_mode = RobotMode.AUTONOMOUS
+                self.nav_paused = False
+                if self.nav_engine is not None:
+                    self.nav_engine.reset_progress()
+                self.get_logger().info("NAV: start (route from waypoint 1)")
+            elif cmd == 2:
+                self.nav_paused = True
+                self.get_logger().info("NAV: pause (holding position)")
+            elif cmd == 3:
+                self.current_mode = RobotMode.MANUAL
+                self.nav_paused = False
+                if self.nav_engine is not None:
+                    self.nav_engine.reset_progress()
+                self.get_logger().info("NAV: stop (back to manual steering)")
+
+    def avoid_callback(self, msg):
+        """Dashboard toggle for vision obstacle avoidance.
+
+        Only sets the flag -- the control loop notices the change and resets the
+        planner there, so the planner's state machine is only ever touched from
+        the one thread that drives it.
+        """
+        with self.serial_lock:
+            self.avoid_enabled = bool(msg.data)
+        self.get_logger().info(
+            f"Obstacle avoidance {'ENABLED' if msg.data else 'DISABLED'}")
+
+    def waypoints_callback(self, msg):
+        """Replace the GPS route from the dashboard.
+
+        Navigator does its own validation and locking, so this hands the pairs
+        straight over. Setting a route always restarts it at waypoint 0 -- there
+        is no way to express "keep going from where you were" through a list
+        that may have been reordered underneath you.
+        """
+        if self.nav_engine is None:
+            self.get_logger().error("Waypoints arrived before the navigator existed")
+            return
+        flat = list(msg.data)
+        pairs = list(zip(flat[0::2], flat[1::2]))
+        accepted = self.nav_engine.set_waypoints(pairs)
+        if len(accepted) != len(pairs):
+            self.get_logger().warn(
+                f"Dropped {len(pairs) - len(accepted)} waypoint(s) outside valid "
+                "lat/lon range")
+        self.get_logger().info(f"Route set: {len(accepted)} waypoint(s)")
+
+    def publish_joints(self, angles_matrix):
+        """Flattens gait matrix and publishes to the ROS world for visualization/logging."""
+        msg = Float32MultiArray()
+        flat_angles = []
+        
+        if len(angles_matrix) == 0:
+            return
+            
+        # Detect if it's an interleaved multi-leg matrix shape: [Steps][Leg_Idx][Angles]
+        if isinstance(angles_matrix[0][0], (list, tuple)):
+            for multi_leg_step in angles_matrix:
+                for leg in multi_leg_step:
+                    flat_angles.extend([leg[0], leg[1], leg[2]])
+        else:
+            # Fallback for standard single-stream leg gait layouts [Steps][Angles]
+            for step in angles_matrix:
+                flat_angles.extend([step[0], step[1], step[2]])
+                
+        msg.data = flat_angles
+        self.joint_pub.publish(msg)
+
+    def send_entire_gait(self, angles_list, cycle=True):
+        """Hand off the path array safely to the background worker thread.
+
+        cycle=True is the normal walking gait, phase-offset per leg and looped
+        by the Pico. cycle=False is a one-shot point-to-point move (the startup
+        ramp) -- every leg plays the same tick index with no phase rotation,
+        since the four paths are independent trajectories, not a shared cycle
+        sampled at different offsets.
+
+        Refuses a frame longer than the Pico will accept. The firmware treats an
+        overlong frame as a desynced stream and discards it wholesale, so
+        oversizing is not a graceful degradation -- the move silently never
+        happens. Better to log and skip than to believe it was sent.
+        """
+        if len(angles_list) > PICO_MAX_FRAMES:
+            self.get_logger().error(
+                f"Refusing to send a {len(angles_list)}-frame buffer: the Pico "
+                f"discards anything over MAX_GAIT_STEPS ({PICO_MAX_FRAMES}). "
+                "Raise it in Pico/pico_main.py or shorten the trajectory.")
+            return False
+        self.publish_joints(angles_list)
+        with self.serial_lock:
+            self.gait_update_queue = (angles_list, cycle)
+        return True
+
+    def handle_recovery(self, abort_payload, trigger_serial):
+        """Processes recovery calculations safely and hands off execution to the
+        background thread.
+
+        Policy: go to neutral, not freeze in place. The leg that aborted gets
+        its own Cartesian recovery path (get_recovery_gait, targeting x=y=0,
+        z=STAND_HEIGHT -- the same point as self.stand_pose). The other three
+        get sent directly to self.stand_pose too, so the robot isn't left
+        trying to walk on three legs while the fourth recovers.
+
+        The other three legs have no live position feedback -- the Pi only
+        learns a leg's actual angle when THAT leg aborts and reports it -- so
+        this cannot be a smooth Cartesian ramp like the boot/Stand ramps are.
+        It's a direct single-target PID move, bounded by the same PWM limits
+        as any ordinary gait step; walking-gait poses stay close to stand_pose
+        by construction, so the jump is small next to the original HOME_POSE
+        one.
+        """
+        try:
+            parts = abort_payload.split(',')
+            curr_roll, curr_pitch, curr_knee = float(parts[1]), float(parts[2]), float(parts[3])
+
+            # Calculate current Cartesian coordinates via Forward Kinematics
+            start_x, start_y, start_z = self.ik_engine.calculate_fk(curr_roll, curr_pitch, curr_knee)
+
+            # Generate path back to neutral home stance
+            recovery_gait = self.recovery_engine.get_recovery_gait(start_x, start_y, start_z)
+
+            with self.serial_lock:
+                other_targets = [(leg_id, s) for leg_id, s in self.active_legs()
+                                  if s is not trigger_serial]
+            neutral_hold = [list(self.stand_pose) + [0.0]] * 2
+
+            # Stage details to background worker thread atomically
+            with self.serial_lock:
+                self.current_activity = RobotActivity.RECOVERY
+                self.emergency_queue = (trigger_serial, recovery_gait, other_targets, neutral_hold)
+                self.gait_update_queue = None  # Clear outstanding standard gait steps
+                self.standing = False
+                self.walking_enabled = False
+
+        except Exception as e:
+            self.get_logger().error(f"Error in recovery parsing: {e}")
+
+    def _drain(self, targets, deactivated=()):
+        """Block until every byte just written has actually left the UART.
+
+        The worker's own send loop is ~22 ms (20 x time.sleep(0.001)) but a
+        20-step frame is 338 bytes = 29.3 ms on the wire at 115200. Without this
+        the next frame's reset_output_buffer() -- tcflush(TCOFLUSH) on POSIX --
+        discards the ~7 ms of tail still queued, and the piece most likely to go
+        is the end marker. The Pico is then stuck in is_receiving, eats the next
+        START_MARKER as payload, and only recovers once enough garbage arrives
+        to trip MAX_GAIT_STEPS. Draining makes the worker's loop period at least
+        the wire time, which makes that race impossible rather than unlikely.
+        """
+        for leg_id, s in targets:
+            if leg_id in deactivated:
+                continue
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+    def _gait_serial_worker(self):
+        local_gait = None
+        cycle_this_gait = True
+
+        while self.is_running:
+            recovery_job = None
+            command_job = None
+
+            with self.serial_lock:
+                state_check = self.current_activity
+
+                if state_check == RobotActivity.RECOVERY and self.emergency_queue is not None:
+                    recovery_job = self.emergency_queue
+                    self.emergency_queue = None
+
+                elif self.command_queue:
+                    command_job = self.command_queue.pop(0)
+
+                elif self.gait_update_queue is not None:
+                    local_gait, cycle_this_gait = self.gait_update_queue
+                    self.gait_update_queue = None
+
+            # --- Lock is now RELEASED ---
+
+            if command_job is not None:
+                marker, cmd_targets = command_job
+                for leg_id, s in cmd_targets:
+                    try:
+                        s.reset_output_buffer()
+                        s.write(marker)
+                    except Exception as e:
+                        print(f"Command failed on {LEG_NAMES.get(leg_id, leg_id)}: {e}")
+                self._drain(cmd_targets)
+                continue
+
+            if recovery_job is not None:
+                trigger_serial, recovery_gait, other_targets, neutral_hold = recovery_job
+
+                # The other three go to neutral first -- one 2-step one-shot
+                # frame each, no phase offsets (independent point moves, same
+                # reasoning as the startup/stand ramps).
+                for leg_id, s in other_targets:
+                    try:
+                        s.reset_output_buffer()
+                        s.write(b'\xAA\xAA')
+                        for step in neutral_hold:
+                            packed_data = struct.pack('ffff', float(step[0]), float(step[1]), float(step[2]), float(step[3]))
+                            s.write(packed_data)
+                        s.write(self.oneshot_end_marker)
+                    except Exception as e:
+                        print(f"Neutral recovery move failed on {LEG_NAMES.get(leg_id, leg_id)}: {e}")
+
+                try:
+                    trigger_serial.reset_output_buffer()
+                    trigger_serial.write(b'\xAA\xAA')
+                    for step in recovery_gait:
+                        packed_data = struct.pack('ffff', float(step[0]), float(step[1]), float(step[2]), float(step[3]))
+                        trigger_serial.write(packed_data)
+                        time.sleep(0.01)
+                    trigger_serial.write(self.oneshot_end_marker)
+                except Exception as e:
+                    print(f"Serial transmission crash during recovery: {e}")
+
+                self._drain(other_targets + [(None, trigger_serial)])
+
+                with self.serial_lock:
+                    # Clears the RECOVERY activity only. The operating mode is
+                    # a separate field now, so a stumble no longer silently
+                    # drops the robot out of GPS navigation.
+                    self.current_activity = RobotActivity.NORMAL
+                    # All four legs are now at stand_pose -- Go re-arms the walk
+                    # with a fresh ramp, same as any other post-Stand start.
+                    self.standing = True
+                local_gait = None
+                continue
+
+            if local_gait is None:
+                time.sleep(0.005)
+                continue
+                
+            num_steps = len(local_gait)
+            # A one-shot ramp is four independent point-to-point paths, not a
+            # shared cycle sampled at different phases, so every leg plays the
+            # same tick with no rotation.
+            offsets = phase_offsets(num_steps) if cycle_this_gait else [0, 0, 0, 0]
+
+            # Address legs by identity rather than by position in ser_list, so UART
+            # wiring order is irrelevant and one failed port cannot shift every
+            # leg's gait onto the wrong Pico. Under the lock: register_leg_announcement
+            # can insert into port_by_leg from the control-loop thread.
+            with self.serial_lock:
+                targets = self.active_legs()
+                deactivated = set(self.deactivated_legs)
+            if not targets:
+                local_gait = None
+                continue
+
+            # A deactivated leg gets no wire traffic at all this frame -- not
+            # even the open/close markers -- so its Pico is left completely
+            # alone holding whatever it last had, rather than being sent an
+            # empty frame that would reset its buffer. Debug/testing only; the
+            # per-tick loop below still runs and computes every leg's step
+            # exactly as if nothing were deactivated.
+            for leg_id, s in targets:
+                if leg_id in deactivated:
+                    continue
+                try:
+                    s.reset_output_buffer()
+                    s.write(b'\xAA\xAA')
+                except Exception:
+                    pass
+
+            aborted = False
+            is_multi_leg_format = isinstance(local_gait[0][0], (list, tuple))
+
+            # --- PROTECTED HYBRID SERIAL ENGINE LOOP ---
+            for i in range(num_steps):
+                with self.serial_lock:
+                    if self.current_activity == RobotActivity.RECOVERY:
+                        aborted = True
+                        break
+
+                for leg_id, s in targets:
+                    step_idx = (i + offsets[leg_id]) % num_steps
+
+                    if is_multi_leg_format:
+                        # Extract the path mapped for this specific leg profile
+                        step = local_gait[step_idx][leg_id]
+                    else:
+                        # Fallback parsing for legacy standard single-stream arrays
+                        step = local_gait[step_idx]
+
+                    packed_data = struct.pack('ffff', float(step[0]), float(step[1]), float(step[2]), float(step[3]))
+                    if leg_id in deactivated:
+                        continue
+                    try:
+                        s.write(packed_data)
+                    except Exception as e:
+                        print(f"Serial write error on {LEG_NAMES.get(leg_id, leg_id)}: {e}")
+
+                time.sleep(0.001)
+
+            if aborted:
+                # Close the frame on every port. A leg left mid-frame stays in
+                # is_receiving, never steps, and cannot resync on the next frame.
+                # Sent unconditionally, even to deactivated legs -- this is a
+                # safety cleanup, not a normal move signal.
+                for s in self.ser_list:
+                    try:
+                        s.write(self.end_marker)
+                    except Exception:
+                        pass
+                local_gait = None
+                cycle_this_gait = True
+                continue
+
+            marker = self.end_marker if cycle_this_gait else self.oneshot_end_marker
+            for leg_id, s in targets:
+                if leg_id in deactivated:
+                    continue
+                try:
+                    s.write(marker)
+                except Exception:
+                    pass
+
+            self._drain(targets, deactivated)
+
+            # The Pico cycles the buffer on its own, so one clean frame is
+            # enough. Re-broadcasting would flush this frame mid-flight on the
+            # next pass (~22ms loop vs ~29.3ms wire time) and it would never
+            # arrive complete.
+            local_gait = None
+            cycle_this_gait = True
+                
+    def close_hardware(self):
+        """Gracefully closes all hardware serial lines."""
+        self.is_running = False
+        if hasattr(self, 'gait_worker_thread'):
+            self.gait_worker_thread.join(timeout=0.2)
+        for s in self.ser_list:
+            if s.is_open:
+                s.close()
+
+def _bring_up(name, factory, disp, health):
+    """Construct one hardware handle. On failure: log it, mark the subsystem
+    down, return None -- the robot boots degraded rather than not at all. The
+    OLED (if present) shows which step failed; if it is not present the same
+    line goes to stdout."""
+    disp.step(name)
+    try:
+        obj = factory()
+        disp.ok(name)
+        health[name.lower()] = True
+        return obj
+    except Exception as e:
+        disp.fail(name)
+        print(f"[BOOT] {name} init failed: {e!r}")
+        health[name.lower()] = False
+        return None
+
+
+def main():
+    rclpy.init(args=None)
+
+    disp = BootDisplay()
+    disp.line("APEX starting")
+    health = {}
+
+    # pkill and `docker stop` send SIGTERM, whose default action kills Python
+    # without running `finally` -- so hardware was never released and the OLED
+    # kept the last status frame up, looking live. Route it through the same
+    # KeyboardInterrupt path as Ctrl+C.
+    def _on_sigterm(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+    # Navigation route is empty by default -- set from the dashboard. A hardcoded
+    # default would send the robot toward somebody else's test coordinates the
+    # moment NAV MODE is flipped on. (Previous default was two NJ test points.)
+    MISSION_WAYPOINTS = []
+    nav_engine = Navigator(MISSION_WAYPOINTS)
+
+    # Every hardware handle below is now non-fatal: a missing IMU, dead GPS,
+    # unplugged camera etc. leaves that subsystem reporting 'down' on the
+    # dashboard instead of killing the boot before Flask is even up. SensorHub
+    # already accepts None for any sensor.
+    # I2C-0 (header pins 27/28), the IMU's own bus -- needs dtparam=i2c0=on and
+    # no dtoverlay=uart1, which claims the same GPIO0/1. (i2c-13 is the Pi 5's
+    # HDMI0 DDC bus, not the header.)
+    imu = _bring_up("IMU", lambda: IMU(sda_pin=None, scl_pin=None, bus_id=0, window_size=12), disp, health)
+    gps = _bring_up("GPS", lambda: GPSReader(uart_path='/dev/ttyUSB0', baudrate=115200), disp, health)
+    # QMC5883L inside the HGLRC M100 GPS, on I2C-3 (pins 15/16) -- its own bus
+    # for now; the INA226 (0x40) shares it.
+    compass = _bring_up("Compass", lambda: CompassReader(
+        sda_pin=None, scl_pin=None, explicit_bus_id=3,
+        declination_deg=MAGNETIC_DECLINATION_DEG), disp, health)
+    cam = _bring_up("Camera", lambda: USBWebcam(), disp, health)
+
+    # The dashboard is the one genuinely required subsystem -- without it there
+    # is no way to home the legs. If it will not start, say so on the OLED and
+    # then let the exception stop the boot.
+    disp.step("Dashboard")
+    try:
+        streamer = RobodogStreamer()
+        disp.ok("Dashboard")
+        health["dashboard"] = True
+    except Exception as e:
+        disp.fail("Dashboard")
+        disp.line("FATAL: no dashboard")
+        print(f"[BOOT] dashboard failed to start: {e!r}")
+        raise
+
+    # Obstacle avoidance shares this camera rather than opening its own: only
+    # one process can hold the V4L2 device, and this loop already has it. The
+    # depth model runs on the avoider's own worker thread at 1-3 fps, well off
+    # the 100 Hz control loop.
+    avoider = None
+    if ObstacleAvoider is not None:
+        disp.step("Avoidance")
+        try:
+            avoider = ObstacleAvoider()
+            avoider.start()
+            disp.ok("Avoidance") if avoider.available else disp.line("Avoidance      no model")
+        except Exception as e:
+            print(f"[VISION] failed to start obstacle avoidance: {e}")
+            disp.fail("Avoidance")
+            avoider = None
+    else:
+        disp.line("Avoidance      no lib")
+
+    def camera_loop():
+        nonlocal cam
+        if cam is None:
+            return          # no camera this boot -- nothing to stream
+        misses = 0
+        while rclpy.ok():
+            try:
+                frame = cam.get_frame()
+                if frame is None:
+                    # USB cameras can wedge or re-enumerate (brownout, cable
+                    # bump). Before, this spun forever on None and the feed
+                    # froze on the last good frame. Reopen after ~2 s of misses.
+                    misses += 1
+                    if misses >= 60:
+                        print("[CAM] no frames for ~2 s, reopening camera")
+                        controller.subsystem_health["camera"] = False
+                        try:
+                            cam.release()
+                        except Exception:
+                            pass
+                        try:
+                            cam = USBWebcam()
+                            controller.subsystem_health["camera"] = True
+                        except Exception as e:
+                            print(f"[CAM] reopen failed: {e}")
+                            time.sleep(1.0)
+                        misses = 0
+                else:
+                    misses = 0
+                    if avoider is not None:
+                        avoider.submit_frame(frame)
+                        # Draw the costmap onto the dashboard feed whenever
+                        # avoidance is on, so the ROI and threshold can actually be
+                        # tuned by looking at the robot instead of guessing.
+                        # annotate() copies only when it has something to draw.
+                        if controller.avoid_enabled:
+                            frame = avoider.annotate(frame)
+                    streamer.update_frame(frame)
+            except Exception as e:
+                # An exception used to kill this thread silently and freeze the feed.
+                print(f"[CAM] camera_loop error: {e!r}")
+                time.sleep(0.5)
+            time.sleep(0.03)
+
+    streamer.run()
+    print("Vision and Stream components online")
+
+    # Telemetry & Audio System
+    power_monitor = _bring_up("Power", lambda: INA219(bus_id=3), disp, health)
+    # Speaker MAC comes from the gitignored .env (see .env.example) so a
+    # personal device address never lands in a public file.
+    audio_engine = _bring_up("Audio", lambda: QuadrupedAudio(os.environ["APEX_SPEAKER_MAC"]), disp, health)
+    # The INA226 sits on the 5V regulated rail, so 4.75 V warns on regulator sag.
+    # It is not battery telemetry. The alarm is voltage-only; current is shown
+    # on the dashboard.
+    LOW_VOLT_THRESHOLD = 4.75
+    AUDIO_COOLDOWN = 10.0
+    last_power_check = time.time()
+    last_audio_warning = 0
+    # Pack warnings get their own cooldown, separate from the 5 V rail's.
+    last_pack_warning = 0
+    pack_cutoff_since = None
+    last_status_publish = time.time()
+
+    # Every blocking sensor read (IMU + compass over I2C, GPS UART drain, INA226
+    # battery reads) runs on its own poller thread from here on. The control
+    # loop only ever reads lock-protected snapshots, so a wedged I2C bus can no
+    # longer stall steering or the IMU reflex -- it just makes that snapshot go
+    # stale and the loop falls back to a safe default.
+    sensor_hub = SensorHub(imu=imu, gps=gps, compass=compass, power=power_monitor)
+    sensor_hub.start()
+
+    controller = PiQuadrupedController()
+    controller.avoider = avoider
+    controller.nav_engine = nav_engine
+    controller.subsystem_health = dict(health)
+
+    # Started only now: camera_loop reads controller.avoid_enabled, so the
+    # controller has to exist first.
+    threading.Thread(target=camera_loop, daemon=True).start()
+
+    executor = MultiThreadedExecutor()
+    executor.add_node(controller)
+    executor.add_node(streamer)
+
+    executor_thread = threading.Thread(target=executor.spin, daemon=True)
+    executor_thread.start()
+    print("ROS 2 Unified Multi-Node Infrastructure Started")
+
+    # Learn which UART drives which corner before anything is commanded to move.
+    controller.identify_legs()
+
+    # Nothing is sent to the legs at boot. Each Pico holds its current position
+    # under light PID (target 0,0,0 -- wherever it powered on) until the
+    # operator homes every leg, presses Stand, then Go from the web dashboard.
+    # See PiQuadrupedController.request_home_leg / request_stand / engage_walking.
+    print("Boot complete. Legs are NOT driven -- home each leg from the web "
+          "dashboard, then Stand, then Go.")
+
+    # Seed the heading filter from the first compass reading the hub gets, so it
+    # does not spend its first seconds slewing from an arbitrary 0 deg.
+    initial_head = None
+    if compass is not None:
+        for _ in range(20):
+            initial_head = sensor_hub.nav_snapshot()["heading"]
+            if initial_head is not None:
+                break
+            time.sleep(0.1)
+    if initial_head is not None:
+        controller.filtered_heading = initial_head
+        print(f"Compass tracking initialized successfully at: {initial_head:.2f}°")
+    else:
+        controller.filtered_heading = 0.0
+        print("[Hardware Warning] No compass reading from sensor hub; heading starts at 0°")
+
+    # Edge-detects the avoidance toggle so a detour in progress is cleared once,
+    # on the transition, rather than every pass.
+    avoid_was_enabled = False
+    last_oled_refresh = 0.0
+    # Wall time of the last gait frame handed to the worker -- see
+    # MIN_GAIT_RESEND_S. 0.0 lets the first update go out immediately.
+    last_gait_send = 0.0
+
+    # The heading EMA below is tuned for one step per fresh compass sample. The
+    # nav poller runs at ~10 Hz but this loop at ~100 Hz, so gate the filter on
+    # the snapshot timestamp -- otherwise it steps 10x per sample and barely
+    # smooths anything.
+    last_heading_t = 0.0
+
+    try:
+        while rclpy.ok():
+            try:
+                current_time = time.time()
+
+                # Sensors are polled on their own threads now -- this is a dict
+                # copy, never a hardware call, so a hung I2C bus cannot stall
+                # the loop here.
+                nav_s = sensor_hub.nav_snapshot()
+                # heading_age is time since the last *good* compass read; the
+                # shared nav poller keeps ticking (GPS) even when the compass
+                # fails, so nav_s["heading"] alone stays non-None (last value
+                # held) and cannot reveal this.
+                heading_stale = nav_s["heading_age"] > HEADING_MAX_AGE_S
+                # Same story for the GPS: has_fix can stay latched True on a
+                # frozen position after the receiver goes quiet. "stale" only
+                # applies once we have actually had a fix -- a cold receiver
+                # with no fix yet is "no fix", not "died".
+                had_fix = math.isfinite(nav_s["fix_age"])
+                fix_stale = had_fix and nav_s["fix_age"] > GPS_FIX_MAX_AGE_S
+                # Live health: a sensor fine at boot but no longer reading
+                # should light the dashboard degrade banner, not just print.
+                controller.subsystem_health['compass'] = (compass is not None) and not heading_stale
+                if gps is not None:
+                    # Recovers on its own: down only while a fix we once had
+                    # has gone quiet, up again as soon as it returns.
+                    controller.subsystem_health['gps'] = not fix_stale
+
+                if nav_s["heading"] is not None and nav_s["heading_t"] != last_heading_t:
+                    last_heading_t = nav_s["heading_t"]
+                    raw_head = nav_s["heading"]
+                    # Blend along the shortest arc. Averaging raw degrees sends
+                    # the estimate the long way round every time the robot
+                    # crosses north (filtered=359, raw=1 would give 305).
+                    head_delta = (raw_head - controller.filtered_heading + 180.0) % 360.0 - 180.0
+                    controller.filtered_heading = (controller.filtered_heading + 0.15 * head_delta) % 360.0
+                elif heading_stale and compass is not None:
+                    # compass None is already reported as down at boot.
+                    _log_every("compass", "[Hardware Error] No compass heading; holding last estimate")
+
+                # Dashboard readout. A stale fix reads as no fix, and no
+                # heading is shown once the compass has gone quiet.
+                fix_ok = bool(nav_s["has_fix"]) and not fix_stale
+                head_ok = compass is not None and not heading_stale
+                controller.nav_readout = [
+                    int(fix_ok), int(nav_s["satellites"]),
+                    int(round(nav_s["lat"] * 1e7)) if fix_ok else 0,
+                    int(round(nav_s["lon"] * 1e7)) if fix_ok else 0,
+                    int(round(controller.filtered_heading * 10)) if head_ok else -1,
+                ]
+
+                with controller.serial_lock:
+                    snap_mode = controller.current_mode
+                    snap_nav_paused = controller.nav_paused
+                    snap_target_dir = controller.target_direction
+                    snap_last_dir = controller.last_sent_direction
+                    snap_last_pitch = controller.last_sent_pitch
+                    snap_last_roll = controller.last_sent_roll
+                    snap_last_stride = controller.last_sent_stride_scale
+                    snap_avoid_enabled = controller.avoid_enabled
+                
+                # imu_snapshot() is None when the last poll failed (imu.update()
+                # returned None) or the last good sample is stale -- either way
+                # a dead or hung IMU degrades to flat attitude here instead of
+                # silently feeding its last reading into the gait forever.
+                imu_s = sensor_hub.imu_snapshot()
+                if imu_s is not None:
+                    roll_tilt = imu_s["roll"]
+                    pitch_tilt = imu_s["pitch"]
+                else:
+                    roll_tilt, pitch_tilt = 0.0, 0.0
+                    if imu is not None:
+                        _log_every("imu", "[Hardware Error] IMU read stale/failed; stabilization disabled")
+
+                # Levelling is differential leg height, computed per leg inside
+                # build_gait via attitude_height_offsets -- there is no common
+                # X/Y correction any more, because that only translated the body.
+                if abs(roll_tilt) > 8.0 or abs(pitch_tilt) > 8.0:
+                    _log_every("tilt", f"[IMU Warning] Large Tilt! Roll: {roll_tilt:.2f}, Pitch: {pitch_tilt:.2f}")
+
+                chosen_direction = snap_target_dir
+                # 1.0 unless something below decides the robot should not be
+                # covering ground: mission complete, or the avoidance planner
+                # slowing/halting it. 0.0 marches in place -- feet still lift
+                # and the body stays IMU-levelled, unlike STOP which cuts torque.
+                stride_scale = 1.0
+                if snap_mode == RobotMode.AUTONOMOUS and snap_nav_paused:
+                    # Paused: hold position, do not advance the route. Same
+                    # march-in-place command as mission end.
+                    chosen_direction = 0
+                    stride_scale = 0.0
+                    _log_every("nav", "[NAV] Paused; holding position")
+                elif snap_mode == RobotMode.AUTONOMOUS:
+                    if not nav_s["has_fix"] or nav_s["age"] > 5.0 or fix_stale:
+                        # Without a fix lat/lon are 0.0, which would produce a
+                        # confident bearing from the Gulf of Guinea; a stale
+                        # snapshot (nav poller wedged) or a latched-but-frozen
+                        # fix from a receiver that went quiet is the same danger.
+                        # Hold position -- do NOT fall through to chosen_direction,
+                        # which still carries the last manual steering value and
+                        # would walk the robot off blindly at full stride.
+                        chosen_direction = 0
+                        stride_scale = 0.0
+                        _log_every("nav", "[NAV] No usable GPS fix; holding position")
+                    elif heading_stale:
+                        # filtered_heading is frozen at its last value. Driving
+                        # on it curves the robot off course while calculate_nav
+                        # still reports a shrinking turn error -- so hold.
+                        chosen_direction = 0
+                        stride_scale = 0.0
+                        _log_every("nav", "[NAV] Compass heading stale; holding position")
+                    else:
+                        nav_data = nav_engine.calculate_nav(nav_s["lat"], nav_s["lon"], controller.filtered_heading)
+                        if nav_data is not None:
+                            chosen_direction = nav_data["turn"]
+                        else:
+                            # Route finished (or none was ever set). Previously
+                            # chosen_direction fell through to whatever manual
+                            # heading was last commanded and the robot walked
+                            # off forever. March in place instead: it holds
+                            # position, stays standing, and STAND or STOP from
+                            # the dashboard is still the way to end the walk.
+                            chosen_direction = 0
+                            stride_scale = 0.0
+                            _log_every("nav", "[NAV] Route complete; holding position")
+
+                # --- VISION OBSTACLE AVOIDANCE ---------------------------------
+                # Layered on top of whichever steering source is active, in both
+                # MANUAL and AUTONOMOUS, so the toggle means the same thing
+                # either way. The planner takes the direction the robot WANTS to
+                # travel and returns the nearest one it can actually take.
+                #
+                # There is no explicit "rejoin the route" step and none is
+                # needed: Navigator.calculate_nav recomputes the bearing from
+                # the live GPS fix on every pass, so the instant avoidance stops
+                # overriding, the heading already points at the waypoint from
+                # wherever the detour ended. What the planner does add is
+                # commitment -- without it, steering away would take the
+                # obstacle out of frame, nav would aim straight back into it,
+                # and the robot would oscillate on the spot forever.
+                if avoider is not None:
+                    if snap_avoid_enabled:
+                        decision = avoider.plan(chosen_direction)
+                        chosen_direction = decision.steer_deg
+                        # min(), not assignment: avoidance may only ever SLOW
+                        # the robot. Assigning would let a CLEAR decision (1.0)
+                        # undo the mission-complete hold above and send it
+                        # walking off the end of the route again.
+                        stride_scale = min(stride_scale, decision.stride_scale)
+                        with controller.serial_lock:
+                            controller.avoid_state_code = AvoidState.CODES.get(decision.state, 0)
+                            controller.avoid_steer = decision.steer_deg
+                            controller.avoid_stride_scale = decision.stride_scale
+                        if decision.overriding:
+                            _log_every("avoid", f"[AVOID] {decision.state}: {decision.reason} "
+                                  f"-> steer {decision.steer_deg:+.0f} deg, "
+                                  f"stride x{decision.stride_scale:.2f}")
+                    elif avoid_was_enabled:
+                        # Toggled off. Clear the detour here rather than in the
+                        # ROS callback so the planner's state machine is only
+                        # ever touched from this thread.
+                        avoider.planner.reset()
+                        with controller.serial_lock:
+                            controller.avoid_state_code = 0
+                            controller.avoid_steer = 0.0
+                            controller.avoid_stride_scale = 1.0
+                avoid_was_enabled = snap_avoid_enabled
+
+                dir_delta = abs(chosen_direction - snap_last_dir) > 5
+                pitch_delta = abs(pitch_tilt - snap_last_pitch) > 1.5
+                roll_delta = abs(roll_tilt - snap_last_roll) > 1.5
+                # Without this the robot could not halt for an obstacle while
+                # already pointing the right way -- the heading would not have
+                # changed, so nothing would trigger a resend.
+                stride_delta = abs(stride_scale - snap_last_stride) > 0.05
+
+                # Gated on walking_enabled: home every leg, Stand, then Go from
+                # the web dashboard arms this. Before that the legs simply hold
+                # wherever homing/Stand left them.
+                #
+                # Also rate-limited: a frame costs 29.3 ms of wire time and
+                # stalls the Pico's step clock while it lands, so pushing them
+                # faster than MIN_GAIT_RESEND_S starves the gait instead of
+                # steering it. Skipping does not lose the change -- last_sent_*
+                # is only updated when a frame actually goes out, so the delta
+                # stays tripped and the update leaves on the next eligible pass.
+                resend_due = (current_time - last_gait_send) >= MIN_GAIT_RESEND_S
+                if (controller.walking_enabled and resend_due
+                        and (dir_delta or pitch_delta or roll_delta or stride_delta)):
+                    _log_every("reflex", f"[IMU Reflex] Levelling. Roll {roll_tilt:+.2f} deg, "
+                                         f"pitch {pitch_tilt:+.2f} deg")
+
+                    # --- BODY-TWIST STEERING ---
+                    # chosen_direction is + for a right turn: RIGHT on the
+                    # dashboard is +90, and Navigator returns a positive heading
+                    # error when the waypoint is clockwise of the current
+                    # heading. Map it to a yaw rate plus a forward stride that
+                    # tapers to zero as the turn tightens -- a large heading
+                    # error spins in place, a small one arcs while walking.
+                    d = max(-90.0, min(90.0, float(chosen_direction)))
+                    spin_frac = min(1.0, abs(d) / YAW_FULL_SPIN_DEG)
+
+                    # stride_scale is 1.0 unless avoidance is slowing the robot
+                    # or halting it (0.0 = march in place, still standing --
+                    # NOT the dashboard STOP). It scales forward travel only:
+                    # BLOCKED already sends chosen_direction 0 (so yaw is 0
+                    # anyway), and ESCAPE wants a real spin, not one throttled
+                    # to a third by its low stride_scale.
+                    fwd_stride = 10.0 * stride_scale * (1.0 - spin_frac)
+                    # Negate: +d (turn right / clockwise) is a negative
+                    # (clockwise) yaw in the math frame body_twist_xy_path uses.
+                    yaw_deg = -MAX_YAW_PER_CYCLE * spin_frac * math.copysign(1.0, d)
+
+                    # Lean harder into the support tripod as the turn tightens.
+                    turn_frac = abs(yaw_deg) / MAX_YAW_PER_CYCLE
+                    body_shift_cm = (BODY_SHIFT_CM
+                                     + (TURN_BODY_SHIFT_CM - BODY_SHIFT_CM) * turn_frac)
+
+                    new_angles = controller.build_gait(
+                        fwd_stride, yaw_deg,
+                        roll_tilt=roll_tilt, pitch_tilt=pitch_tilt,
+                        body_shift_cm=body_shift_cm,
+                    )
+                    controller.send_entire_gait(new_angles)
+                    last_gait_send = current_time
+
+                    with controller.serial_lock:
+                        controller.last_sent_direction = chosen_direction
+                        controller.last_sent_pitch = pitch_tilt
+                        controller.last_sent_roll = roll_tilt
+                        controller.last_sent_stride_scale = stride_scale
+
+                if current_time - last_power_check > 1.0:
+                    p = sensor_hub.power_snapshot()
+                    # Published to the dashboard as [valid, current mA, voltage mV].
+                    if p is not None and p["current"] is not None:
+                        controller.power_readout = [1, int(round(p["current"] * 1000)),
+                                                    int(round(p["voltage"] * 1000))]
+                    else:
+                        controller.power_readout = [0, 0, 0]
+                    if p is not None:
+                        # Voltage only -- see LOW_VOLT_THRESHOLD note. p["current"]
+                        # is None (the shunt path is unverified).
+                        if p["voltage"] < LOW_VOLT_THRESHOLD and (current_time - last_audio_warning > AUDIO_COOLDOWN):
+                            if audio_engine is not None:
+                                audio_engine.play(os.path.join(WAV_DIR, "low_battery.wav"))
+                            last_audio_warning = current_time
+
+                    # Battery pack (VBAT), not the 5 V rail above.
+                    pack_mv = controller.pack_voltage_mv()
+                    pack_audio_every = (PACK_CUTOFF_AUDIO_EVERY_S if 0 <= pack_mv < PACK_CUTOFF_MV
+                                        else PACK_LOW_AUDIO_EVERY_S)
+                    if 0 <= pack_mv < PACK_LOW_MV and (current_time - last_pack_warning >= pack_audio_every):
+                        print(f"[PACK] Low battery: {pack_mv / 1000:.2f} V")
+                        if audio_engine is not None:
+                            audio_engine.play(os.path.join(WAV_DIR, "low_battery.wav"))
+                        last_pack_warning = current_time
+                    if 0 <= pack_mv < PACK_CUTOFF_MV:
+                        if pack_cutoff_since is None:
+                            pack_cutoff_since = current_time
+                        with controller.serial_lock:
+                            walking = controller.walking_enabled
+                        if walking and current_time - pack_cutoff_since >= PACK_CUTOFF_HOLD_S:
+                            print(f"[PACK] {pack_mv / 1000:.2f} V is below the cutoff "
+                                  f"({PACK_CUTOFF_MV / 1000:.1f} V) -- stopping the walk, "
+                                  f"holding the stand pose.")
+                            # Holds every leg at the stand pose under power --
+                            # NOT request_stop(), which cuts torque and drops it.
+                            controller.settle_to_stand()
+                    else:
+                        pack_cutoff_since = None
+                    last_power_check = current_time
+
+                for s, line in controller.read_pico_lines():
+                    if controller.register_leg_announcement(s, line):
+                        continue
+                    if controller.record_motor_currents(line):
+                        continue
+                    if controller.record_pack_voltage(line):
+                        continue
+                    if line.startswith("CONTACT,"):
+                        # Emitted just ahead of the ABORTED it causes: the
+                        # Pico read a swing-phase current spike as its foot
+                        # touching down early.
+                        parts = line.split(',')
+                        try:
+                            leg = LEG_NAMES.get(int(parts[1]), parts[1])
+                            joint = parts[2]
+                        except (IndexError, ValueError):
+                            leg, joint = s.port, '?'
+                        print(f"[CONTACT] {leg}: early touchdown ({joint} current "
+                              f"spike mid-swing) -- recovering.")
+                        continue
+                    if line.startswith("ADCFAULT,"):
+                        print(f"[ADC] {s.port}: current-sense ADC reads as dead -- "
+                              f"that leg has no touchdown abort until it recovers.")
+                        continue
+                    if line.startswith("HOMED,"):
+                        try:
+                            homed_leg = int(line.split(',')[1])
+                            with controller.serial_lock:
+                                controller.homed[homed_leg] = True
+                            print(f"{LEG_NAMES.get(homed_leg, homed_leg)} homed.")
+                        except (IndexError, ValueError):
+                            pass
+                        continue
+                    if line.startswith("STALL,"):
+                        # Emitted just ahead of the ABORTED that actually drives
+                        # recovery, and it is the only thing that says WHICH
+                        # joint jammed and WHY the leg aborted -- CONTACT
+                        # marks the other abort cause, an early touchdown.
+                        # It used to fall through every branch here and vanish.
+                        parts = line.split(',')
+                        try:
+                            leg = LEG_NAMES.get(int(parts[1]), parts[1])
+                            joint = parts[2]
+                        except (IndexError, ValueError):
+                            leg, joint = s.port, '?'
+                        print(f"[STALL] {leg}: {joint} joint jammed at full duty "
+                              f"-- drive cut, recovering. Check for a mechanical "
+                              f"obstruction before walking again.")
+                        continue
+                    if line.startswith("ABORTED"):
+                        print(f"Hardware Stall Warning on UART: {s.port}")
+                        if audio_engine is not None:
+                            audio_engine.play(os.path.join(WAV_DIR, "abort_sound.wav"))
+                        controller.handle_recovery(line, s)
+
+                if current_time - last_status_publish > 0.2:
+                    controller.publish_homing_status()
+                    last_status_publish = current_time
+                    if current_time - last_oled_refresh > 2.0:
+                        # Live health (compass/GPS dropouts update it), not the
+                        # boot-time snapshot, so the panel matches the dashboard.
+                        disp.summary(health={k.upper(): v for k, v
+                                             in controller.subsystem_health.items()},
+                                     extra=("STOPPED" if not controller.walking_enabled
+                                            else "WALKING"))
+                        last_oled_refresh = current_time
+
+                    # Watchdog: a poller that has not completed a loop in 2 s is
+                    # blocked inside a hardware call. The snapshot fallbacks
+                    # above already keep the robot walking; this just surfaces
+                    # which bus is the problem.
+                    down = [n for n, ok in sensor_hub.health(timeout=2.0).items() if not ok]
+                    if down:
+                        _log_every("stalled", f"[SENSOR] poller(s) stalled: {', '.join(down)}", every_s=5.0)
+
+                time.sleep(0.01)
+            except Exception as loop_err:
+                print(f"[RUNTIME WARNING] Iteration skipped due to error: {loop_err}")
+                time.sleep(0.01)
+
+    except KeyboardInterrupt:
+        print("\nShutting down controller hardware nodes safely...")
+    finally:
+        # First, so it lands even if a later cleanup step raises.
+        disp.shutdown("stopped")
+        controller.close_hardware()
+        sensor_hub.stop()
+        if avoider is not None:
+            avoider.stop()
+        if cam is not None:
+            cam.release()
+        controller.destroy_node()
+        streamer.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
